@@ -20,9 +20,10 @@ apply:
 token: build
 	$(BIN) token
 
-# Build sanity + basic Go checks
+# Build sanity + basic Go checks + unit tests
 test:
 	go vet ./...
+	go test ./...
 	go build ./...
 
 clean:

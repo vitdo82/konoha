@@ -41,6 +41,8 @@ make token            # smoke-test app auth: prints a masked installation token
   to `repos.yaml` may require updating `apply.sh`.
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
-- `main.go` has two debug entrypoints run as CLI args: `./prbot token` and
-  `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda` by
-  default; `PR_NUM` env overrides).
+- `main.go` has three debug entrypoints run as CLI args: `./prbot token`,
+  `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
+  by default; `PR_NUM` env overrides), and `./prbot publish` (runs
+  `PublishDeveloperChange` directly; `REPO_PATH`/`BRANCH`/`BASE`/`TITLE`/
+  `BODY`/`VALIDATION_CMD`/`ALLOW_ON_FAILURE` env override defaults).
