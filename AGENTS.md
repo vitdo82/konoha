@@ -51,7 +51,7 @@ make token            # smoke-test app auth: prints a masked installation token
   the unit tests use).
 - PR idempotency for the publish path lives in `publish.go` (`EnsurePullRequest`,
   search by head branch, not by marker).
-- `main.go` has four debug entrypoints run as CLI args: `./prbot token`,
+- `main.go` has several debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
   by default; `PR_NUM` env overrides), `./prbot publish` (runs
   `PublishDeveloperChange` directly; `REPO_PATH`/`BRANCH`/`BASE`/`TITLE`/
@@ -60,7 +60,10 @@ make token            # smoke-test app auth: prints a masked installation token
 validated `IssueAnalysis` JSON; `OWNER`/`REPO`/`REPO_PATH`/`ISSUE_NUM` env
 overrides; no Temporal needed), and
 `./prbot estimate` (runs the Issue Analyst + Estimator agents directly and
-prints the validated `EstimateResult` JSON; same env overrides; no Temporal).
+prints the validated `EstimateResult` JSON; same env overrides; no Temporal),
+and `./prbot develop` (runs the Issue Analyst + Developer agents and prints
+the validated `DevelopResult` JSON; same env overrides plus `BASE_SHA`/
+`VALIDATION_CMD`).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -82,3 +85,13 @@ prints the validated `EstimateResult` JSON; same env overrides; no Temporal).
   authority ordering). No agent can self-authorize a close (§44 #5) —
   `EvaluateCompletion` is conjunctive and `CompletionAgentComplete` alone is
   never sufficient.
+- `developer.go` owns the Developer agent (§4.4/§25/§26/§34/§35): `RunDeveloper`
+  runs a fresh opencode execution inside an **isolated, workflow-owned worktree**
+  (deterministic sibling `.konoha/<repo>-issue-<n>` dir, ownership claim file
+  `<dir>.owner`). `ensureWorktree` verifies the claim before reuse: a directory
+  with no claim, or claimed by another workflow, is rejected untouched; a dirty
+  or base-moved **owned** worktree is wiped and recreated; a clean owned one is
+  reused. `cleanupWorktree` runs deferred so it fires on failure too. The agent
+  receives structured spec artifacts (§35); raw issue text is JSON-escaped inside
+  `UNTRUSTED ISSUE DATA` markers (§27). The activity returns only a local commit
+  artifact (never pushes/PRs) and records the §26 validation result.
