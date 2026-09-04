@@ -140,6 +140,13 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return err
 	}
 
+	// The estimator only reports; the deterministic policy routes (§4.2). Record
+	// complexity + confidence in history (§38): confidence is data, never proof
+	// that bypasses the routing below.
+	workflow.GetLogger(ctx).Info("estimate recorded",
+		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
+		"complexity", est.Complexity, "confidence", est.Confidence)
+
 	// deterministic routing policy (§11): complexity 1-4 → SMALL, else LARGE
 	if est.Complexity >= 1 && est.Complexity <= 4 {
 		transition(stateSmall)
