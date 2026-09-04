@@ -18,8 +18,9 @@ const (
 	autonomyAutonomous = "autonomous"
 	autonomySupervised = "supervised"
 
-	closePolicyAutonomous = "autonomous"
-	closePolicyRiskBased  = "risk-based"
+	closePolicyAutonomous    = "autonomous"
+	closePolicyRiskBased     = "risk-based"
+	closePolicyHumanRequired = "human-required"
 )
 
 // LifecycleConfig is the per-repo lifecycle policy (§33, §43). Live in
@@ -117,9 +118,9 @@ func (lc *LifecycleConfig) validate() error {
 		return fmt.Errorf("lifecycle.autonomy.default: %q not one of %q, %q", lc.Autonomy.Default, autonomyAutonomous, autonomySupervised)
 	}
 	switch lc.Autonomy.ClosePolicy {
-	case "", closePolicyAutonomous, closePolicyRiskBased:
+	case "", closePolicyAutonomous, closePolicyRiskBased, closePolicyHumanRequired:
 	default:
-		return fmt.Errorf("lifecycle.autonomy.closePolicy: %q not one of %q, %q", lc.Autonomy.ClosePolicy, closePolicyAutonomous, closePolicyRiskBased)
+		return fmt.Errorf("lifecycle.autonomy.closePolicy: %q not one of %q, %q, %q", lc.Autonomy.ClosePolicy, closePolicyAutonomous, closePolicyRiskBased, closePolicyHumanRequired)
 	}
 	if lc.POGateTimeout != "" {
 		if _, err := time.ParseDuration(lc.POGateTimeout); err != nil {
