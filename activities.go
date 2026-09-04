@@ -25,6 +25,26 @@ func b64(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
+// agentEnv returns an env for child opencode processes with every GitHub
+// credential stripped: the App PEM path + any token the shell may carry
+// (GH_TOKEN/GITHUB_TOKEN and friends). §23: agents never receive write creds.
+// Missing vars are dropped entirely (GH_APP_* pointing at still-readable paths
+// would be an opaque hint, not a secret, but dropping is simpler and stricter).
+func agentEnv() []string {
+	drops := map[string]bool{
+		"GH_APP_ID": true, "GH_APP_INSTALL_ID": true, "GH_APP_PEM": true,
+		"GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_ENTERPRISE_TOKEN": true,
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 && drops[kv[:i]] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // appToken mints a short-lived GitHub App installation token (kakashi-82).
 // Env: GH_APP_ID, GH_APP_INSTALL_ID, GH_APP_PEM (path to private key).
 func appToken(ctx context.Context) (string, error) {
@@ -90,6 +110,29 @@ type PrInput struct {
 	RepoPath string `json:"repoPath"`
 }
 
+// IssueInput identifies one issue to run through the issue lifecycle cycle.
+type IssueInput struct {
+	Owner    string `json:"owner"`
+	Repo     string `json:"repo"`
+	IssueNum int    `json:"issue"`
+	RepoPath string `json:"repoPath"`
+}
+
+// IssueAnalysis is what the Issue Analyst produces (§4.1). Foundation shape:
+// the raw issue read from GitHub; requirement extraction lands in a later issue.
+type IssueAnalysis struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// EstimateResult is what the Estimator produces (§4.2). Complexity drives the
+// SMALL/LARGE routing decision deterministically in the workflow.
+type EstimateResult struct {
+	Complexity int    `json:"complexity"`
+	Confidence string `json:"confidence"`
+	Rationale  string `json:"rationale"`
+}
+
 // RepoScope defines one repo to sweep. Passed as schedule input so the same
 // workflow type is reused across repos (one schedule per repo, different input).
 type RepoScope struct {
@@ -123,6 +166,57 @@ func ListUnreviewedPRs(ctx context.Context, scope RepoScope) ([]PrInput, error) 
 	}
 	activity.GetLogger(ctx).Info("found unreviewed PRs", "repo", ownerRepo, "count", len(out))
 	return out, nil
+}
+
+// ListUnmanagedIssues returns open issues in the repo indicated by scope that
+// are missing the konoha:managed label. Mirror of ListUnreviewedPRs for the
+// issue sweep (§32). Label writes are a later issue; for now "unmanaged"
+// simply means the label is absent.
+func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, error) {
+	var out []IssueInput
+	ownerRepo := scope.Owner + "/" + scope.Repo
+
+	list, err := exec.Command("gh", "issue", "list", "-R", ownerRepo,
+		"--state", "open", "--json", "number,labels",
+		"--jq", `.[] | select(.labels | any(.name == "konoha:managed") | not) | .number`).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh issue list %s: %w", ownerRepo, err)
+	}
+	for _, num := range strings.Fields(string(list)) {
+		n := 0
+		fmt.Sscan(num, &n)
+		out = append(out, IssueInput{Owner: scope.Owner, Repo: scope.Repo, IssueNum: n, RepoPath: scope.RepoPath})
+	}
+	activity.GetLogger(ctx).Info("found unmanaged issues", "repo", ownerRepo, "count", len(out))
+	return out, nil
+}
+
+// AnalyzeIssue reads the issue from GitHub. Real I/O; the agent-driven
+// analysis (requirements, risks, open questions) is a later issue.
+func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
+	out, err := exec.Command("gh", "issue", "view", fmt.Sprint(in.IssueNum),
+		"-R", in.Owner+"/"+in.Repo, "--json", "title,body").Output()
+	if err != nil {
+		return IssueAnalysis{}, fmt.Errorf("gh issue view: %w", err)
+	}
+	var a IssueAnalysis
+	if err := json.Unmarshal(out, &a); err != nil {
+		return IssueAnalysis{}, fmt.Errorf("parse issue: %w", err)
+	}
+	activity.GetLogger(ctx).Info("analyzed issue", "issue", in.IssueNum)
+	return a, nil
+}
+
+// EstimateIssue is a foundation stub: the opencode estimator agent (§4.2)
+// lands in a later issue. It estimates SMALL so the small-ticket path is
+// runnable end to end.
+func EstimateIssue(ctx context.Context, in IssueInput, analysis IssueAnalysis) (EstimateResult, error) {
+	activity.GetLogger(ctx).Info("estimated issue", "issue", in.IssueNum, "title", analysis.Title)
+	return EstimateResult{
+		Complexity: 2,
+		Confidence: "high",
+		Rationale:  "foundation stub: estimator agent not yet wired",
+	}, nil
 }
 
 // ReviewResult is what the opencode reviewer returns.
@@ -163,6 +257,7 @@ DIFF:
 
 	cmd := exec.Command("opencode", "run", prompt)
 	cmd.Dir = in.RepoPath
+	cmd.Env = agentEnv() // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
