@@ -27,10 +27,15 @@ func main() {
 	w := worker.New(c, taskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(PrReviewWorkflow, workflow.RegisterOptions{Name: "PrReviewWorkflow"})
 	w.RegisterWorkflowWithOptions(ReviewAllWorkflow, workflow.RegisterOptions{Name: "ReviewAllWorkflow"})
+	w.RegisterWorkflowWithOptions(IssueCycleWorkflow, workflow.RegisterOptions{Name: "IssueCycleWorkflow"})
+	w.RegisterWorkflowWithOptions(IssueAllWorkflow, workflow.RegisterOptions{Name: "IssueAllWorkflow"})
 	w.RegisterActivity(FetchDiff)
 	w.RegisterActivity(ReviewWithOpencode)
 	w.RegisterActivity(SubmitReview)
 	w.RegisterActivity(ListUnreviewedPRs)
+	w.RegisterActivity(ListUnmanagedIssues)
+	w.RegisterActivity(AnalyzeIssue)
+	w.RegisterActivity(EstimateIssue)
 
 	log.Printf("prreview worker running on %s, queue %s. Ctrl-C to stop.", addr, taskQueue)
 	for _, r := range os.Args[1:] {

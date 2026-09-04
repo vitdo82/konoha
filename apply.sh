@@ -24,4 +24,15 @@ while IFS= read -r repo; do
     --type ReviewAllWorkflow \
     --task-queue "$queue" \
     --input "{\"owner\":\"$owner\",\"repo\":\"$repo\",\"repoPath\":\"$repopath\"}"
+
+  id="${repo}-issue-all"
+  echo "==> $id ($owner/$repo @ $repopath)"
+  temporal schedule delete --schedule-id "$id" >/dev/null 2>&1 || true
+  temporal schedule create \
+    --schedule-id "$id" \
+    --workflow-id "$id" \
+    --interval "$interval" \
+    --type IssueAllWorkflow \
+    --task-queue "$queue" \
+    --input "{\"owner\":\"$owner\",\"repo\":\"$repo\",\"repoPath\":\"$repopath\"}"
 done < <(grep -E '^\s+- repo:' repos.yaml | awk '{print $3}')
