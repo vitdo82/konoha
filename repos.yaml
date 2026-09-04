@@ -1,0 +1,7 @@
+# Repos tracked by the kakashi-82 review bot.
+# One entry per repo. `schedule` is the cron interval for review sweeps.
+repos:
+  - repo: ducklambda
+    owner: vitdo82
+    repoPath: /Users/vit/projects/ducklambda
+    schedule: "*/5 * * * *"

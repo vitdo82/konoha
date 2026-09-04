@@ -1,0 +1,3 @@
+# GitHub App private key — never commit
+*.pem
+.env
