@@ -147,8 +147,19 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
 		"complexity", est.Complexity, "confidence", est.Confidence)
 
-	// deterministic routing policy (§11): complexity 1-4 → SMALL, else LARGE
-	if est.Complexity >= 1 && est.Complexity <= 4 {
+	// Deterministic policy (§4.8): the autonomy §12 predicate decides whether
+	// this issue can run autonomously. Touched paths/labels are unknown at this
+	// stage, so only complexity/confidence gate it; restricted-path escalation
+	// applies once the work touches files (§20 wiring lands with DEVELOPMENT).
+	aut := EvaluateAutonomy(in.Lifecycle, est, nil, nil)
+	workflow.GetLogger(ctx).Info("autonomy decision",
+		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
+		"autonomous", aut.Autonomous, "reasons", aut.Reasons)
+
+	// deterministic routing policy (§11): complexity within the executable
+	// threshold → SMALL, else LARGE. Threshold comes from config (§33), not a
+	// hardcoded constant, so repo policy is the authority (§5).
+	if est.Complexity >= 1 && est.Complexity <= DevelopmentMaxComplexity(in.Lifecycle) {
 		transition(stateSmall)
 	} else {
 		transition(stateLarge)

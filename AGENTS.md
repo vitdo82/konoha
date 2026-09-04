@@ -73,3 +73,12 @@ prints the validated `EstimateResult` JSON; same env overrides; no Temporal).
   workflow applies the deterministic routing policy. It reuses the analyst's
   `extractJSONObject`/`cmdEnv`. The `EstimateResult` struct (with `Risks`/
   `Assumptions`) lives in `estimator.go`, not `activities.go`.
+- `policy.go` owns the deterministic policy engine (§4.8): `EvaluateAutonomy`
+  (§12 predicate), `EvaluateCompletion` (§14 gate, blocks on agent
+  disagreement §18), `EvaluateClosePolicy` (§19 `autonomous`/`risk-based`/
+  `human-required`, default risk-based), plus the `**`-aware `globMatch`
+  for §20 `humanRequiredPaths`. Pure Go, zero LLM calls; inputs are only
+  validated `EstimateResult`/config/observed facts, never issue text (§5/§27
+  authority ordering). No agent can self-authorize a close (§44 #5) —
+  `EvaluateCompletion` is conjunctive and `CompletionAgentComplete` alone is
+  never sufficient.
