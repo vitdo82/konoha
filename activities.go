@@ -45,6 +45,28 @@ func agentEnv() []string {
 	return out
 }
 
+// cmdEnv returns agentEnv() with PWD pinned to dir. opencode resolves its
+// project root from the PWD env var rather than the process cwd, so the
+// worker's stale PWD would silently point the agent at the wrong repository.
+func cmdEnv(dir string) []string {
+	out := make([]string, 0, len(os.Environ())+1)
+	seen := false
+	for _, kv := range agentEnv() {
+		if strings.HasPrefix(kv, "PWD=") {
+			if !seen {
+				out = append(out, "PWD="+dir)
+				seen = true
+			}
+			continue
+		}
+		out = append(out, kv)
+	}
+	if !seen {
+		out = append(out, "PWD="+dir)
+	}
+	return out
+}
+
 // appToken mints a short-lived GitHub App installation token (kakashi-82).
 // Env: GH_APP_ID, GH_APP_INSTALL_ID, GH_APP_PEM (path to private key).
 func appToken(ctx context.Context) (string, error) {
@@ -120,13 +142,6 @@ type IssueInput struct {
 	Lifecycle LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
-// IssueAnalysis is what the Issue Analyst produces (§4.1). Foundation shape:
-// the raw issue read from GitHub; requirement extraction lands in a later issue.
-type IssueAnalysis struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-}
-
 // EstimateResult is what the Estimator produces (§4.2). Complexity drives the
 // SMALL/LARGE routing decision deterministically in the workflow.
 type EstimateResult struct {
@@ -194,22 +209,6 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 	return out, nil
 }
 
-// AnalyzeIssue reads the issue from GitHub. Real I/O; the agent-driven
-// analysis (requirements, risks, open questions) is a later issue.
-func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
-	out, err := exec.Command("gh", "issue", "view", fmt.Sprint(in.IssueNum),
-		"-R", in.Owner+"/"+in.Repo, "--json", "title,body").Output()
-	if err != nil {
-		return IssueAnalysis{}, fmt.Errorf("gh issue view: %w", err)
-	}
-	var a IssueAnalysis
-	if err := json.Unmarshal(out, &a); err != nil {
-		return IssueAnalysis{}, fmt.Errorf("parse issue: %w", err)
-	}
-	activity.GetLogger(ctx).Info("analyzed issue", "issue", in.IssueNum)
-	return a, nil
-}
-
 // EstimateIssue is a foundation stub: the opencode estimator agent (§4.2)
 // lands in a later issue. It estimates SMALL so the small-ticket path is
 // runnable end to end.
@@ -260,7 +259,7 @@ DIFF:
 
 	cmd := exec.Command("opencode", "run", prompt)
 	cmd.Dir = in.RepoPath
-	cmd.Env = agentEnv() // §23: no GitHub write credential reaches the agent
+	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
