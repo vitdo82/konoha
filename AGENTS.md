@@ -56,12 +56,20 @@ make token            # smoke-test app auth: prints a masked installation token
   by default; `PR_NUM` env overrides), `./prbot publish` (runs
   `PublishDeveloperChange` directly; `REPO_PATH`/`BRANCH`/`BASE`/`TITLE`/
   `BODY`/`VALIDATION_CMD`/`ALLOW_ON_FAILURE` env override defaults), and
-  `./prbot analyze` (runs the Issue Analyst agent directly and prints the
-  validated `IssueAnalysis` JSON; `OWNER`/`REPO`/`REPO_PATH`/`ISSUE_NUM` env
-  overrides; no Temporal needed).
+`./prbot analyze` (runs the Issue Analyst agent directly and prints the
+validated `IssueAnalysis` JSON; `OWNER`/`REPO`/`REPO_PATH`/`ISSUE_NUM` env
+overrides; no Temporal needed), and
+`./prbot estimate` (runs the Issue Analyst + Estimator agents directly and
+prints the validated `EstimateResult` JSON; same env overrides; no Temporal).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
   fail-closed validation (`ValidateIssueAnalysis`). Issue text is always data,
   never instructions; adding a new required output field means updating the
   prompt contract, the struct, and the validator together.
+- `estimator.go` owns the Estimator agent (§4.2/§11/§12/§38): complexity
+  (1-10 rubric) + confidence (controlled set `low|medium|high`) produced as a
+  validated `EstimateResult` (`EstimateIssue`). It only *reports*; the
+  workflow applies the deterministic routing policy. It reuses the analyst's
+  `extractJSONObject`/`cmdEnv`. The `EstimateResult` struct (with `Risks`/
+  `Assumptions`) lives in `estimator.go`, not `activities.go`.

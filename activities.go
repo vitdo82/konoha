@@ -142,14 +142,6 @@ type IssueInput struct {
 	Lifecycle LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
-// EstimateResult is what the Estimator produces (§4.2). Complexity drives the
-// SMALL/LARGE routing decision deterministically in the workflow.
-type EstimateResult struct {
-	Complexity int    `json:"complexity"`
-	Confidence string `json:"confidence"`
-	Rationale  string `json:"rationale"`
-}
-
 // RepoScope defines one repo to sweep. Passed as schedule input so the same
 // workflow type is reused across repos (one schedule per repo, different input).
 type RepoScope struct {
@@ -207,18 +199,6 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 	}
 	activity.GetLogger(ctx).Info("found unmanaged issues", "repo", ownerRepo, "count", len(out))
 	return out, nil
-}
-
-// EstimateIssue is a foundation stub: the opencode estimator agent (§4.2)
-// lands in a later issue. It estimates SMALL so the small-ticket path is
-// runnable end to end.
-func EstimateIssue(ctx context.Context, in IssueInput, analysis IssueAnalysis) (EstimateResult, error) {
-	activity.GetLogger(ctx).Info("estimated issue", "issue", in.IssueNum, "title", analysis.Title)
-	return EstimateResult{
-		Complexity: 2,
-		Confidence: "high",
-		Rationale:  "foundation stub: estimator agent not yet wired",
-	}, nil
 }
 
 // ReviewResult is what the opencode reviewer returns.

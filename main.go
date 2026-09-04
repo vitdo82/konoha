@@ -40,6 +40,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "estimate":
+			if err := runEstimate(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -146,22 +151,11 @@ func runAnalyze() error {
 	// debug: run the Issue Analyst agent against one issue directly (no
 	// Temporal), printing the validated IssueAnalysis (§4.1) as JSON.
 	// Env: OWNER, REPO, REPO_PATH; issue number is arg 1 or ISSUE_NUM.
-	var n int
-	if len(os.Args) > 2 {
-		fmt.Sscan(os.Args[2], &n)
-	} else {
-		fmt.Sscan(getenv("ISSUE_NUM", "1"), &n)
+	n, err := issueNumArg()
+	if err != nil {
+		return err
 	}
-	if n <= 0 {
-		return fmt.Errorf("analyze: issue number required (arg or ISSUE_NUM)")
-	}
-	a, err := AnalyzeIssue(context.Background(), IssueInput{
-		Owner:     getenv("OWNER", "vitdo82"),
-		Repo:      getenv("REPO", "ducklambda"),
-		IssueNum:  n,
-		RepoPath:  getenv("REPO_PATH", "/Users/vit/projects/ducklambda"),
-		Lifecycle: LifecycleConfig{DryRun: true},
-	})
+	a, err := AnalyzeIssue(context.Background(), debugIssueInput(n))
 	if err != nil {
 		return err
 	}
@@ -171,6 +165,54 @@ func runAnalyze() error {
 	}
 	fmt.Println(string(b))
 	return nil
+}
+
+func runEstimate() error {
+	// debug: run the Issue Analyst + Estimator agents against one issue
+	// directly (no Temporal), printing the validated EstimateResult (§4.2)
+	// as JSON. Env: OWNER, REPO, REPO_PATH; issue number is arg 1 or ISSUE_NUM.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+	e, err := EstimateIssue(context.Background(), in, a)
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func issueNumArg() (int, error) {
+	var n int
+	if len(os.Args) > 2 {
+		fmt.Sscan(os.Args[2], &n)
+	} else {
+		fmt.Sscan(getenv("ISSUE_NUM", "1"), &n)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("issue number required (arg or ISSUE_NUM)")
+	}
+	return n, nil
+}
+
+func debugIssueInput(n int) IssueInput {
+	return IssueInput{
+		Owner:     getenv("OWNER", "vitdo82"),
+		Repo:      getenv("REPO", "ducklambda"),
+		IssueNum:  n,
+		RepoPath:  getenv("REPO_PATH", "/Users/vit/projects/ducklambda"),
+		Lifecycle: LifecycleConfig{DryRun: true},
+	}
 }
 
 func startReviewWorkflow(c client.Client) {
