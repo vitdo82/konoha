@@ -35,9 +35,12 @@ make token            # smoke-test app auth: prints a masked installation token
   must print `VERDICT:APPROVE`/`VERDICT:REQUEST_CHANGES` plus `BLOCKING:`/`NITS:`/
   `CONCLUDE:` sections. Parsing is substring/line matching and fail-closed to
   `REQUEST_CHANGES`. Changing the prompt/output shape requires changing this parser.
-- **Config source of truth is `repos.yaml`.** `apply.sh` parses it with a grep/awk
-  hack (reads only `repo`, one shared `owner`, and per-repo `repoPath`). Adding keys
-  to `repos.yaml` may require updating `apply.sh`.
+- **Config source of truth is `repos.yaml`.** `apply.sh` builds the worker and
+  shells out to `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
+  for each repo's schedule-input JSON; unknown keys and out-of-range values
+  fail fast at apply time. The schema lives in `config.go`
+  (`RepoConfig`/`LifecycleConfig`, §§33/43) — adding keys to `repos.yaml`
+  requires updating those structs, not grep/awk in `apply.sh`.
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are

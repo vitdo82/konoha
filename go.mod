@@ -2,7 +2,10 @@ module prreview
 
 go 1.27
 
-require go.temporal.io/sdk v1.34.0
+require (
+	go.temporal.io/sdk v1.34.0
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -27,5 +30,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240827150818-7e3bb234dfed // indirect
 	google.golang.org/grpc v1.66.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

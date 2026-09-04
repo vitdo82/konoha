@@ -8,6 +8,24 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+// batchRuns splits n items into consecutive runs of at most max. §43: a sweep
+// never has more than `max` child workflows in flight at once. max<1 → 1
+// (serialized).
+func batchRuns(n, max int) [][2]int {
+	if max < 1 {
+		max = 1
+	}
+	var out [][2]int
+	for i := 0; i < n; i += max {
+		j := i + max
+		if j > n {
+			j = n
+		}
+		out = append(out, [2]int{i, j})
+	}
+	return out
+}
+
 // PrReviewWorkflow: fetch diff -> opencode review -> post verdict back to PR.
 func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 	ao := workflow.ActivityOptions{
@@ -152,16 +170,29 @@ func IssueAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 	}
 	workflow.GetLogger(ctx).Info("IssueAll sweep", "repo", scope.Owner+"/"+scope.Repo, "pendingIssues", len(pending))
 
-	for _, in := range pending {
-		cwo := workflow.ChildWorkflowOptions{
-			WorkflowID: fmt.Sprintf("%s-issue-%d", scope.Repo, in.IssueNum), // repo-specific, stable
+	// §43: never more than `maxConcurrentIssueCycles` child cycles in flight per
+	// repo. Stable child IDs keep duplicate sweeps harmless either way.
+	type run struct {
+		in     IssueInput
+		cctx   workflow.Context
+		future workflow.ChildWorkflowFuture
+	}
+	for _, b := range batchRuns(len(pending), scope.Lifecycle.ConcurrentIssueCycles()) {
+		var batch []run
+		for _, in := range pending[b[0]:b[1]] {
+			cwo := workflow.ChildWorkflowOptions{
+				WorkflowID: fmt.Sprintf("%s-issue-%d", scope.Repo, in.IssueNum), // repo-specific, stable
+			}
+			cctx := workflow.WithChildOptions(ctx, cwo)
+			batch = append(batch, run{in: in, cctx: cctx, future: workflow.ExecuteChildWorkflow(cctx, IssueCycleWorkflow, in)})
 		}
-		cctx := workflow.WithChildOptions(ctx, cwo)
-		if err := workflow.ExecuteChildWorkflow(cctx, IssueCycleWorkflow, in).Get(cctx, nil); err != nil {
-			workflow.GetLogger(ctx).Error("child cycle failed, skipping", "issue", in.IssueNum, "err", err)
-			continue
+		for _, x := range batch {
+			if err := x.future.Get(x.cctx, nil); err != nil {
+				workflow.GetLogger(ctx).Error("child cycle failed, skipping", "issue", x.in.IssueNum, "err", err)
+				continue
+			}
+			workflow.GetLogger(ctx).Info("cycle done", "issue", x.in.IssueNum)
 		}
-		workflow.GetLogger(ctx).Info("cycle done", "issue", in.IssueNum)
 	}
 	return nil
 }
