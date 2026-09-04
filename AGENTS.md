@@ -51,8 +51,17 @@ make token            # smoke-test app auth: prints a masked installation token
   the unit tests use).
 - PR idempotency for the publish path lives in `publish.go` (`EnsurePullRequest`,
   search by head branch, not by marker).
-- `main.go` has three debug entrypoints run as CLI args: `./prbot token`,
+- `main.go` has four debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
-  by default; `PR_NUM` env overrides), and `./prbot publish` (runs
+  by default; `PR_NUM` env overrides), `./prbot publish` (runs
   `PublishDeveloperChange` directly; `REPO_PATH`/`BRANCH`/`BASE`/`TITLE`/
-  `BODY`/`VALIDATION_CMD`/`ALLOW_ON_FAILURE` env override defaults).
+  `BODY`/`VALIDATION_CMD`/`ALLOW_ON_FAILURE` env override defaults), and
+  `./prbot analyze` (runs the Issue Analyst agent directly and prints the
+  validated `IssueAnalysis` JSON; `OWNER`/`REPO`/`REPO_PATH`/`ISSUE_NUM` env
+  overrides; no Temporal needed).
+- `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
+  (`findSpecs`), the system-instruction constant + untrusted-data prompt
+  (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
+  fail-closed validation (`ValidateIssueAnalysis`). Issue text is always data,
+  never instructions; adding a new required output field means updating the
+  prompt contract, the struct, and the validator together.

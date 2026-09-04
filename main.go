@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -31,6 +32,11 @@ func main() {
 			return
 		case "publish":
 			if err := runPublish(); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "analyze":
+			if err := runAnalyze(); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -133,6 +139,37 @@ func runPublish() error {
 	}
 	fmt.Printf("published branch=%s pr=%d url=%s validated=%v\n",
 		res.Branch, res.PRNumber, res.PRURL, res.Validated)
+	return nil
+}
+
+func runAnalyze() error {
+	// debug: run the Issue Analyst agent against one issue directly (no
+	// Temporal), printing the validated IssueAnalysis (§4.1) as JSON.
+	// Env: OWNER, REPO, REPO_PATH; issue number is arg 1 or ISSUE_NUM.
+	var n int
+	if len(os.Args) > 2 {
+		fmt.Sscan(os.Args[2], &n)
+	} else {
+		fmt.Sscan(getenv("ISSUE_NUM", "1"), &n)
+	}
+	if n <= 0 {
+		return fmt.Errorf("analyze: issue number required (arg or ISSUE_NUM)")
+	}
+	a, err := AnalyzeIssue(context.Background(), IssueInput{
+		Owner:     getenv("OWNER", "vitdo82"),
+		Repo:      getenv("REPO", "ducklambda"),
+		IssueNum:  n,
+		RepoPath:  getenv("REPO_PATH", "/Users/vit/projects/ducklambda"),
+		Lifecycle: LifecycleConfig{DryRun: true},
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
 	return nil
 }
 
