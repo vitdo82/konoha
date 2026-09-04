@@ -25,6 +25,26 @@ func b64(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
+// agentEnv returns an env for child opencode processes with every GitHub
+// credential stripped: the App PEM path + any token the shell may carry
+// (GH_TOKEN/GITHUB_TOKEN and friends). §23: agents never receive write creds.
+// Missing vars are dropped entirely (GH_APP_* pointing at still-readable paths
+// would be an opaque hint, not a secret, but dropping is simpler and stricter).
+func agentEnv() []string {
+	drops := map[string]bool{
+		"GH_APP_ID": true, "GH_APP_INSTALL_ID": true, "GH_APP_PEM": true,
+		"GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_ENTERPRISE_TOKEN": true,
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 && drops[kv[:i]] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // appToken mints a short-lived GitHub App installation token (kakashi-82).
 // Env: GH_APP_ID, GH_APP_INSTALL_ID, GH_APP_PEM (path to private key).
 func appToken(ctx context.Context) (string, error) {
@@ -237,6 +257,7 @@ DIFF:
 
 	cmd := exec.Command("opencode", "run", prompt)
 	cmd.Dir = in.RepoPath
+	cmd.Env = agentEnv() // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
