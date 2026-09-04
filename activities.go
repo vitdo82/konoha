@@ -201,10 +201,15 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 	return out, nil
 }
 
-// ReviewResult is what the opencode reviewer returns.
+// ReviewResult is what a reviewer (independent or legacy) returns. Verdict is
+// APPROVE or REQUEST_CHANGES; Summary is the rendered review body. PRNumber and
+// CommitSHA bind the verdict per §15: later code should prefer the richer
+// reviewer.go flow, which always fills them.
 type ReviewResult struct {
-	Verdict string `json:"verdict"` // APPROVE or REQUEST_CHANGES
-	Summary string `json:"summary"`
+	Verdict   string `json:"verdict"` // APPROVE or REQUEST_CHANGES
+	Summary   string `json:"summary"`
+	PRNumber  int    `json:"prNumber,omitempty"`
+	CommitSHA string `json:"commitSha,omitempty"`
 }
 
 // FetchDiff pulls the PR diff via the gh CLI.
@@ -245,62 +250,10 @@ DIFF:
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
-	txt := string(out)
-	verdict := "REQUEST_CHANGES" // fail-closed
-	if strings.Contains(strings.ToUpper(txt), "VERDICT:APPROVE") {
-		verdict = "APPROVE"
-	}
-
-	// Assemble a markdown review body from the structured sections.
-	var blocking, nits, conclude []string
-	var section string
-	for _, line := range strings.Split(txt, "\n") {
-		up := strings.ToUpper(strings.TrimSpace(line))
-		switch {
-		case strings.HasPrefix(up, "BLOCKING"):
-			section = "blocking"
-		case strings.HasPrefix(up, "NITS"):
-			section = "nits"
-		case strings.HasPrefix(up, "CONCLUDE"):
-			section = "conclude"
-			if i := strings.Index(line, ":"); i >= 0 {
-				conclude = append(conclude, strings.TrimSpace(line[i+1:]))
-			}
-		case strings.HasPrefix(line, "-") && section != "":
-			if s := strings.TrimSpace(strings.TrimPrefix(line, "-")); s != "" && s != "none" {
-				if section == "blocking" {
-					blocking = append(blocking, s)
-				} else if section == "nits" {
-					nits = append(nits, s)
-				}
-			}
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString("## Agent Review: " + verdict + "\n\n")
-	if len(blocking) == 0 {
-		b.WriteString("**Blocking issues:** none ✅\n\n")
-	} else {
-		b.WriteString("**Blocking issues:**\n")
-		for _, s := range blocking {
-			b.WriteString("- " + s + "\n")
-		}
-		b.WriteString("\n")
-	}
-	if len(nits) == 0 {
-		b.WriteString("**Non-blocking nits:** none\n\n")
-	} else {
-		b.WriteString("**Non-blocking nits:**\n")
-		for _, s := range nits {
-			b.WriteString("- " + s + "\n")
-		}
-		b.WriteString("\n")
-	}
-	if len(conclude) > 0 {
-		b.WriteString(strings.Join(conclude, " ") + "\n")
-	}
-	return ReviewResult{Verdict: verdict, Summary: b.String()}, nil
+	// Shared fail-closed parser (reviewer.go): VERDICT:/BLOCKING:/NITS:/CONCLUDE:
+	// sections, defaulting to REQUEST_CHANGES on any malformed output.
+	verdict, summary := parseReviewOutput(out)
+	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum}, nil
 }
 
 // SubmitReview posts the verdict as a single formal review (the --body carries

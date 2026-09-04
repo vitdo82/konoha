@@ -31,10 +31,10 @@ make token            # smoke-test app auth: prints a masked installation token
 - **Workflows are registered by string name** (`main.go:28-33`); activity executions
   are serialized by signature. Changing a workflow/activity signature breaks in-flight
   executions and must happen in lockstep with the registration.
-- **Agent output contract** (`activities.go` `ReviewWithOpencode`): the opencode agent
-  must print `VERDICT:APPROVE`/`VERDICT:REQUEST_CHANGES` plus `BLOCKING:`/`NITS:`/
-  `CONCLUDE:` sections. Parsing is substring/line matching and fail-closed to
-  `REQUEST_CHANGES`. Changing the prompt/output shape requires changing this parser.
+- **Agent output contract** (`reviewer.go` `parseReviewOutput`, reused by `ReviewWithOpencode`):
+  the opencode agent must print `VERDICT:APPROVE`/`VERDICT:REQUEST_CHANGES` plus
+  `BLOCKING:`/`NITS:`/`CONCLUDE:` sections. Parsing is line matching, fail-closed
+  to `REQUEST_CHANGES`. Changing the prompt/output shape requires changing this parser.
 - **Config source of truth is `repos.yaml`.** `apply.sh` builds the worker and
   shells out to `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
@@ -63,7 +63,9 @@ overrides; no Temporal needed), and
 prints the validated `EstimateResult` JSON; same env overrides; no Temporal),
 and `./prbot develop` (runs the Issue Analyst + Developer agents and prints
 the validated `DevelopResult` JSON; same env overrides plus `BASE_SHA`/
-`VALIDATION_CMD`).
+`VALIDATION_CMD`), and `./prbot review` (runs the Issue Analyst +
+Reviewer agents and prints the validated, commit-bound `ReviewResult` JSON;
+same env overrides plus `PR_NUM`/`REVIEW_SHA`).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -95,3 +97,12 @@ the validated `DevelopResult` JSON; same env overrides plus `BASE_SHA`/
   receives structured spec artifacts (§35); raw issue text is JSON-escaped inside
   `UNTRUSTED ISSUE DATA` markers (§27). The activity returns only a local commit
   artifact (never pushes/PRs) and records the §26 validation result.
+- `reviewer.go` owns the Reviewer agent (§4.5/§13/§15/§27): `RunReviewer` runs an
+  **independent** opencode execution that gets issue requirements/spec/diff/tests
+  — never the developer's reasoning (§13). `parseReviewOutput` is the **single
+  shared fail-closed parser** for the `VERDICT:`/`BLOCKING:`/`NITS:`/`CONCLUDE:`
+  contract; the legacy `ReviewWithOpencode` (activities.go) reuses it, so any
+  output-shape change touches one place. The verdict is read from a dedicated
+  `VERDICT:<value>` line and defaults to `REQUEST_CHANGES`. `ValidateReview`
+  gates verdict+commit SHA; `ReviewAppliesTo` is the §15 commit-binding
+  predicate (an approval is valid only for the exact SHA it reviewed).
