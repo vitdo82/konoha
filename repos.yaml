@@ -1,7 +1,34 @@
 # Repos tracked by the kakashi-82 review bot.
 # One entry per repo. `schedule` is the cron interval for review sweeps.
+# `lifecycle` is the per-repo policy (§33/§43 of docs/new-design-v2.md):
+#   - mode: review-only | supervised-autonomous
+#   - developmentMaxComplexity: max complexity the developer handles (1-10)
+#   - maxDevReviewAttempts: bounded review/fix loops
+#   - autonomy.default/closePolicy + humanRequired*: escalation policy
+#   - poGateTimeout: PO-on-fire timeout (Go duration)
+#   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
+#   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
+# Unknown keys or out-of-range values make `./apply.sh` fail fast.
 repos:
   - repo: ducklambda
     owner: vitdo82
     repoPath: /Users/vit/projects/ducklambda
     schedule: "*/5 * * * *"
+    lifecycle:
+      mode: review-only
+      developmentMaxComplexity: 4
+      maxDevReviewAttempts: 2
+      autonomy:
+        default: autonomous
+        closePolicy: risk-based
+        humanRequiredPaths:
+          - ".github/**"
+          - "infra/**"
+          - "migrations/**"
+        humanRequiredLabels:
+          - "security"
+          - "breaking-change"
+      poGateTimeout: 168h
+      dryRun: false
+      maxConcurrentIssueCycles: 1
+      maxConcurrentChildrenPerIssue: 3

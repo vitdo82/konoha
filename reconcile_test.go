@@ -159,3 +159,28 @@ func TestEnsureIssueLabelsReconciles(t *testing.T) {
 		t.Fatalf("label edit called %d times, want 1 (one missing)", edits)
 	}
 }
+
+// §42 dry-run: every Ensure* mutation must no-op without touching GitHub.
+func TestEnsureDryRunSuppressesMutations(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	prev := ghRunner
+	ghRunner = func(_ context.Context, args ...string) ([]byte, error) {
+		calls++
+		return nil, fmt.Errorf("dryRun must not invoke gh: %v", args)
+	}
+	defer func() { ghRunner = prev }()
+
+	if n, err := EnsureIssue(ctx, IssueRequest{Owner: "o", Repo: "r", DryRun: true}); err != nil || n != 0 {
+		t.Fatalf("EnsureIssue dryRun: n=%d err=%v", n, err)
+	}
+	if err := EnsureIssueState(ctx, StateRequest{Owner: "o", Repo: "r", Num: 1, State: "closed", DryRun: true}); err != nil {
+		t.Fatalf("EnsureIssueState dryRun: %v", err)
+	}
+	if err := EnsureIssueLabels(ctx, LabelsRequest{Owner: "o", Repo: "r", Num: 1, DryRun: true}); err != nil {
+		t.Fatalf("EnsureIssueLabels dryRun: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("dryRun triggered %d gh call(s), want 0", calls)
+	}
+}

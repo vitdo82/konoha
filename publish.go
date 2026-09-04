@@ -22,6 +22,7 @@ type PublishInput struct {
 	Body           string `json:"body"`
 	ValidationCmd  string `json:"validationCmd"`  // repo validation command (§26); "" = none
 	AllowOnFailure bool   `json:"allowOnFailure"` // explicit policy permission to publish despite failing validation (§26)
+	DryRun         bool   `json:"dryRun,omitempty"`
 }
 
 // PublishResult reports what PublishDeveloperChange did. ValidationOutput is
@@ -112,6 +113,10 @@ func PublishDeveloperChange(ctx context.Context, in PublishInput) (PublishResult
 		activity.GetLogger(ctx).Error("validation failed, PR not published (§26)",
 			"branch", in.Branch, "output", res.ValidationOutput)
 		return res, err
+	}
+	if in.DryRun {
+		activity.GetLogger(ctx).Info("dryRun: publish suppressed", "repo", in.Owner+"/"+in.Repo, "branch", in.Branch)
+		return res, nil
 	}
 
 	tok, err := appToken(ctx)

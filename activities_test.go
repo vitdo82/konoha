@@ -131,3 +131,33 @@ func TestPublishValidationRunsBeforeMutation(t *testing.T) {
 		t.Fatalf("validation gate must fire before credentials are touched, got: %v", err)
 	}
 }
+
+// §42 dry-run: a dry-run review must skip the GitHub mutation entirely — no
+// App credentials are even needed.
+func TestSubmitReviewHonorsDryRun(t *testing.T) {
+	unsetCreds(t)
+	env := (&testsuite.WorkflowTestSuite{}).NewTestActivityEnvironment()
+	env.RegisterActivity(SubmitReview)
+
+	_, err := env.ExecuteActivity(SubmitReview,
+		PrInput{Owner: "o", Repo: "r", PrNum: 1, Lifecycle: LifecycleConfig{DryRun: true}},
+		ReviewResult{Verdict: "APPROVE", Summary: "s"})
+	if err != nil {
+		t.Fatalf("dryRun should suppress the review without creds, got: %v", err)
+	}
+}
+
+// §42 dry-run: publishing must stop before the App token is even minted.
+func TestPublishDeveloperChangeHonorsDryRun(t *testing.T) {
+	unsetCreds(t)
+	env := (&testsuite.WorkflowTestSuite{}).NewTestActivityEnvironment()
+	env.RegisterActivity(PublishDeveloperChange)
+
+	_, err := env.ExecuteActivity(PublishDeveloperChange, PublishInput{
+		Owner: "o", Repo: "r", RepoPath: t.TempDir(),
+		Branch: "konoha/x", Title: "t", Body: "b", DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dryRun publish should skip mutation without creds, got: %v", err)
+	}
+}

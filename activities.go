@@ -104,18 +104,20 @@ func appToken(ctx context.Context) (string, error) {
 
 // PrInput carries what defines a review task.
 type PrInput struct {
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	PrNum    int    `json:"pr"`
-	RepoPath string `json:"repoPath"`
+	Owner     string          `json:"owner"`
+	Repo      string          `json:"repo"`
+	PrNum     int             `json:"pr"`
+	RepoPath  string          `json:"repoPath"`
+	Lifecycle LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
 // IssueInput identifies one issue to run through the issue lifecycle cycle.
 type IssueInput struct {
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	IssueNum int    `json:"issue"`
-	RepoPath string `json:"repoPath"`
+	Owner     string          `json:"owner"`
+	Repo      string          `json:"repo"`
+	IssueNum  int             `json:"issue"`
+	RepoPath  string          `json:"repoPath"`
+	Lifecycle LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
 // IssueAnalysis is what the Issue Analyst produces (§4.1). Foundation shape:
@@ -136,9 +138,10 @@ type EstimateResult struct {
 // RepoScope defines one repo to sweep. Passed as schedule input so the same
 // workflow type is reused across repos (one schedule per repo, different input).
 type RepoScope struct {
-	Owner    string `json:"owner"`
-	Repo     string `json:"repo"`
-	RepoPath string `json:"repoPath"`
+	Owner     string          `json:"owner"`
+	Repo      string          `json:"repo"`
+	RepoPath  string          `json:"repoPath"`
+	Lifecycle LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
 // ListUnreviewedPRs returns open PRs in the repo indicated by scope that have
@@ -162,7 +165,7 @@ func ListUnreviewedPRs(ctx context.Context, scope RepoScope) ([]PrInput, error) 
 		if err == nil && strings.TrimSpace(string(revs)) != "0" {
 			continue // already has an active bot review
 		}
-		out = append(out, PrInput{Owner: scope.Owner, Repo: scope.Repo, PrNum: n, RepoPath: scope.RepoPath})
+		out = append(out, PrInput{Owner: scope.Owner, Repo: scope.Repo, PrNum: n, RepoPath: scope.RepoPath, Lifecycle: scope.Lifecycle})
 	}
 	activity.GetLogger(ctx).Info("found unreviewed PRs", "repo", ownerRepo, "count", len(out))
 	return out, nil
@@ -185,7 +188,7 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 	for _, num := range strings.Fields(string(list)) {
 		n := 0
 		fmt.Sscan(num, &n)
-		out = append(out, IssueInput{Owner: scope.Owner, Repo: scope.Repo, IssueNum: n, RepoPath: scope.RepoPath})
+		out = append(out, IssueInput{Owner: scope.Owner, Repo: scope.Repo, IssueNum: n, RepoPath: scope.RepoPath, Lifecycle: scope.Lifecycle})
 	}
 	activity.GetLogger(ctx).Info("found unmanaged issues", "repo", ownerRepo, "count", len(out))
 	return out, nil
@@ -324,6 +327,10 @@ DIFF:
 // SubmitReview posts the verdict as a single formal review (the --body carries
 // the summary). Posts as the kakashi-82 GitHub App so it can approve its own PRs.
 func SubmitReview(ctx context.Context, in PrInput, r ReviewResult) error {
+	if in.Lifecycle.DryRun {
+		activity.GetLogger(ctx).Info("dryRun: review suppressed", "pr", in.PrNum)
+		return nil
+	}
 	verdict := r.Verdict
 	if r.Verdict == "" {
 		verdict = "APPROVE"

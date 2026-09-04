@@ -150,11 +150,15 @@ type IssueRequest struct {
 	Body   string     `json:"body"`
 	Labels []string   `json:"labels"`
 	Parent *ParentRef `json:"parent,omitempty"`
+	DryRun bool       `json:"dryRun,omitempty"`
 }
 
 // EnsureIssue is idempotent under retry: it scans for an existing issue with
 // the parent+child markers before creating. Returns the issue number.
 func EnsureIssue(ctx context.Context, in IssueRequest) (int, error) {
+	if in.DryRun {
+		return 0, nil // §42: shadow mode mutates nothing
+	}
 	if in.Parent == nil {
 		return 0, fmt.Errorf("EnsureIssue: Parent marker required for idempotent create")
 	}
@@ -184,15 +188,19 @@ func EnsureIssue(ctx context.Context, in IssueRequest) (int, error) {
 
 // StateRequest targets one issue's open/closed state.
 type StateRequest struct {
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
-	Num   int    `json:"num"`
-	State string `json:"state"`
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Num    int    `json:"num"`
+	State  string `json:"state"`
+	DryRun bool   `json:"dryRun,omitempty"`
 }
 
 // EnsureIssueState reconciles external changes (§31): read current state,
 // no-op if it already matches, otherwise PATCH. Retries re-read and no-op.
 func EnsureIssueState(ctx context.Context, in StateRequest) error {
+	if in.DryRun {
+		return nil // §42: shadow mode mutates nothing
+	}
 	if in.State != "open" && in.State != "closed" {
 		return fmt.Errorf("EnsureIssueState: invalid state %q", in.State)
 	}
@@ -217,11 +225,15 @@ type LabelsRequest struct {
 	Repo   string   `json:"repo"`
 	Num    int      `json:"num"`
 	Labels []string `json:"labels"`
+	DryRun bool     `json:"dryRun,omitempty"`
 }
 
 // EnsureIssueLabels reconciles labels: read current, add only the missing
 // ones. Retries re-read and no-op, so a lost response never dupes.
 func EnsureIssueLabels(ctx context.Context, in LabelsRequest) error {
+	if in.DryRun {
+		return nil // §42: shadow mode mutates nothing
+	}
 	it, err := getIssue(ctx, in.Owner, in.Repo, in.Num)
 	if err != nil {
 		return err
