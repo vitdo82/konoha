@@ -45,6 +45,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "develop":
+			if err := runDevelop(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -79,6 +84,7 @@ func main() {
 	w.RegisterActivity(ListUnmanagedIssues)
 	w.RegisterActivity(AnalyzeIssue)
 	w.RegisterActivity(EstimateIssue)
+	w.RegisterActivity(RunDeveloper)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
@@ -185,6 +191,45 @@ func runEstimate() error {
 		return err
 	}
 	b, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runDevelop() error {
+	// debug: run the Issue Analyst + Developer agents against one issue directly
+	// (no Temporal), printing the validated DevelopResult (§4.4) as JSON.
+	// Env: OWNER, REPO, REPO_PATH, VALIDATION_CMD, BASE_SHA;
+	// issue number is arg 1 or ISSUE_NUM.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+	d, err := RunDeveloper(context.Background(), DevelopRequest{
+		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+		WorkflowID:         "cli-develop", // debug: single synthetic workflow
+		BaseSHA:            os.Getenv("BASE_SHA"),
+		Title:              a.Title,
+		Body:               a.Body,
+		Spec:               a.Spec,
+		Requirements:       a.Requirements,
+		AcceptanceCriteria: a.AcceptanceCriteria,
+		Constraints:        a.Constraints,
+		Assumptions:        a.Assumptions,
+		OpenQuestions:      a.OpenQuestions,
+		ValidationCmd:      os.Getenv("VALIDATION_CMD"),
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
 	}
