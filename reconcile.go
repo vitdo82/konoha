@@ -27,17 +27,9 @@ func childMarker(key string) string {
 	return fmt.Sprintf("<!-- konoha-child: %s -->", key)
 }
 
-func issueCycleMarker(owner, repo string, num int) string {
-	return fmt.Sprintf("<!-- konoha-issue-cycle: %s/%s#%d -->", owner, repo, num)
-}
-
 func childIssueBody(p ParentRef, body string) string {
 	return parentMarker(p.Owner, p.Repo, p.Num) + "\n" +
 		childMarker(p.Key) + "\n\n" + strings.TrimSpace(body) + "\n"
-}
-
-func cyclePRBody(owner, repo string, num int, body string) string {
-	return issueCycleMarker(owner, repo, num) + "\n\n" + strings.TrimSpace(body) + "\n"
 }
 
 func parseMarker(body, open string) (string, bool) {
@@ -70,19 +62,6 @@ func parseParentMarker(body string) (ParentRef, bool) {
 
 func parseChildMarker(body string) (string, bool) {
 	return parseMarker(body, "<!-- konoha-child: ")
-}
-
-func parseIssueCycleMarker(body string) (owner, repo string, num int, ok bool) {
-	v, ok := parseMarker(body, "<!-- konoha-issue-cycle: ")
-	if !ok {
-		return "", "", 0, false
-	}
-	slash, hash := strings.LastIndex(v, "/"), strings.LastIndex(v, "#")
-	if slash <= 0 || hash <= slash {
-		return "", "", 0, false
-	}
-	fmt.Sscanf(v[hash+1:], "%d", &num)
-	return v[:slash], v[slash+1 : hash], num, num > 0
 }
 
 // ghItem is the subset of a GitHub issue/PR we need to match markers and
@@ -155,16 +134,6 @@ func findChildIssue(items []ghItem, p ParentRef) int {
 	return 0
 }
 
-func findCyclePR(items []ghItem, owner, repo string, num int) (int, bool) {
-	m := issueCycleMarker(owner, repo, num)
-	for _, it := range items {
-		if isPR(it) && strings.Contains(it.Body, m) {
-			return it.Number, true
-		}
-	}
-	return 0, false
-}
-
 // ParentRef identifies the parent issue and this child's deterministic key.
 type ParentRef struct {
 	Owner string `json:"owner"`
@@ -205,42 +174,6 @@ func EnsureIssue(ctx context.Context, in IssueRequest) (int, error) {
 	out, err := ghRunner(ctx, args...)
 	if err != nil {
 		return 0, fmt.Errorf("gh issue create: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	n, err := parseIssueNumber(string(out))
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
-// PullRequestRequest creates (or finds) a PR carrying the issue-cycle marker.
-type PullRequestRequest struct {
-	Owner      string `json:"owner"`
-	Repo       string `json:"repo"`
-	Title      string `json:"title"`
-	Body       string `json:"body"`
-	Head       string `json:"head"`
-	Base       string `json:"base"`
-	IssueOwner string `json:"issueOwner"`
-	IssueRepo  string `json:"issueRepo"`
-	IssueNum   int    `json:"issueNum"`
-}
-
-// EnsurePullRequest is idempotent under retry: scan for an existing PR with
-// the issue-cycle marker before creating. Returns the PR number.
-func EnsurePullRequest(ctx context.Context, in PullRequestRequest) (int, error) {
-	items, err := listIssues(ctx, in.Owner, in.Repo)
-	if err != nil {
-		return 0, err
-	}
-	if n, ok := findCyclePR(items, in.IssueOwner, in.IssueRepo, in.IssueNum); ok {
-		return n, nil
-	}
-	out, err := ghRunner(ctx, "pr", "create", "-R", in.Owner+"/"+in.Repo,
-		"--title", in.Title, "--body", cyclePRBody(in.IssueOwner, in.IssueRepo, in.IssueNum, in.Body),
-		"--head", in.Head, "--base", in.Base)
-	if err != nil {
-		return 0, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	n, err := parseIssueNumber(string(out))
 	if err != nil {

@@ -23,11 +23,6 @@ func TestMarkersRoundtrip(t *testing.T) {
 	if !ok || k != "02" {
 		t.Fatalf("parseChildMarker: got %q ok=%v", k, ok)
 	}
-	pr := cyclePRBody("vitdo82", "konoha", 123, "fixes it")
-	o, r, n, ok := parseIssueCycleMarker(pr)
-	if !ok || o != "vitdo82" || r != "konoha" || n != 123 {
-		t.Fatalf("parseIssueCycleMarker: %s/%s#%d ok=%v", o, r, n, ok)
-	}
 	if _, ok := parseParentMarker("no marker here"); ok {
 		t.Fatal("parseParentMarker should fail on missing marker")
 	}
@@ -94,47 +89,6 @@ func TestEnsureIssueRetryNoDuplicate(t *testing.T) {
 	}
 	if creates != 1 {
 		t.Fatalf("issue create called %d times, want 1", creates)
-	}
-}
-
-func TestEnsurePullRequestRetryNoDuplicate(t *testing.T) {
-	ctx := context.Background()
-	req := PullRequestRequest{Owner: "vitdo82", Repo: "konoha", Title: "t", Body: "b",
-		Head: "feat/x", Base: "main", IssueOwner: "vitdo82", IssueRepo: "konoha", IssueNum: 4}
-
-	const createdNum = 7
-	creates := 0
-	prev := ghRunner
-	ghRunner = func(_ context.Context, args ...string) ([]byte, error) {
-		switch {
-		case args[0] == "api":
-			if creates == 0 {
-				return json.Marshal([]ghItem{})
-			}
-			pr := ghItem{Number: createdNum, State: "open", Body: cyclePRBody("vitdo82", "konoha", 4, "b")}
-			pr.PullRequest = json.RawMessage(`{}`)
-			return json.Marshal([]ghItem{pr})
-		case args[0] == "pr" && args[1] == "create":
-			creates++
-			return []byte("https://github.com/o/r/pull/" + fmt.Sprint(createdNum)), nil
-		}
-		return nil, fmt.Errorf("unexpected gh call: %v", args)
-	}
-	defer func() { ghRunner = prev }()
-
-	n1, err := EnsurePullRequest(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n2, err := EnsurePullRequest(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n1 != n2 || n2 != createdNum {
-		t.Fatalf("EnsurePullRequest retry: got %d and %d, want %d", n1, n2, createdNum)
-	}
-	if creates != 1 {
-		t.Fatalf("pr create called %d times, want 1", creates)
 	}
 }
 
