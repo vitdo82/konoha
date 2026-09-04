@@ -7,10 +7,9 @@ posts the verdict back as a GitHub App review.
 ## Verify
 
 ```bash
-make test   # go vet ./... + go build ./... — this is the whole test story
+make test   # go vet ./... + go build ./...
+go test ./...   # unit tests for idempotency markers + Ensure* reconciliation (reconcile_test.go)
 ```
-
-There are no Go tests. Build + vet is the only verification; run it after any change.
 
 ## Run
 
@@ -41,6 +40,14 @@ make token            # smoke-test app auth: prints a masked installation token
   to `repos.yaml` may require updating `apply.sh`.
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
+- **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are
+  search-before-create and rely on deterministic HTML-comment markers
+  (`konoha-parent`, `konoha-child`) matched byte-exactly in issue/PR bodies.
+  `ghRunner` is a package var so tests simulate GitHub; never call
+  `activity.GetLogger` inside these activities (it panics on non-Temporal ctx, which
+  the unit tests use).
+- PR idempotency for the publish path lives in `publish.go` (`EnsurePullRequest`,
+  search by head branch, not by marker).
 - `main.go` has three debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
   by default; `PR_NUM` env overrides), and `./prbot publish` (runs

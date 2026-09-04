@@ -38,6 +38,9 @@ func main() {
 	w.RegisterActivity(EstimateIssue)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
+	w.RegisterActivity(EnsureIssue)
+	w.RegisterActivity(EnsureIssueState)
+	w.RegisterActivity(EnsureIssueLabels)
 
 	log.Printf("prreview worker running on %s, queue %s. Ctrl-C to stop.", addr, taskQueue)
 	for _, r := range os.Args[1:] {
