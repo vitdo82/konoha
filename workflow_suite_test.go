@@ -27,7 +27,10 @@ func runCycle(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironme
 	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
 	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(est, nil)
 
-	in := IssueInput{Owner: "o", Repo: "r", IssueNum: 7, RepoPath: t.TempDir(), Lifecycle: LifecycleConfig{}}
+	// Phase-3 repo (supervised-autonomous, ceiling 4, risk-based) so routing is
+	// meaningful — an empty config would be the conservative shadow default.
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: 7, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4}}
 	env.ExecuteWorkflow(IssueCycleWorkflow, in)
 	if env.IsWorkflowCompleted() {
 		if err := env.GetWorkflowError(); err != nil {

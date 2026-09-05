@@ -174,6 +174,14 @@ mutating).
   authority ordering). No agent can self-authorize a close (§44 #5) —
   `EvaluateCompletion` is conjunctive and `CompletionAgentComplete` alone is
   never sufficient.
+- `rollout.go` owns the §42 staged-rollout gate: `rolloutPhase` derives a repo's
+  effective phase (shadow / phase-2 / phase-3) purely from config — unset or
+  review-only mode, dryRun, or a non-risk-based close policy all resolve to
+  conservative **shadow** (Phase 1); ceiling ≤ 2 is **phase-2**; ceiling 3-4 +
+  risk-based is **phase-3**. `effectiveDevelopmentMax` is the phase-gated routing
+  ceiling (0 in shadow), and `phaseCanDecompose` enables §8 child fan-out only
+  past shadow with a ceiling ≥ 4. Every mutating activity honors `DryRun`, so
+  shadow mode runs the whole pipeline with zero GitHub mutations.
 - `human.go` owns the HUMAN_REQUIRED intervention surface (§18/§19/§40): the
   §18 reason set (`ValidateHumanReason`) and decision set (`ValidateHumanDecision`,
   §36 fail-closed), the bounded `HumanDecision` channel read by
