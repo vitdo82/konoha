@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -55,6 +56,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "repair":
+			if err := runRepair(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -91,6 +97,7 @@ func main() {
 	w.RegisterActivity(EstimateIssue)
 	w.RegisterActivity(RunDeveloper)
 	w.RegisterActivity(RunReviewer)
+	w.RegisterActivity(RunRepair)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
@@ -292,6 +299,71 @@ func runReview() error {
 	}
 	fmt.Println(string(b))
 	return nil
+}
+
+func runRepair() error {
+	// debug: run the Issue Analyst + Repair agents against one issue directly
+	// (no Temporal), printing the validated DevelopResult (§4.6) as JSON.
+	// Env: OWNER, REPO, REPO_PATH, VALIDATION_CMD, PRIOR_SHA (commit to continue
+	// from; default repo HEAD), and optional REVIEW_BLOCKING / REVIEW_NITS
+	// (newline-separated findings). Issue number is arg 2 or ISSUE_NUM.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+
+	blocking := linesEnv("REVIEW_BLOCKING")
+	if len(blocking) == 0 {
+		blocking = []string{"fix the change so it satisfies the acceptance criteria"}
+	}
+	repair, err := RunRepair(context.Background(), RepairRequest{
+		Develop: DevelopRequest{
+			Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+			WorkflowID:         "cli-repair", // debug: single synthetic workflow
+			Title:              a.Title,
+			Body:               a.Body,
+			Spec:               a.Spec,
+			Requirements:       a.Requirements,
+			AcceptanceCriteria: a.AcceptanceCriteria,
+			Constraints:        a.Constraints,
+			Assumptions:        a.Assumptions,
+			OpenQuestions:      a.OpenQuestions,
+			ValidationCmd:      os.Getenv("VALIDATION_CMD"),
+		},
+		Review: ReviewResult{
+			Verdict:  "REQUEST_CHANGES",
+			Blocking: blocking,
+			Nits:     linesEnv("REVIEW_NITS"),
+		},
+		PreviousCommit: os.Getenv("PRIOR_SHA"),
+	})
+	if err != nil {
+		return err
+	}
+	repair.WorktreeDir = ""
+	b, err := json.MarshalIndent(repair, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+// linesEnv splits an env var into non-empty trimmed lines (multi-finding input
+// to the debug repair entrypoint).
+func linesEnv(k string) []string {
+	var out []string
+	for _, l := range strings.Split(os.Getenv(k), "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func issueNumArg() (int, error) {

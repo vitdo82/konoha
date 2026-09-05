@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -14,6 +15,11 @@ import (
 // repos.yaml leaves developmentMaxComplexity unset.
 const defaultDevelopmentMaxComplexity = 4
 
+// defaultMaxDevReviewAttempts is the §16 per-issue development/repair attempt
+// cap when repos.yaml leaves maxDevReviewAttempts unset. Counted per issue: the
+// initial develop is attempt 1, each repair round adds one.
+const defaultMaxDevReviewAttempts = 2
+
 // DevelopmentMaxComplexity returns the §11 executable-complexity threshold for
 // the repo, defaulting to 4 when unset. Config is the authority (§5); agents
 // only report a score.
@@ -22,6 +28,16 @@ func DevelopmentMaxComplexity(lc LifecycleConfig) int {
 		return lc.DevelopmentMaxComplexity
 	}
 	return defaultDevelopmentMaxComplexity
+}
+
+// MaxDevelopmentAttempts returns the §16 cap on development/repair attempts per
+// issue, defaulting to 2 when unset. The workflow counts attempts (initial
+// develop + repairs) and must never schedule another once the cap is reached.
+func MaxDevelopmentAttempts(lc LifecycleConfig) int {
+	if lc.MaxDevReviewAttempts >= 1 {
+		return lc.MaxDevReviewAttempts
+	}
+	return defaultMaxDevReviewAttempts
 }
 
 // EffectiveClosePolicy returns the §19 close policy, defaulting to risk-based.
@@ -232,5 +248,30 @@ func EvaluateClosePolicy(lc LifecycleConfig, c CompletionCheck, paths, labels []
 			return CloseDecision{Escalation: true, Reasons: []string{"high-risk change"}}
 		}
 		return CloseDecision{Close: true}
+	}
+}
+
+// RepairLoopDecision is the §16 verdict after a REQUEST_CHANGES review: either
+// another repair attempt is Allowed, or the per-issue attempt cap is reached so
+// the workflow must Escalate to the §17 AI diagnosis path.
+type RepairLoopDecision struct {
+	Allowed  bool
+	Escalate bool
+	Reasons  []string
+}
+
+// EvaluateRepairLoop answers the §4.8 policy question "can another development
+// attempt occur?" (§16). attempts is the count of development/repair attempts
+// already completed per issue (initial develop = 1, each repair round +1). While
+// under MaxDevelopmentAttempts another repair may run; at/over the cap the loop
+// must stop and route to AI escalation (§17) — never a silent pass (a REQUEST_
+// CHANGES verdict is never treated as success, §40).
+func EvaluateRepairLoop(lc LifecycleConfig, attempts int) RepairLoopDecision {
+	if attempts < MaxDevelopmentAttempts(lc) {
+		return RepairLoopDecision{Allowed: true}
+	}
+	return RepairLoopDecision{
+		Escalate: true,
+		Reasons:  []string{fmt.Sprintf("maxDevReviewAttempts %d reached (§16) → AI escalation (§17)", MaxDevelopmentAttempts(lc))},
 	}
 }

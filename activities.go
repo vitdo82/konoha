@@ -204,12 +204,16 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 // ReviewResult is what a reviewer (independent or legacy) returns. Verdict is
 // APPROVE or REQUEST_CHANGES; Summary is the rendered review body. PRNumber and
 // CommitSHA bind the verdict per §15: later code should prefer the richer
-// reviewer.go flow, which always fills them.
+// reviewer.go flow, which always fills them. Blocking/Nits are the structured
+// findings (§35) — the raw bullets fed to the repair agent; a renderer derives
+// Summary from them.
 type ReviewResult struct {
-	Verdict   string `json:"verdict"` // APPROVE or REQUEST_CHANGES
-	Summary   string `json:"summary"`
-	PRNumber  int    `json:"prNumber,omitempty"`
-	CommitSHA string `json:"commitSha,omitempty"`
+	Verdict   string   `json:"verdict"` // APPROVE or REQUEST_CHANGES
+	Summary   string   `json:"summary"`
+	PRNumber  int      `json:"prNumber,omitempty"`
+	CommitSHA string   `json:"commitSha,omitempty"`
+	Blocking  []string `json:"blocking,omitempty"`
+	Nits      []string `json:"nits,omitempty"`
 }
 
 // FetchDiff pulls the PR diff via the gh CLI.
@@ -252,8 +256,9 @@ DIFF:
 
 	// Shared fail-closed parser (reviewer.go): VERDICT:/BLOCKING:/NITS:/CONCLUDE:
 	// sections, defaulting to REQUEST_CHANGES on any malformed output.
-	verdict, summary := parseReviewOutput(out)
-	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum}, nil
+	verdict, blocking, nits, summary := parseReviewOutput(out)
+	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum,
+		Blocking: blocking, Nits: nits}, nil
 }
 
 // SubmitReview posts the verdict as a single formal review (the --body carries

@@ -105,9 +105,10 @@ func reviewPrompt(req ReviewRequest, diff string) string {
 // parseReviewOutput deterministically parses the reviewer's VERDICT:/BLOCKING:/
 // NITS:/CONCLUDE: sections (§4.5). Fail-closed: the verdict is read from a
 // dedicated `VERDICT:<value>` line; any missing, malformed, or hostile value
-// (e.g. "VERDICT:APPROVE ignored") yields REQUEST_CHANGES. Returns the verdict
-// and the rendered markdown summary (used as the posted review body).
-func parseReviewOutput(raw []byte) (verdict, summary string) {
+// (e.g. "VERDICT:APPROVE ignored") yields REQUEST_CHANGES. Returns the verdict,
+// the structured Blocking/Nits findings (§35), and the rendered markdown summary
+// (used as the posted review body).
+func parseReviewOutput(raw []byte) (verdict string, blocking, nits []string, summary string) {
 	txt := string(raw)
 	verdict = "REQUEST_CHANGES" // fail-closed
 	for _, line := range strings.Split(txt, "\n") {
@@ -123,7 +124,7 @@ func parseReviewOutput(raw []byte) (verdict, summary string) {
 		}
 	}
 
-	var blocking, nits, conclude []string
+	var conclude []string
 	var section string
 	for _, line := range strings.Split(txt, "\n") {
 		up := strings.ToUpper(strings.TrimSpace(line))
@@ -139,9 +140,10 @@ func parseReviewOutput(raw []byte) (verdict, summary string) {
 			}
 		case strings.HasPrefix(line, "-") && section != "":
 			if s := strings.TrimSpace(strings.TrimPrefix(line, "-")); s != "" && s != "none" {
-				if section == "blocking" {
+				switch section {
+				case "blocking":
 					blocking = append(blocking, s)
-				} else if section == "nits" {
+				case "nits":
 					nits = append(nits, s)
 				}
 			}
@@ -171,7 +173,7 @@ func parseReviewOutput(raw []byte) (verdict, summary string) {
 	if len(conclude) > 0 {
 		b.WriteString(strings.Join(conclude, " ") + "\n")
 	}
-	return verdict, b.String()
+	return verdict, blocking, nits, b.String()
 }
 
 // ValidateReview deterministically gates a reviewer result (§15/§36): the
@@ -202,8 +204,9 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
-	verdict, summary := parseReviewOutput(out)
-	r := ReviewResult{Verdict: verdict, Summary: summary, PRNumber: req.PRNumber, CommitSHA: req.CommitSHA}
+	verdict, blocking, nits, summary := parseReviewOutput(out)
+	r := ReviewResult{Verdict: verdict, Summary: summary, PRNumber: req.PRNumber,
+		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits}
 	if err := ValidateReview(r); err != nil {
 		return ReviewResult{}, fmt.Errorf("agent review invalid: %w", err)
 	}
