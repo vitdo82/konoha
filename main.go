@@ -116,6 +116,7 @@ func main() {
 	w.RegisterActivity(RunCompletion)
 	w.RegisterActivity(RunResolution)
 	w.RegisterActivity(ReadHumanDecision)
+	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)

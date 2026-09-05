@@ -109,6 +109,21 @@ func getIssue(ctx context.Context, owner, repo string, num int) (ghItem, error) 
 	return it, nil
 }
 
+// FetchIssueLabels reads the label names on one issue (read-only, §23). Used by
+// the §20 risk gate: the workflow feeds the result to DetectHumanEscalation so
+// a humanRequiredLabels tag (e.g. "security") escalates before publish/close.
+func FetchIssueLabels(ctx context.Context, in IssueInput) ([]string, error) {
+	it, err := getIssue(ctx, in.Owner, in.Repo, in.IssueNum)
+	if err != nil {
+		return nil, err
+	}
+	var labels []string
+	for _, l := range it.Labels {
+		labels = append(labels, l.Name)
+	}
+	return labels, nil
+}
+
 func parseIssueNumber(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	if i := strings.LastIndex(s, "/"); i >= 0 {

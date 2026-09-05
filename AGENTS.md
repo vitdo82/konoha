@@ -99,7 +99,9 @@ fails closed, §36).
   `POGateTimeout` (§33 default 168h) + `EvaluateHumanGate` (§18/§40: a timeout
   never resumes/closes — it stays `BLOCKED`, no silent success) + `ApplyHumanDecision`
   (maps §18 `resume|reestimate|repartition|retry|block|cancel|close` to a
-  deterministic transition), plus
+  deterministic transition), `DetectHumanEscalation` (the §20 risk gate:
+  `RiskDecision` from diff `paths` + issue `labels` — restricted globs/labels →
+  escalate before publish/close), plus
   the `**`-aware `globMatch`
   for §20 `humanRequiredPaths`. Pure Go, zero LLM calls; inputs are only
   validated `EstimateResult`/config/observed facts, never issue text (§5/§27
