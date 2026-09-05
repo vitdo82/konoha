@@ -91,6 +91,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "children":
+			if err := runChildren(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -134,6 +139,7 @@ func main() {
 	w.RegisterActivity(RunDiagnosis)
 	w.RegisterActivity(EnsureRepoLabels)
 	w.RegisterActivity(ApplyIssueLabels)
+	w.RegisterActivity(EnsureChildren)
 	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(EnsurePullRequest)
@@ -614,6 +620,43 @@ func runLabels() error {
 		return err
 	}
 	fmt.Println(strings.Join(projectableLabels(), "\n"))
+	return nil
+}
+
+func runChildren() error {
+	// debug: run the Issue Analyst + Estimator + Splitter, then (unless
+	// DRY_RUN=1) idempotently create the child issues, printing the validated
+	// ChildIssue identities (§9). Env: OWNER, REPO, REPO_PATH; issue number is
+	// arg 2 or ISSUE_NUM.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+	e, err := EstimateIssue(context.Background(), in, a)
+	if err != nil {
+		return err
+	}
+	s, err := RunSplit(context.Background(), in, a, e)
+	if err != nil {
+		return err
+	}
+	children, err := EnsureChildren(context.Background(), ChildCreateRequest{
+		Owner: in.Owner, Repo: in.Repo, ParentNum: in.IssueNum,
+		Tickets: s.Tickets, DryRun: os.Getenv("DRY_RUN") == "1",
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(children, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
 	return nil
 }
 

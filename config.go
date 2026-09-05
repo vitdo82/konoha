@@ -55,6 +55,15 @@ func (lc LifecycleConfig) ConcurrentIssueCycles() int {
 	return lc.MaxConcurrentIssueCycles
 }
 
+// ConcurrentChildrenPerIssue returns the §43 cap on concurrently running child
+// cycles of one split parent. 0/unset means 1 (serialized, the default).
+func (lc LifecycleConfig) ConcurrentChildrenPerIssue() int {
+	if lc.MaxConcurrentChildrenPerIssue < 1 {
+		return 1
+	}
+	return lc.MaxConcurrentChildrenPerIssue
+}
+
 // RepoConfig is one `repos:` entry.
 type RepoConfig struct {
 	Owner     string           `yaml:"owner"`

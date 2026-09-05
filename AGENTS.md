@@ -82,7 +82,10 @@ overrides; no Temporal), and `./prbot diagnose` (runs the Issue Analyst +
 Diagnosis agents and prints the validated `DiagnosisResult` JSON; same env
 overrides plus `DIAG_REASON`/`ATTEMPTS`/`ATTEMPT_SUMMARIES`), and
 `./prbot labels` (ensures the full §21 `konoha:*` label set exists in the
-repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode).
+repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode),
+and `./prbot children` (runs the Analyst + Estimator + Splitter + child
+creation; `DRY_RUN=1` prints the validated `ChildIssue` identities without
+mutating).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -102,6 +105,14 @@ repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode).
   dependencies that resolve to a real child key (§10). Malformed or
   contradictory output fails closed and can never reach child-issue creation —
   the §16 hard invariant "no GitHub mutation from an unvalidated agent output".
+- `children.go` owns child-issue orchestration (§8/§9/§10/§43): `ChildIssue` is
+  the §9 deterministic identity (key + parent issue number + GitHub number);
+  `EnsureChildren` idempotently creates/finds child issues via the existing
+  `konoha-parent`/`konoha-child` markers + `childTicketBody` spec (managed+child
+  labels, §21); `scheduleChildBatches` is the pure §10 DAG scheduler —
+  dependency-respecting topological levels, cap-sized batches
+  (`ConcurrentChildrenPerIssue`, §43), sorted deterministically, cycles/unknown
+  deps fail closed so the workflow never blindly fans out an invalid DAG.
 - `diagnosis.go` owns the §17 AI Diagnosis agent: `RunDiagnosis` is a fresh,
   **read-only** opencode execution (no GitHub write credential, §23) fed the
   structured `DevelopmentFailure` (issue, attempt history, review feedback,
