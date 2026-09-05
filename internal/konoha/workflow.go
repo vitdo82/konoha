@@ -223,10 +223,12 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		})
 	}
 
-	// -- publish (idempotent PR, §25) --
+	// -- publish (idempotent PR, §25) — from the MAIN repo path + the dev commit
+	// (the worktree was cleaned up; its commit lives in the main repo object DB).
 	var pub PublishResult
 	pubIn := PublishInput{
-		Owner: in.Owner, Repo: in.Repo, RepoPath: dev.WorktreeDir,
+		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath,
+		CommitSHA:      dev.CommitSHA,
 		Branch:         fmt.Sprintf("konoha/issue-%d", in.IssueNum),
 		BaseBranch:     "main",
 		Title:          a.Title,
@@ -234,6 +236,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		ValidationCmd:  "", // §26 repo validation; config later
 		AllowOnFailure: false,
 		DryRun:         in.Lifecycle.DryRun,
+	}
+	if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
+		return err
 	}
 	if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
 		return err
@@ -310,8 +315,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		}).Get(ctx, &repaired); err != nil {
 			return err
 		}
-		// re-publish the repaired worktree onto the same branch (idempotent).
-		pubIn.RepoPath = repaired.WorktreeDir
+		// re-publish the repaired commit onto the same branch (idempotent).
+		pubIn.CommitSHA = repaired.CommitSHA
+		pubIn.RepoPath = in.RepoPath
 		if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
 			return err
 		}

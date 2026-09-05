@@ -12,10 +12,15 @@ import (
 
 // PublishInput describes a change the developer agent prepared locally. All
 // GitHub mutations happen here with the App installation token only (§23, §25).
+// CommitSHA is optional: when set, the local branch ref is created from that
+// commit in RepoPath's object DB (the dev/repair worktree's commit object lives
+// there because worktrees share the main repo object DB), so publication can run
+// from the main repo after the worktree is cleaned up.
 type PublishInput struct {
 	Owner          string `json:"owner"`
 	Repo           string `json:"repo"`
-	RepoPath       string `json:"repoPath"`   // worktree holding the local commits
+	RepoPath       string `json:"repoPath"`   // repo whose object DB holds the commit
+	CommitSHA      string `json:"commitSha"`  // optional local commit to publish (§25)
 	Branch         string `json:"branch"`     // branch to push and open a PR for
 	BaseBranch     string `json:"baseBranch"` // PR base (default: the repo default)
 	Title          string `json:"title"`
@@ -64,9 +69,22 @@ func gitEnv(tok string) []string {
 // the only writer for it. Output is scrubbed of the token before any error
 // bubbles up.
 func pushBranch(ctx context.Context, tok string, in PublishInput) error {
-	url := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", tok, in.Owner, in.Repo)
+	base := os.Getenv("KONOHA_GIT_BASE") // e2e override: local bare remote supports hermetic tier-1
+	url := ""
+	if base == "" {
+		url = fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", tok, in.Owner, in.Repo)
+	} else {
+		url = fmt.Sprintf("%s/%s/%s.git", base, in.Owner, in.Repo)
+	}
+	// Push the local commit (or HEAD) to the target branch. Pushing a specific
+	// SHA works from any checkout whose object DB contains it — in particular the
+	// main repo, whose object DB the dev/repair worktree commits live in (§25).
+	src := "HEAD"
+	if in.CommitSHA != "" {
+		src = in.CommitSHA
+	}
 	stdout, err := cmdWithEnv(ctx, gitEnv(tok), in.RepoPath,
-		"git", "push", url, "HEAD:refs/heads/"+in.Branch, "--force")
+		"git", "push", url, src+":refs/heads/"+in.Branch, "--force")
 	if err != nil {
 		scrubbed := strings.ReplaceAll(stdout, tok, "***")
 		return fmt.Errorf("git push %s: %s", in.Branch, strings.TrimSpace(scrubbed))

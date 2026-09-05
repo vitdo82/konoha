@@ -60,6 +60,12 @@ activities are mocked with testify `Anything` matchers (one per activity
 argument) and `RecordCycleMetrics` runs for real, so the terminal §6 state is
 assertable via the `state` query handler.
 
+E2E (tier-1 hermetic, §47): `go test -tags=e2e ./e2e/...` runs the real worker +
+a Temporal dev-server with fake `gh`/`opencode` on PATH and a local fixture git
+remote (see `e2e/README.md`). Test-only seams: `KONOHA_TOKEN_FIXED` and
+`KONOHA_GIT_BASE` are honored only in test contexts — never in a real deploy.
+Scenarios 05-10 are `t.Skip` until the completion/human/LARGE wiring lands.
+
 ## Run
 
 Needs a local Temporal server (`temporal server start-dev`, listens on

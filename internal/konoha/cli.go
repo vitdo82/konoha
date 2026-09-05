@@ -146,7 +146,6 @@ func Main() {
 	w.RegisterActivity(RecordCycleMetrics)
 	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(FetchIssueLabels)
-	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
 	w.RegisterActivity(EnsureIssueState)
