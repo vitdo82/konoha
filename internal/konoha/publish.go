@@ -192,10 +192,21 @@ func EnsurePullRequest(ctx context.Context, in PublishInput, body string) (int, 
 			"--title", in.Title, "--body", body)
 		edit.Env = gitEnv(tok)
 		if o, e := edit.CombinedOutput(); e != nil {
-			return 0, "", fmt.Errorf("gh pr edit: %s", strings.TrimSpace(string(o)))
+			// §24 robustness: the listed PR may have been force-pushed away /
+			// closed between find and edit (or was stale from a prior failed
+			// attempt). Treat "not found" as "no PR" and fall through to create
+			// instead of failing the whole publish.
+			if strings.Contains(strings.ToLower(string(o)), "no pull requests found") ||
+				strings.Contains(strings.ToLower(string(o)), "not found") {
+				activity.GetLogger(ctx).Info("listed PR gone, falling back to create",
+					"repo", repo, "pr", n, "err", strings.TrimSpace(string(o)))
+			} else {
+				return 0, "", fmt.Errorf("gh pr edit: %s", strings.TrimSpace(string(o)))
+			}
+		} else {
+			activity.GetLogger(ctx).Info("updated PR", "repo", repo, "pr", n)
+			return n, parts[1], nil
 		}
-		activity.GetLogger(ctx).Info("updated PR", "repo", repo, "pr", n)
-		return n, parts[1], nil
 	}
 
 	create := exec.CommandContext(ctx, "gh", "pr", "create", "-R", repo,
