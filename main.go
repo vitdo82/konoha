@@ -86,6 +86,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "labels":
+			if err := runLabels(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -127,6 +132,8 @@ func main() {
 	w.RegisterActivity(RunResolution)
 	w.RegisterActivity(RunSplit)
 	w.RegisterActivity(RunDiagnosis)
+	w.RegisterActivity(EnsureRepoLabels)
+	w.RegisterActivity(ApplyIssueLabels)
 	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(EnsurePullRequest)
@@ -591,6 +598,22 @@ func runDiagnose() error {
 		return err
 	}
 	fmt.Println(string(b))
+	return nil
+}
+
+func runLabels() error {
+	// debug: ensure the §21 label set exists in the repo and print it. Two
+	// modes: `./prbot labels` creates the full set; `OWNER`/`REPO`/`REPO_PATH`
+	// override, `DRY_RUN=1` for shadow mode.
+	owner := getenv("OWNER", "vitdo82")
+	repo := getenv("REPO", "ducklambda")
+	dry := os.Getenv("DRY_RUN") == "1"
+	if err := EnsureRepoLabels(context.Background(), LabelsTheirsRequest{
+		Owner: owner, Repo: repo, Labels: projectableLabels(), DryRun: dry,
+	}); err != nil {
+		return err
+	}
+	fmt.Println(strings.Join(projectableLabels(), "\n"))
 	return nil
 }
 
