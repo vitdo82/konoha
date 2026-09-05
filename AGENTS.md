@@ -74,7 +74,9 @@ plus `PR_NUM`/`REVIEW_VERDICT`/`REVIEW_SUMMARY`/`DIFF`/`VALIDATION_OUTPUT`),
 and `./prbot resolve` (runs the Issue Analyst + Resolution agents and prints
 the validated `ResolutionResult` JSON; same env overrides plus `REVIEW_VERDICT`/
 `REVIEW_BLOCKING`/`REVIEW_NITS`/`COMPLETE`/`COMPLETION_RECOMMENDATION`/
-`DEVELOPER_SUMMARY`).
+`DEVELOPER_SUMMARY`), and `./prbot po` (reads + validates the human decision
+channel for an issue and prints the `HumanDecision` JSON; none/malformed
+fails closed, §36).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -93,13 +95,26 @@ the validated `ResolutionResult` JSON; same env overrides plus `REVIEW_VERDICT`/
   `human-required`, default risk-based), `EvaluateRepairLoop` (§16 bounded
   REQUEST_CHANGES loop: cap on development/repair attempts → §17 AI escalation),
   `EvaluateDisagreement` (§37/§18 gate: disagreement routes to Resolution and,
-  past `defaultMaxResolutionAttempts` (1), escalates to `HUMAN_REQUIRED`), plus
+  past `defaultMaxResolutionAttempts` (1), escalates to `HUMAN_REQUIRED`),
+  `POGateTimeout` (§33 default 168h) + `EvaluateHumanGate` (§18/§40: a timeout
+  never resumes/closes — it stays `BLOCKED`, no silent success) + `ApplyHumanDecision`
+  (maps §18 `resume|reestimate|repartition|retry|block|cancel|close` to a
+  deterministic transition), plus
   the `**`-aware `globMatch`
   for §20 `humanRequiredPaths`. Pure Go, zero LLM calls; inputs are only
   validated `EstimateResult`/config/observed facts, never issue text (§5/§27
   authority ordering). No agent can self-authorize a close (§44 #5) —
   `EvaluateCompletion` is conjunctive and `CompletionAgentComplete` alone is
   never sufficient.
+- `human.go` owns the HUMAN_REQUIRED intervention surface (§18/§19/§40): the
+  §18 reason set (`ValidateHumanReason`) and decision set (`ValidateHumanDecision`,
+  §36 fail-closed), the bounded `HumanDecision` channel read by
+  `ReadHumanDecision` (issue body/comments carrying the deterministic
+  `<!-- konoha-decision: <action> -->` marker; newest comment wins; malformed
+  fails closed), and the §21/§22 label projections (`HumanRequiredLabels`/
+  `BlockedLabels`). The workflow's state constants (`HUMAN_REQUIRED`/`BLOCKED`/
+  `CANCELLED`/`CLOSED`/`FAILED`, workflow.go §6) are the authoritative record;
+  labels are only a projection (§44 #20).
 - `completion.go` owns the Completion agent (§4.7/§14/§29/§30): `RunCompletion`
   is a **separate** opencode execution (independent from the developer, §4.7)
   that re-checks the implementation against the machine-checkable acceptance
