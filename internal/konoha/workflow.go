@@ -2,6 +2,7 @@ package konoha
 
 import (
 	"fmt"
+	"strings"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -125,6 +126,15 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
+	// §4.4: agent dev/repair run long (real opencode work), so they get a wider
+	// window than the default cycle activities.
+	devAO := workflow.ActivityOptions{
+		StartToCloseTimeout: appCfg.Worker.devWindow(),
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
+		},
+	}
+	devCtx := workflow.WithActivityOptions(ctx, devAO)
 	info := workflow.GetInfo(ctx)
 
 	state := stateDiscovered
@@ -141,6 +151,21 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// replay-safe, so this stays deterministic.
 		logCycleEvent(workflow.GetLogger(ctx), info.WorkflowExecution.ID, in.IssueNum,
 			in.Repo, state, lastComplexity, lastConfidence, lastAttempts, lastReviewRounds)
+	}
+
+	// projectLabels applies the §22 label projection for the current state
+	// (idempotent reconcile; drops stale transients). Best-effort: a label
+	// failure must not abort the workflow.
+	projectLabels := func(s string, c int) {
+		if in.Lifecycle.DryRun {
+			return
+		}
+		if err := workflow.ExecuteActivity(ctx, ApplyIssueLabels, LabelsRequest{
+			Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum,
+			Labels: ProjectLabels(in.Lifecycle, s, c, true),
+		}).Get(ctx, nil); err != nil {
+			workflow.GetLogger(ctx).Error("label projection failed (non-fatal)", "err", err)
+		}
 	}
 
 	transition(stateAnalyzing)
@@ -174,6 +199,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		route = stateLarge
 	}
 	transition(route)
+	if route == stateSmall {
+		projectLabels(route, est.Complexity) // §22: managed + complexity label early
+	}
 
 	if route == stateLarge {
 		// §46 out of scope: LARGE (split/children) is a follow-up. End at a
@@ -190,7 +218,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// -- §4.4 DEVELOPING --
 	transition(stateDeveloping)
 	var dev DevelopResult
-	if err := workflow.ExecuteActivity(ctx, RunDeveloper, DevelopRequest{
+	if err := workflow.ExecuteActivity(devCtx, RunDeveloper, DevelopRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
 		WorkflowID:         info.WorkflowExecution.ID,
 		Title:              a.Title,
@@ -213,6 +241,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 	if rk := DetectHumanEscalation(in.Lifecycle, dev.ChangedFiles, labels); rk.Escalate {
 		transition(stateHumanRequired)
+		projectLabels(stateHumanRequired, est.Complexity)
 		return recordTerminal(ctx, info, in, CycleOutcome{
 			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 			Owner: in.Owner, Repo: in.Repo,
@@ -232,13 +261,10 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		Branch:         fmt.Sprintf("konoha/issue-%d", in.IssueNum),
 		BaseBranch:     "main",
 		Title:          a.Title,
-		Body:           in.Repo + " issue #" + fmt.Sprint(in.IssueNum) + ": " + a.Summary,
+		Body:           prBody(in, a),
 		ValidationCmd:  "", // §26 repo validation; config later
 		AllowOnFailure: false,
 		DryRun:         in.Lifecycle.DryRun,
-	}
-	if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
-		return err
 	}
 	if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
 		return err
@@ -249,6 +275,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	reviewedSHA := ""
 	for attempt := 0; ; attempt++ {
 		transition(stateReviewing)
+		projectLabels(stateReviewing, est.Complexity)
 		var headSha string
 		if err := workflow.ExecuteActivity(ctx, FetchPRHead, PrInput{Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber}).Get(ctx, &headSha); err != nil {
 			return err
@@ -286,6 +313,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// still under the cap, then the NEXT request escalates).
 		if rl := EvaluateRepairLoop(in.Lifecycle, lastAttempts); !rl.Allowed {
 			transition(stateBlocked)
+			projectLabels(stateBlocked, est.Complexity)
 			return recordTerminal(ctx, info, in, CycleOutcome{
 				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 				Owner: in.Owner, Repo: in.Repo,
@@ -297,7 +325,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		lastAttempts++
 		transition(stateChangesRequested)
 		var repaired DevelopResult
-		if err := workflow.ExecuteActivity(ctx, RunRepair, RepairRequest{
+		if err := workflow.ExecuteActivity(devCtx, RunRepair, RepairRequest{
 			Develop: DevelopRequest{
 				Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
 				WorkflowID:         info.WorkflowExecution.ID,
@@ -344,6 +372,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}).Get(ctx, nil); err != nil {
 		return err
 	}
+	projectLabels(stateClosed, est.Complexity)
 	return recordTerminal(ctx, info, in, CycleOutcome{
 		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 		Owner: in.Owner, Repo: in.Repo,
@@ -362,6 +391,47 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 		return err
 	}
 	return nil
+}
+
+// prBody renders the pull-request body from the structured IssueAnalysis (§35)
+// as markdown — summary + requirements + acceptance criteria + constraints +
+// risks — instead of a single raw paragraph. Deterministic; no agent prose
+// beyond the validated fields.
+func prBody(in IssueInput, a IssueAnalysis) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Closes %s issue #%d\n\n", in.Repo, in.IssueNum)
+	fmt.Fprintf(&b, "## Summary\n%s\n", a.Summary)
+	if len(a.Requirements) > 0 {
+		b.WriteString("\n## Requirements\n")
+		for _, r := range a.Requirements {
+			fmt.Fprintf(&b, "- %s\n", r)
+		}
+	}
+	if len(a.AcceptanceCriteria) > 0 {
+		b.WriteString("\n## Acceptance criteria\n")
+		for _, c := range a.AcceptanceCriteria {
+			fmt.Fprintf(&b, "- %s\n", c)
+		}
+	}
+	if len(a.Constraints) > 0 {
+		b.WriteString("\n## Constraints\n")
+		for _, c := range a.Constraints {
+			fmt.Fprintf(&b, "- %s\n", c)
+		}
+	}
+	if len(a.Risks) > 0 {
+		b.WriteString("\n## Risks\n")
+		for _, r := range a.Risks {
+			fmt.Fprintf(&b, "- %s\n", r)
+		}
+	}
+	if len(a.Assumptions) > 0 {
+		b.WriteString("\n## Assumptions\n")
+		for _, x := range a.Assumptions {
+			fmt.Fprintf(&b, "- %s\n", x)
+		}
+	}
+	return b.String()
 }
 
 // IssueAllWorkflow is the issue-sweep analog of ReviewAllWorkflow (§32): lists

@@ -25,6 +25,7 @@ type WorkerConfig struct {
 	MaxConcurrentActivities int    `yaml:"maxConcurrentActivities"`
 	StartToCloseTimeout     string `yaml:"startToCloseTimeout"`
 	SweepTimeout            string `yaml:"sweepTimeout"`
+	DevTimeout              string `yaml:"devTimeout"` // §4.4 agent dev/repair window (default 45m)
 	RetryMaxAttempts        int    `yaml:"retryMaxAttempts"`
 	SweepRetryMaxAttempts   int    `yaml:"sweepRetryMaxAttempts"`
 }
@@ -58,6 +59,7 @@ func defaultAppConfig() AppConfig {
 			MaxConcurrentActivities: 10,
 			StartToCloseTimeout:     "15m",
 			SweepTimeout:            "10m",
+			DevTimeout:              "45m",
 			RetryMaxAttempts:        3,
 			SweepRetryMaxAttempts:   2,
 		},
@@ -86,6 +88,16 @@ func (w WorkerConfig) sweepWindow() time.Duration {
 	d, err := time.ParseDuration(w.SweepTimeout)
 	if err != nil {
 		return 10 * time.Minute
+	}
+	return d
+}
+
+// devWindow parses the §4.4 agent dev/repair window (generous: real opencode
+// work takes minutes).
+func (w WorkerConfig) devWindow() time.Duration {
+	d, err := time.ParseDuration(w.DevTimeout)
+	if err != nil {
+		return 45 * time.Minute
 	}
 	return d
 }
@@ -165,6 +177,9 @@ func (c AppConfig) validate() error {
 	}
 	if _, err := time.ParseDuration(c.Worker.SweepTimeout); err != nil {
 		return fmt.Errorf("worker.sweepTimeout %q invalid: %v", c.Worker.SweepTimeout, err)
+	}
+	if _, err := time.ParseDuration(c.Worker.DevTimeout); err != nil {
+		return fmt.Errorf("worker.devTimeout %q invalid: %v", c.Worker.DevTimeout, err)
 	}
 	if _, err := time.ParseDuration(c.Defaults.Lifecycle.POGateTimeout); err != nil {
 		return fmt.Errorf("defaults.lifecycle.poGateTimeout %q invalid: %v", c.Defaults.Lifecycle.POGateTimeout, err)
