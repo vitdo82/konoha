@@ -108,8 +108,9 @@ type CycleOutcome struct {
 // RecordCycleMetrics is the single §39 recording activity: it applies the
 // outcome to the registry, records the complexity distribution, and recomputes
 // the derived rate gauges. Executed once (activities never replay) so counters
-// are exact.
-func RecordCycleMetrics(ctx context.Context, o CycleOutcome) {
+// are exact. Returns error so the Temporal SDK can register it (activities must
+// return, at minimum, an error); it never fails in practice.
+func RecordCycleMetrics(ctx context.Context, o CycleOutcome) error {
 	if o.WorkflowID != "" || o.Issue != 0 {
 		sink.inc(mCyclesStarted)
 	}
@@ -154,6 +155,7 @@ func RecordCycleMetrics(ctx context.Context, o CycleOutcome) {
 	}
 
 	recomputeDerived()
+	return nil
 }
 
 // recomputeDerived recalculates the §39 rate gauges from raw counters:

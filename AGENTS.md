@@ -7,9 +7,16 @@ posts the verdict back as a GitHub App review.
 ## Verify
 
 ```bash
-make test   # go vet ./... + go build ./...
-go test ./...   # unit tests for idempotency markers + Ensure* reconciliation (reconcile_test.go)
+make test   # go vet ./... + go build ./... + go test ./... (§41 test suite)
 ```
+
+`go test ./...` runs the full §41 matrix: activity/reconcile idempotency
+(`reconcile_test.go`), every agent validator (§36), the derived §39 metric
+gauges, the §44 invariant assertions (`invariants_test.go`), and
+Temporal-testsuite workflow runs (`workflow_suite_test.go`) — the agent
+activities are mocked with testify `Anything` matchers (one per activity
+argument) and `RecordCycleMetrics` runs for real, so the terminal §6 state is
+assertable via the `state` query handler.
 
 ## Run
 
