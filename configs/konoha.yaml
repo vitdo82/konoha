@@ -1,0 +1,19 @@
+# konoha runtime + code-level lifecycle defaults (#48).
+# Precedence: env > file > bundled code default (see AGENTS.md/README.md).
+# Strict: unknown keys / out-of-range values fail fast at startup.
+# Per-repo policy lives in repos.yaml (this file only sets the FALLBACK defaults).
+
+worker:
+  taskQueue: review-queue
+  maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES
+  startToCloseTimeout: 15m         # default activity window for cycle/PR steps
+  sweepTimeout: 10m                # sweep workflow activity window
+  retryMaxAttempts: 3              # cycle/PR activity retries
+  sweepRetryMaxAttempts: 2         # sweep activity retries
+
+defaults:
+  lifecycle:
+    developmentMaxComplexity: 4    # §11 executable-child ceiling default
+    maxDevReviewAttempts: 2        # §16 repair-loop cap default
+    maxResolutionAttempts: 1       # §37 disagreement-resolution cap
+    poGateTimeout: 168h            # §18/§33 human-response window default

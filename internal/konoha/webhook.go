@@ -98,7 +98,7 @@ func DefaultStarter(c client.Client) webhookStarter {
 	return func(ctx context.Context, scope RepoScope, issue int) error {
 		opts := client.StartWorkflowOptions{
 			ID:        fmt.Sprintf("%s-issue-%d", scope.Repo, issue),
-			TaskQueue: taskQueue,
+			TaskQueue: appCfg.Worker.TaskQueue,
 		}
 		_, err := c.ExecuteWorkflow(ctx, opts, "IssueCycleWorkflow", IssueInput{
 			Owner: scope.Owner, Repo: scope.Repo, IssueNum: issue,

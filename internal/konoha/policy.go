@@ -12,33 +12,25 @@ import (
 // repository content sit below the authority line (§5) and are never an input
 // here, so untrusted text cannot override a decision (§27).
 
-// defaultDevelopmentMaxComplexity is the §11 executable-child ceiling when
-// repos.yaml leaves developmentMaxComplexity unset.
-const defaultDevelopmentMaxComplexity = 4
-
-// defaultMaxDevReviewAttempts is the §16 per-issue development/repair attempt
-// cap when repos.yaml leaves maxDevReviewAttempts unset. Counted per issue: the
-// initial develop is attempt 1, each repair round adds one.
-const defaultMaxDevReviewAttempts = 2
-
 // DevelopmentMaxComplexity returns the §11 executable-complexity threshold for
-// the repo, defaulting to 4 when unset. Config is the authority (§5); agents
-// only report a score.
+// the repo, defaulting to the configured `defaults.lifecycle` value (4) when
+// unset (#48). Config is the authority (§5); agents only report a score.
 func DevelopmentMaxComplexity(lc LifecycleConfig) int {
 	if lc.DevelopmentMaxComplexity >= 1 {
 		return lc.DevelopmentMaxComplexity
 	}
-	return defaultDevelopmentMaxComplexity
+	return appCfg.Defaults.Lifecycle.DevelopmentMaxComplexity
 }
 
 // MaxDevelopmentAttempts returns the §16 cap on development/repair attempts per
-// issue, defaulting to 2 when unset. The workflow counts attempts (initial
-// develop + repairs) and must never schedule another once the cap is reached.
+// issue, defaulting to the configured value (2) when unset. The workflow counts
+// attempts (initial develop + repairs) and must never schedule another once the
+// cap is reached.
 func MaxDevelopmentAttempts(lc LifecycleConfig) int {
 	if lc.MaxDevReviewAttempts >= 1 {
 		return lc.MaxDevReviewAttempts
 	}
-	return defaultMaxDevReviewAttempts
+	return appCfg.Defaults.Lifecycle.MaxDevReviewAttempts
 }
 
 // EffectiveClosePolicy returns the §19 close policy, defaulting to risk-based.
@@ -289,12 +281,6 @@ type RepairLoopDecision struct {
 	Reasons  []string
 }
 
-// defaultMaxResolutionAttempts is the §37 cap on disagreement-resolution passes:
-// after this many rounds the disagreement is persistent and escalates to
-// HUMAN_REQUIRED (§37 "if disagreement remains"). The design specifies exactly
-// one resolution before escalation, hence the default of 1.
-const defaultMaxResolutionAttempts = 1
-
 // DisagreementDecision is the §37/§18 verdict on a reviewer/completion
 // disagreement. Resolve routes to the Resolution Agent; Human escalates to
 // HUMAN_REQUIRED (persistent disagreement, fix #13). An issue where this fires
@@ -308,17 +294,20 @@ type DisagreementDecision struct {
 
 // EvaluateDisagreement applies the §37 rule: when the reviewer and completion
 // agents disagree, the issue must route to Resolution, and if disagreement
-// persists past the resolution-attempt cap (default 1) it escalates to
-// HUMAN_REQUIRED — under NO circumstances is a close considered while
-// disagreement holds (§13/§18/§44 #5). `resolutionAttempts` is the count of
-// resolution passes already executed for this issue. The cap is a design
-// constant (§37); if per-repo control is ever needed it becomes a
-// LifecycleConfig key. ponytail: fixed constant, add config when a repo asks.
+// persists past the resolution-attempt cap (config `defaults.lifecycle.
+// maxResolutionAttempts`, default 1) it escalates to HUMAN_REQUIRED — under NO
+// circumstances is a close considered while disagreement holds (§13/§18/§44
+// #5). `resolutionAttempts` is the count of resolution passes already executed
+// for this issue.
 func EvaluateDisagreement(disagreement bool, resolutionAttempts int) DisagreementDecision {
 	if !disagreement {
 		return DisagreementDecision{}
 	}
-	if resolutionAttempts >= defaultMaxResolutionAttempts {
+	capCount := appCfg.Defaults.Lifecycle.MaxResolutionAttempts
+	if capCount < 1 {
+		capCount = 1
+	}
+	if resolutionAttempts >= capCount {
 		return DisagreementDecision{
 			Disagree: true,
 			Human:    true,
@@ -348,12 +337,9 @@ func EvaluateRepairLoop(lc LifecycleConfig, attempts int) RepairLoopDecision {
 	}
 }
 
-// defaultPOGateTimeout is the §18/§33 human-response window when repos.yaml
-// leaves poGateTimeout unset: 168h.
-const defaultPOGateTimeout = 168 * time.Hour
-
-// POGateTimeout resolves the per-repo human-response timeout (default 168h).
-// Config validation guarantees a configured poGateTimeout parses; a direct
+// POGateTimeout resolves the per-repo human-response timeout, falling back to
+// the configured `defaults.lifecycle.poGateTimeout` (default 168h) (#48). Config
+// validation guarantees a configured repos.yaml poGateTimeout parses; a direct
 // struct with an unparseable string falls back to the default.
 func POGateTimeout(lc LifecycleConfig) time.Duration {
 	if lc.POGateTimeout != "" {
@@ -361,7 +347,7 @@ func POGateTimeout(lc LifecycleConfig) time.Duration {
 			return d
 		}
 	}
-	return defaultPOGateTimeout
+	return appCfg.Defaults.Lifecycle.poTimeout()
 }
 
 // HumanGateDecision is the §18/§40 wait verdict while the workflow is in
