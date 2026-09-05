@@ -69,7 +69,12 @@ func cmdEnv(dir string) []string {
 
 // appToken mints a short-lived GitHub App installation token (kakashi-82).
 // Env: GH_APP_ID, GH_APP_INSTALL_ID, GH_APP_PEM (path to private key).
+// KONOHA_TOKEN_FIXED (e2e tier-1 only): a fixed installation token for hermetic
+// local runs where GitHub is faked; never honored in production (no env var).
 func appToken(ctx context.Context) (string, error) {
+	if fixed := os.Getenv("KONOHA_TOKEN_FIXED"); fixed != "" {
+		return fixed, nil
+	}
 	appID := os.Getenv("GH_APP_ID")
 	installID := os.Getenv("GH_APP_INSTALL_ID")
 	pemPath := os.Getenv("GH_APP_PEM")
