@@ -81,6 +81,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "diagnose":
+			if err := runDiagnose(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -121,6 +126,7 @@ func main() {
 	w.RegisterActivity(RunCompletion)
 	w.RegisterActivity(RunResolution)
 	w.RegisterActivity(RunSplit)
+	w.RegisterActivity(RunDiagnosis)
 	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(EnsurePullRequest)
@@ -540,6 +546,47 @@ func runSplit() error {
 		return err
 	}
 	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runDiagnose() error {
+	// debug: run the Diagnosis agent against one issue directly (no Temporal),
+	// printing the validated DiagnosisResult (§17) as JSON.
+	// Env: OWNER, REPO, REPO_PATH, DIAG_REASON (development_failed |
+	// review_loop_exhausted, default review_loop_exhausted), ATTEMPTS,
+	// ATTEMPT_SUMMARIES (newline-separated), REVIEW_BLOCKING/REVIEW_NITS.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+
+	reason := getenv("DIAG_REASON", diagReasonReviewLoopExhausted)
+	attempts := 0
+	fmt.Sscan(getenv("ATTEMPTS", ""), &attempts)
+
+	d, err := RunDiagnosis(context.Background(), DevelopmentFailure{
+		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+		Title: a.Title, Body: a.Body, Spec: a.Spec,
+		Requirements: a.Requirements, Constraints: a.Constraints, Assumptions: a.Assumptions,
+		Reason:           reason,
+		Attempts:         attempts,
+		AttemptSummaries: linesEnv("ATTEMPT_SUMMARIES"),
+		ReviewBlocking:   linesEnv("REVIEW_BLOCKING"),
+		ReviewNits:       linesEnv("REVIEW_NITS"),
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
 	}

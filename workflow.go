@@ -98,6 +98,8 @@ const (
 	stateEstimating    = "ESTIMATING"
 	stateSmall         = "SMALL"
 	stateLarge         = "LARGE"
+	stateDeveloping    = "DEVELOPING"     // §17: diagnosis said retry
+	stateSplitting     = "SPLITTING"      // §17: diagnosis said repartition
 	stateHumanRequired = "HUMAN_REQUIRED" // §18: waiting on a human exception handler
 	stateBlocked       = "BLOCKED"        // §18/§40: blocked; a timeout keeps it here
 	stateCancelled     = "CANCELLED"      // §18: human decision "cancel"
