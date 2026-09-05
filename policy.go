@@ -137,6 +137,34 @@ type AutonomyDecision struct {
 	Reasons    []string
 }
 
+// RiskDecision is the §20 risk-based escalation verdict. Escalate is true when
+// the change is high-risk (a diff path matches humanRequiredPaths or the issue
+// carries a humanRequiredLabels label): such work is blocked from autonomous
+// publication and, under the risk-based close policy, can only be closed by a
+// human decision. Reasons name which trigger fired.
+type RiskDecision struct {
+	Escalate bool
+	Reasons  []string
+}
+
+// DetectHumanEscalation applies the §20 risk gate. paths are the repo-relative
+// files the work touches (e.g. DevelopResult.ChangedFiles); labels are the
+// issue's labels. Deterministic and config-driven (§33): unlisted paths/labels
+// leave ordinary work autonomous (fail-open by absence, the §12 contract). This
+// is the same §20 signal EvaluateAutonomy ingests, exposed inline so the
+// workflow can gate BEFORE publication/close rather than inferring from a
+// downstream decision.
+func DetectHumanEscalation(lc LifecycleConfig, paths, labels []string) RiskDecision {
+	var reasons []string
+	if restrictedPathMatch(lc.Autonomy.HumanRequiredPaths, paths) {
+		reasons = append(reasons, "touches restricted path")
+	}
+	if hasEscalationLabel(labels, lc.Autonomy.HumanRequiredLabels) {
+		reasons = append(reasons, "human-required label")
+	}
+	return RiskDecision{Escalate: len(reasons) > 0, Reasons: reasons}
+}
+
 // EvaluateAutonomy applies the §12 predicate to a validated EstimateResult plus
 // repo config:
 //
