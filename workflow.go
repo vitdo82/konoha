@@ -131,10 +131,16 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	if err := workflow.SetQueryHandler(ctx, "state", func() (string, error) { return state, nil }); err != nil {
 		workflow.GetLogger(ctx).Error("set state query handler failed", "err", err)
 	}
+	// §39 observability state tracked across transitions (logged on each).
+	lastComplexity, lastConfidence := 0, ""
+	lastAttempts, lastReviewRounds := 0, 0
 	transition := func(s string) {
 		state = s
-		workflow.GetLogger(ctx).Info("issue state",
-			"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum, "state", state)
+		// §39 observability: every transition emits the field set (workflow ID,
+		// issue, state, repo, complexity, confidence, review rounds). Logging is
+		// replay-safe, so this stays deterministic.
+		logCycleEvent(workflow.GetLogger(ctx), info.WorkflowExecution.ID, in.IssueNum,
+			in.Repo, state, lastComplexity, lastConfidence, lastAttempts, lastReviewRounds)
 	}
 
 	transition(stateAnalyzing)
@@ -156,6 +162,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
 		"complexity", est.Complexity, "confidence", est.Confidence)
 
+	// §39 observability state tracked across transitions (logged above).
 	// Deterministic policy (§4.8): the autonomy §12 predicate decides whether
 	// this issue can run autonomously. Touched paths/labels are unknown at this
 	// stage, so only complexity/confidence gate it; restricted-path escalation
@@ -165,13 +172,29 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
 		"autonomous", aut.Autonomous, "reasons", aut.Reasons)
 
+	lastComplexity, lastConfidence = est.Complexity, est.Confidence
+
 	// deterministic routing policy (§11): complexity within the executable
 	// threshold → SMALL, else LARGE. Threshold comes from config (§33), not a
 	// hardcoded constant, so repo policy is the authority (§5).
+	var route string
 	if est.Complexity >= 1 && est.Complexity <= DevelopmentMaxComplexity(in.Lifecycle) {
-		transition(stateSmall)
+		route = stateSmall
 	} else {
-		transition(stateLarge)
+		route = stateLarge
+	}
+	transition(route)
+
+	// §39 metrics recording is an ACTIVITY (replay-safe). The current scope ends
+	// at the routing branch; the record carries the fields known so far so the
+	// sink reflects the run even before the later DEV/CLOSE wiring fills the rest.
+	if err := workflow.ExecuteActivity(ctx, RecordCycleMetrics, CycleOutcome{
+		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+		Owner: in.Owner, Repo: in.Repo,
+		Route:      route,
+		Complexity: est.Complexity, Confidence: est.Confidence,
+	}).Get(ctx, nil); err != nil {
+		return err
 	}
 	return nil
 }

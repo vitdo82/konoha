@@ -86,6 +86,15 @@ repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode),
 and `./prbot children` (runs the Analyst + Estimator + Splitter + child
 creation; `DRY_RUN=1` prints the validated `ChildIssue` identities without
 mutating).
+- `observability.go` owns the §39 metrics sink + structured workflow logging:
+  `RecordCycleMetrics` is an ACTIVITY (metrics are incremented once, never in
+  replay-prone workflow code) that applies a `CycleOutcome` against a
+  sync-guarded registry and recomputes the derived §39 gauges:
+  `autonomous_completion_rate = autonomous closes / total completes`,
+  `human_escalation_rate`, `split_rate`, `review_disagreement_rate`.
+  `MetricsText`/`StartMetricsServer` export the registry with STABLE §39 names
+  (no prometheus dep in go.mod — stdlib `/metrics` only; METRICS_ADDR env);
+  `logCycleEvent` emits the §39 field set on every workflow transition.
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and

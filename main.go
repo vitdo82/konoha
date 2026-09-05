@@ -140,6 +140,7 @@ func main() {
 	w.RegisterActivity(EnsureRepoLabels)
 	w.RegisterActivity(ApplyIssueLabels)
 	w.RegisterActivity(EnsureChildren)
+	w.RegisterActivity(RecordCycleMetrics)
 	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(EnsurePullRequest)
@@ -147,6 +148,9 @@ func main() {
 	w.RegisterActivity(EnsureIssue)
 	w.RegisterActivity(EnsureIssueState)
 	w.RegisterActivity(EnsureIssueLabels)
+
+	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
+	StartMetricsServer(os.Getenv("METRICS_ADDR"))
 
 	if len(os.Args) > 1 && os.Args[1] == "start" {
 		startReviewWorkflow(c)
