@@ -76,6 +76,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "split":
+			if err := runSplit(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -115,6 +120,7 @@ func main() {
 	w.RegisterActivity(RunRepair)
 	w.RegisterActivity(RunCompletion)
 	w.RegisterActivity(RunResolution)
+	w.RegisterActivity(RunSplit)
 	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(EnsurePullRequest)
@@ -505,6 +511,35 @@ func runPO() error {
 		return err
 	}
 	b, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runSplit() error {
+	// debug: run the Issue Analyst + Estimator + Splitter agents against one
+	// issue directly (no Temporal), printing the validated SplitResult (§4.3)
+	// as JSON. Env: OWNER, REPO, REPO_PATH; issue number is arg 2 or ISSUE_NUM.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+	e, err := EstimateIssue(context.Background(), in, a)
+	if err != nil {
+		return err
+	}
+	s, err := RunSplit(context.Background(), in, a, e)
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
