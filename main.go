@@ -71,6 +71,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "po":
+			if err := runPO(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -110,6 +115,7 @@ func main() {
 	w.RegisterActivity(RunRepair)
 	w.RegisterActivity(RunCompletion)
 	w.RegisterActivity(RunResolution)
+	w.RegisterActivity(ReadHumanDecision)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
@@ -473,6 +479,31 @@ func runResolve() error {
 		return err
 	}
 	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runPO() error {
+	// debug: read + validate the human decision channel for one issue directly
+	// (no Temporal), printing the validated HumanDecision (§18) as JSON. The
+	// channel is the issue body/comments carrying `<!-- konoha-decision: X -->`;
+	// a malformed decision fails closed (§36). Env: OWNER/REPO/REPO_PATH;
+	// issue number is arg 2 or ISSUE_NUM.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	d, err := ReadHumanDecision(context.Background(), HumanDecisionInput{
+		Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum,
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
 	}

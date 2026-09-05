@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Deterministic policy engine (§4.8/§5/§12/§14/§19). Plain Go, zero LLM calls.
@@ -316,5 +317,69 @@ func EvaluateRepairLoop(lc LifecycleConfig, attempts int) RepairLoopDecision {
 	return RepairLoopDecision{
 		Escalate: true,
 		Reasons:  []string{fmt.Sprintf("maxDevReviewAttempts %d reached (§16) → AI escalation (§17)", MaxDevelopmentAttempts(lc))},
+	}
+}
+
+// defaultPOGateTimeout is the §18/§33 human-response window when repos.yaml
+// leaves poGateTimeout unset: 168h.
+const defaultPOGateTimeout = 168 * time.Hour
+
+// POGateTimeout resolves the per-repo human-response timeout (default 168h).
+// Config validation guarantees a configured poGateTimeout parses; a direct
+// struct with an unparseable string falls back to the default.
+func POGateTimeout(lc LifecycleConfig) time.Duration {
+	if lc.POGateTimeout != "" {
+		if d, err := time.ParseDuration(lc.POGateTimeout); err == nil {
+			return d
+		}
+	}
+	return defaultPOGateTimeout
+}
+
+// HumanGateDecision is the §18/§40 wait verdict while the workflow is in
+// HUMAN_REQUIRED. There is INTENTIONALLY no "auto-proceed on timeout" path:
+// awaited or timed-out, the workflow stays put and never silently succeeds.
+type HumanGateDecision struct {
+	Awaiting bool
+	TimedOut bool
+}
+
+// EvaluateHumanGate decides what "waiting on a human" looks like. Before the
+// poGateTimeout window the workflow keeps Awaiting; once elapsed it is TimedOut
+// and must remain BLOCKED (§40) — a timeout never resumes, closes, or otherwise
+// turns into success.
+func EvaluateHumanGate(elapsed, timeout time.Duration) HumanGateDecision {
+	if elapsed >= timeout {
+		return HumanGateDecision{TimedOut: true}
+	}
+	return HumanGateDecision{Awaiting: true}
+}
+
+// HumanDecisionTransition is the deterministic workflow response to a §18 human
+// decision. Terminal actions map to a lifecycle state; Resume signals the normal
+// lifecycle path continues. The policy engine decides — the human signal never
+// bypasses it (§5/§44 #4).
+type HumanDecisionTransition struct {
+	TargetState string
+	Resume      bool
+}
+
+// ApplyHumanDecision maps each bounded §18 human decision to its workflow
+// response: block/cancel/close are terminal (→ BLOCKED/CANCELLED/CLOSED);
+// resume/reestimate/repartition/retry re-enter the normal lifecycle. Malformed
+// decisions fail closed (error, §36).
+func ApplyHumanDecision(d HumanDecision) (HumanDecisionTransition, error) {
+	if err := ValidateHumanDecision(d.Action); err != nil {
+		return HumanDecisionTransition{}, err
+	}
+	switch d.Action {
+	case humanDecisionBlock:
+		return HumanDecisionTransition{TargetState: stateBlocked}, nil
+	case humanDecisionCancel:
+		return HumanDecisionTransition{TargetState: stateCancelled}, nil
+	case humanDecisionClose:
+		return HumanDecisionTransition{TargetState: stateClosed}, nil
+	default: // resume, reestimate, repartition, retry
+		return HumanDecisionTransition{Resume: true}, nil
 	}
 }
