@@ -70,7 +70,11 @@ Repair agents and prints the validated `DevelopResult` JSON; same env
 overrides plus `PRIOR_SHA` and newline-separated `REVIEW_BLOCKING`/
 `REVIEW_NITS`), and `./prbot complete` (runs the Issue Analyst + Completion
 agents and prints the validated `CompletionResult` JSON; same env overrides
-plus `PR_NUM`/`REVIEW_VERDICT`/`REVIEW_SUMMARY`/`DIFF`/`VALIDATION_OUTPUT`).
+plus `PR_NUM`/`REVIEW_VERDICT`/`REVIEW_SUMMARY`/`DIFF`/`VALIDATION_OUTPUT`),
+and `./prbot resolve` (runs the Issue Analyst + Resolution agents and prints
+the validated `ResolutionResult` JSON; same env overrides plus `REVIEW_VERDICT`/
+`REVIEW_BLOCKING`/`REVIEW_NITS`/`COMPLETE`/`COMPLETION_RECOMMENDATION`/
+`DEVELOPER_SUMMARY`).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -88,7 +92,9 @@ plus `PR_NUM`/`REVIEW_VERDICT`/`REVIEW_SUMMARY`/`DIFF`/`VALIDATION_OUTPUT`).
   disagreement §18), `EvaluateClosePolicy` (§19 `autonomous`/`risk-based`/
   `human-required`, default risk-based), `EvaluateRepairLoop` (§16 bounded
   REQUEST_CHANGES loop: cap on development/repair attempts → §17 AI escalation),
-  plus the `**`-aware `globMatch`
+  `EvaluateDisagreement` (§37/§18 gate: disagreement routes to Resolution and,
+  past `defaultMaxResolutionAttempts` (1), escalates to `HUMAN_REQUIRED`), plus
+  the `**`-aware `globMatch`
   for §20 `humanRequiredPaths`. Pure Go, zero LLM calls; inputs are only
   validated `EstimateResult`/config/observed facts, never issue text (§5/§27
   authority ordering). No agent can self-authorize a close (§44 #5) —
@@ -104,6 +110,18 @@ plus `PR_NUM`/`REVIEW_VERDICT`/`REVIEW_SUMMARY`/`DIFF`/`VALIDATION_OUTPUT`).
   `CompletionConflict` flags a `close` recommendation the policy denies so the
   workflow routes to §37 disagreement/resolution instead of ever force-closing
   (`LLMs propose; deterministic policy decides`, §44 #4).
+- `disagreement.go` owns §37/§13/§18 disagreement handling: `DetectDisagreement`
+  is the first-class reviewer↔completion conflict predicate (reference case:
+  reviewer APPROVED while completion says not-done; unknown verdicts fail
+  closed), and `RunResolution` is the Resolution agent — a fresh opencode
+  execution fed the §37 structured inputs (requirements, developer summary,
+  review result, completion result) that returns a validated, **bounded** action
+  set: `re-review` | `repair` | `completion-recheck` | `escalate`. The agent
+  never executes the action; `EvaluateDisagreement` (policy.go) is the
+  deterministic gate — disagreement routes to resolution, and after the
+  `defaultMaxResolutionAttempts` (1) it escalates to `HUMAN_REQUIRED` (fix #13).
+  History logging of the disagreement + resolution is the workflow's job (the
+  debug `./prbot resolve` prints the validated result JSON).
 - `developer.go` owns the Developer agent (§4.4/§25/§26/§34/§35): `RunDeveloper`
   runs a fresh opencode execution inside an **isolated, workflow-owned worktree**
   (deterministic sibling `.konoha/<repo>-issue-<n>` dir, ownership claim file

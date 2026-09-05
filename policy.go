@@ -260,6 +260,49 @@ type RepairLoopDecision struct {
 	Reasons  []string
 }
 
+// defaultMaxResolutionAttempts is the §37 cap on disagreement-resolution passes:
+// after this many rounds the disagreement is persistent and escalates to
+// HUMAN_REQUIRED (§37 "if disagreement remains"). The design specifies exactly
+// one resolution before escalation, hence the default of 1.
+const defaultMaxResolutionAttempts = 1
+
+// DisagreementDecision is the §37/§18 verdict on a reviewer/completion
+// disagreement. Resolve routes to the Resolution Agent; Human escalates to
+// HUMAN_REQUIRED (persistent disagreement, fix #13). An issue where this fires
+// is never auto-closed: the workflow consults this BEFORE the §14 close gate.
+type DisagreementDecision struct {
+	Disagree bool
+	Resolve  bool // run the Resolution Agent to pick a bounded next action
+	Human    bool // persistent disagreement → HUMAN_REQUIRED
+	Reasons  []string
+}
+
+// EvaluateDisagreement applies the §37 rule: when the reviewer and completion
+// agents disagree, the issue must route to Resolution, and if disagreement
+// persists past the resolution-attempt cap (default 1) it escalates to
+// HUMAN_REQUIRED — under NO circumstances is a close considered while
+// disagreement holds (§13/§18/§44 #5). `resolutionAttempts` is the count of
+// resolution passes already executed for this issue. The cap is a design
+// constant (§37); if per-repo control is ever needed it becomes a
+// LifecycleConfig key. ponytail: fixed constant, add config when a repo asks.
+func EvaluateDisagreement(disagreement bool, resolutionAttempts int) DisagreementDecision {
+	if !disagreement {
+		return DisagreementDecision{}
+	}
+	if resolutionAttempts >= defaultMaxResolutionAttempts {
+		return DisagreementDecision{
+			Disagree: true,
+			Human:    true,
+			Reasons:  []string{"disagreement persists after 1 resolution attempt (§37) → HUMAN_REQUIRED"},
+		}
+	}
+	return DisagreementDecision{
+		Disagree: true,
+		Resolve:  true,
+		Reasons:  []string{"reviewer/completion disagree (§37): route to Resolution Agent"},
+	}
+}
+
 // EvaluateRepairLoop answers the §4.8 policy question "can another development
 // attempt occur?" (§16). attempts is the count of development/repair attempts
 // already completed per issue (initial develop = 1, each repair round +1). While

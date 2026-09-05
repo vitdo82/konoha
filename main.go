@@ -66,6 +66,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "resolve":
+			if err := runResolve(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -104,6 +109,7 @@ func main() {
 	w.RegisterActivity(RunReviewer)
 	w.RegisterActivity(RunRepair)
 	w.RegisterActivity(RunCompletion)
+	w.RegisterActivity(RunResolution)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
@@ -414,6 +420,59 @@ func runComplete() error {
 		return err
 	}
 	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runResolve() error {
+	// debug: run the Issue Analyst + Resolution agents against one issue directly
+	// (no Temporal), printing the validated ResolutionResult (§37) as JSON.
+	// Env: OWNER, REPO, REPO_PATH; issue number is arg 2 or ISSUE_NUM.
+	// The reviewer/completion observations come from REVIEW_VERDICT/REVIEW_SUMMARY
+	// (newline-separated BLOCKING via REVIEW_BLOCKING, NITS via REVIEW_NITS),
+	// COMPLETE (true/false), COMPLETION_RECOMMENDATION, and optional
+	// DEVELOPER_SUMMARY.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+
+	criteria := []CriterionResult{}
+	for _, c := range linesEnv("COMPLETION_CRITERIA") {
+		criteria = append(criteria, CriterionResult{Criterion: c, Met: true, Justification: "reported"})
+	}
+	rec := getenv("COMPLETION_RECOMMENDATION", "close")
+	complete := os.Getenv("COMPLETE") == "true"
+	if rec == "reopen" || rec == "blocked" {
+		complete = false
+	}
+
+	r, err := RunResolution(context.Background(), ResolutionRequest{
+		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+		Title: a.Title, Body: a.Body, Spec: a.Spec,
+		Requirements: a.Requirements, Constraints: a.Constraints, Assumptions: a.Assumptions,
+		DeveloperSummary:         os.Getenv("DEVELOPER_SUMMARY"),
+		ReviewVerdict:            getenv("REVIEW_VERDICT", ""),
+		ReviewBlocking:           linesEnv("REVIEW_BLOCKING"),
+		ReviewNits:               linesEnv("REVIEW_NITS"),
+		CompletionComplete:       complete,
+		CompletionCriteria:       criteria,
+		CompletionRisks:          linesEnv("COMPLETION_RISKS"),
+		CompletionOpenQuestions:  linesEnv("COMPLETION_OPEN_QUESTIONS"),
+		CompletionRecommendation: rec,
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
