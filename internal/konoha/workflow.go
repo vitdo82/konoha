@@ -126,6 +126,15 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
+	// §4.4: agent dev/repair run long (real opencode work), so they get a wider
+	// window than the default cycle activities.
+	devAO := workflow.ActivityOptions{
+		StartToCloseTimeout: appCfg.Worker.devWindow(),
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
+		},
+	}
+	devCtx := workflow.WithActivityOptions(ctx, devAO)
 	info := workflow.GetInfo(ctx)
 
 	state := stateDiscovered
@@ -209,7 +218,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// -- §4.4 DEVELOPING --
 	transition(stateDeveloping)
 	var dev DevelopResult
-	if err := workflow.ExecuteActivity(ctx, RunDeveloper, DevelopRequest{
+	if err := workflow.ExecuteActivity(devCtx, RunDeveloper, DevelopRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
 		WorkflowID:         info.WorkflowExecution.ID,
 		Title:              a.Title,
@@ -316,7 +325,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		lastAttempts++
 		transition(stateChangesRequested)
 		var repaired DevelopResult
-		if err := workflow.ExecuteActivity(ctx, RunRepair, RepairRequest{
+		if err := workflow.ExecuteActivity(devCtx, RunRepair, RepairRequest{
 			Develop: DevelopRequest{
 				Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
 				WorkflowID:         info.WorkflowExecution.ID,

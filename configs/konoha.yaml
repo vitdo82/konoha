@@ -8,6 +8,7 @@ worker:
   maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES
   startToCloseTimeout: 15m         # default activity window for cycle/PR steps
   sweepTimeout: 10m                # sweep workflow activity window
+  devTimeout: 45m                  # §4.4 agent dev/repair window (generous)
   retryMaxAttempts: 3              # cycle/PR activity retries
   sweepRetryMaxAttempts: 2         # sweep activity retries
 

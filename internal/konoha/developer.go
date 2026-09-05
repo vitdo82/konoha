@@ -246,13 +246,20 @@ func worktreeClean(ctx context.Context, dir string) (bool, error) {
 
 // removeWorktree removes a worktree dir that the caller has verified ownership
 // of: via git when it is a registered worktree, else (owned stray dir) by
-// wiping it, then pruning stale git metadata.
+// wiping it, then pruning stale git metadata. Uses context.Background() for the
+// git calls so deferred cleanup still runs when the activity context is already
+// cancelled (timeout/retry) — a failed cleanup must not strand a dirty worktree
+// that blocks the next attempt.
 func removeWorktree(ctx context.Context, repoPath, dir string) error {
-	if _, err := execGit(ctx, repoPath, "worktree", "remove", "--force", dir); err != nil {
+	cleanupCtx := ctx
+	if cleanupCtx == nil || cleanupCtx.Err() != nil {
+		cleanupCtx = context.Background()
+	}
+	if _, err := execGit(cleanupCtx, repoPath, "worktree", "remove", "--force", dir); err != nil {
 		if rmErr := os.RemoveAll(dir); rmErr != nil {
 			return rmErr
 		}
-		_, _ = execGit(ctx, repoPath, "worktree", "prune")
+		_, _ = execGit(cleanupCtx, repoPath, "worktree", "prune")
 		return nil
 	}
 	return os.RemoveAll(dir)
