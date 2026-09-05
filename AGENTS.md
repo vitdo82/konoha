@@ -68,7 +68,7 @@ App credentials (never commit these):
 
 ```bash
 GH_APP_ID=<id> GH_APP_INSTALL_ID=<id> GH_APP_PEM=<path> make run
-./apply.sh            # (re)create one <repo>-review-all Temporal schedule per repos.yaml entry
+./scripts/apply.sh    # (re)create one <repo>-review-all Temporal schedule per repos.yaml entry
 make token            # smoke-test app auth: prints a masked installation token
 ```
 
@@ -82,18 +82,26 @@ without restarting a completed workflow. Deliveries with an invalid
 
 ## Architecture / gotchas
 
-- **Workflows vs activities** (`workflow.go` vs `activities.go`): Temporal workflows
+- **Project layout**: all logic + tests live under `internal/konoha` (single
+  package `konoha`); `cmd/konoha/main.go` is the only entrypoint (`Main()`
+  owns CLI dispatch, worker start, and every `w.Register*` call). Config lives
+  in `configs/`, scripts in `scripts/` (`apply.sh`). `repos.yaml` is read from
+  `configs/` (override `KONOHA_CONFIG_DIR`).
+- **Workflows vs activities** (`internal/konoha/workflow.go` vs `activities.go`): Temporal workflows
   must be deterministic (no I/O, no time in logic). All I/O — shelling out to `gh`
   and `opencode` — lives in activities. Keep it that way.
-- **Workflows are registered by string name** (`main.go:28-33`); activity executions
+- **Workflows are registered by string name** (`cmd/konoha/main.go`, `Main()`);
+  activity executions
   are serialized by signature. Changing a workflow/activity signature breaks in-flight
-  executions and must happen in lockstep with the registration.
+  executions and must happen in lockstep with the registration. Function names are
+  package-path-independent — do NOT rename exported activity/workflow funcs during
+  refactors (Temporal type names are the function names).
 - **Agent output contract** (`reviewer.go` `parseReviewOutput`, reused by `ReviewWithOpencode`):
   the opencode agent must print `VERDICT:APPROVE`/`VERDICT:REQUEST_CHANGES` plus
   `BLOCKING:`/`NITS:`/`CONCLUDE:` sections. Parsing is line matching, fail-closed
   to `REQUEST_CHANGES`. Changing the prompt/output shape requires changing this parser.
-- **Config source of truth is `repos.yaml`.** `apply.sh` builds the worker and
-  shells out to `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
+- **Config source of truth is `repos.yaml`.** `configs/repos.yaml` is loaded by
+  `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
   fail fast at apply time. The schema lives in `config.go`
   (`RepoConfig`/`LifecycleConfig`, §§33/43) — adding keys to `repos.yaml`
