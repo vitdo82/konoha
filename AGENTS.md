@@ -76,7 +76,9 @@ the validated `ResolutionResult` JSON; same env overrides plus `REVIEW_VERDICT`/
 `REVIEW_BLOCKING`/`REVIEW_NITS`/`COMPLETE`/`COMPLETION_RECOMMENDATION`/
 `DEVELOPER_SUMMARY`), and `./prbot po` (reads + validates the human decision
 channel for an issue and prints the `HumanDecision` JSON; none/malformed
-fails closed, §36).
+fails closed, §36), and `./prbot split` (runs the Issue Analyst + Estimator +
+Splitter agents and prints the validated `SplitResult` JSON; same env
+overrides; no Temporal).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -89,6 +91,13 @@ fails closed, §36).
   workflow applies the deterministic routing policy. It reuses the analyst's
   `extractJSONObject`/`cmdEnv`. The `EstimateResult` struct (with `Risks`/
   `Assumptions`) lives in `estimator.go`, not `activities.go`.
+- `split.go` owns the Splitter agent (§4.3/§11/§36): decomposes a LARGE issue
+  into validated `SplitTicket`s (`RunSplit`). `ValidateSplit` is the §36 gate:
+  children > 0, unique non-empty keys, each complexity ≤
+  `DevelopmentMaxComplexity`, non-empty requirements/acceptanceCriteria, and
+  dependencies that resolve to a real child key (§10). Malformed or
+  contradictory output fails closed and can never reach child-issue creation —
+  the §16 hard invariant "no GitHub mutation from an unvalidated agent output".
 - `policy.go` owns the deterministic policy engine (§4.8): `EvaluateAutonomy`
   (§12 predicate), `EvaluateCompletion` (§14 gate, blocks on agent
   disagreement §18), `EvaluateClosePolicy` (§19 `autonomous`/`risk-based`/
