@@ -411,3 +411,32 @@ func ApplyHumanDecision(d HumanDecision) (HumanDecisionTransition, error) {
 		return HumanDecisionTransition{Resume: true}, nil
 	}
 }
+
+// DiagnosisTransition is the deterministic response to a §17 diagnosis
+// recommendation. TargetState names the state to enter; Human means the
+// workflow must route to HUMAN_REQUIRED (§40).
+type DiagnosisTransition struct {
+	TargetState string
+	Human       bool
+}
+
+// ApplyDiagnosis maps the bounded §17 diagnosis recommendations to their
+// transitions: retry → re-enter development, repartition → re-enter splitting,
+// block → alert a human (HUMAN_REQUIRED). The agent never applies its own
+// recommendation (§17/§44 #4); this deterministic policy decides. A malformed
+// recommendation (validation failed, §36) fails closed and maps to Human —
+// "diagnosis cannot resolve → HUMAN_REQUIRED, no silent success" (§40).
+func ApplyDiagnosis(d DiagnosisResult) (DiagnosisTransition, error) {
+	if err := ValidateDiagnosis(d); err != nil {
+		return DiagnosisTransition{Human: true}, fmt.Errorf("diagnosis invalid → HUMAN_REQUIRED (§40): %w", err)
+	}
+	switch d.Recommendation {
+	case diagRetry:
+		return DiagnosisTransition{TargetState: stateDeveloping}, nil
+	case diagRepartition:
+		return DiagnosisTransition{TargetState: stateSplitting}, nil
+	case diagBlock:
+		return DiagnosisTransition{Human: true, TargetState: stateHumanRequired}, nil
+	}
+	return DiagnosisTransition{Human: true}, nil // unreachable; validator guarantees membership
+}

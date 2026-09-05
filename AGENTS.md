@@ -78,7 +78,9 @@ the validated `ResolutionResult` JSON; same env overrides plus `REVIEW_VERDICT`/
 channel for an issue and prints the `HumanDecision` JSON; none/malformed
 fails closed, §36), and `./prbot split` (runs the Issue Analyst + Estimator +
 Splitter agents and prints the validated `SplitResult` JSON; same env
-overrides; no Temporal).
+overrides; no Temporal), and `./prbot diagnose` (runs the Issue Analyst +
+Diagnosis agents and prints the validated `DiagnosisResult` JSON; same env
+overrides plus `DIAG_REASON`/`ATTEMPTS`/`ATTEMPT_SUMMARIES`).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -98,6 +100,16 @@ overrides; no Temporal).
   dependencies that resolve to a real child key (§10). Malformed or
   contradictory output fails closed and can never reach child-issue creation —
   the §16 hard invariant "no GitHub mutation from an unvalidated agent output".
+- `diagnosis.go` owns the §17 AI Diagnosis agent: `RunDiagnosis` is a fresh,
+  **read-only** opencode execution (no GitHub write credential, §23) fed the
+  structured `DevelopmentFailure` (issue, attempt history, review feedback,
+  trigger reason). It emits a `DiagnosisResult` with a **bounded**
+  recommendation `{retry, repartition, block}`; `ValidateDiagnosis` is the §36
+  gate and `ApplyDiagnosis` (policy.go) is the deterministic transition —
+  retry → `DEVELOPING`, repartition → `SPLITTING`, block → `HUMAN_REQUIRED`.
+  The agent never applies its recommendation (§17/§44 #4); a malformed or
+  unresolvable diagnosis fails closed to `HUMAN_REQUIRED` (§40, no silent
+  success).
 - `policy.go` owns the deterministic policy engine (§4.8): `EvaluateAutonomy`
   (§12 predicate), `EvaluateCompletion` (§14 gate, blocks on agent
   disagreement §18), `EvaluateClosePolicy` (§19 `autonomous`/`risk-based`/
@@ -108,7 +120,8 @@ overrides; no Temporal).
   `POGateTimeout` (§33 default 168h) + `EvaluateHumanGate` (§18/§40: a timeout
   never resumes/closes — it stays `BLOCKED`, no silent success) + `ApplyHumanDecision`
   (maps §18 `resume|reestimate|repartition|retry|block|cancel|close` to a
-  deterministic transition), `DetectHumanEscalation` (the §20 risk gate:
+  deterministic transition), `ApplyDiagnosis` (maps §17 `retry|repartition|block`
+  to `DEVELOPING`/`SPLITTING`/`HUMAN_REQUIRED`; malformed → `HUMAN_REQUIRED`), `DetectHumanEscalation` (the §20 risk gate:
   `RiskDecision` from diff `paths` + issue `labels` — restricted globs/labels →
   escalate before publish/close), plus
   the `**`-aware `globMatch`
