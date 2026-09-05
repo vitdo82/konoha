@@ -175,10 +175,11 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	lastComplexity, lastConfidence = est.Complexity, est.Confidence
 
 	// deterministic routing policy (§11): complexity within the executable
-	// threshold → SMALL, else LARGE. Threshold comes from config (§33), not a
-	// hardcoded constant, so repo policy is the authority (§5).
+	// threshold → SMALL, else LARGE. Threshold is phase-gated (§42): the min of
+	// the repo's declared ceiling and the rollout phase ceiling, so a shadow or
+	// phase-2 repo never develops beyond what its phase permits.
 	var route string
-	if est.Complexity >= 1 && est.Complexity <= DevelopmentMaxComplexity(in.Lifecycle) {
+	if est.Complexity >= 1 && est.Complexity <= effectiveDevelopmentMax(in.Lifecycle) {
 		route = stateSmall
 	} else {
 		route = stateLarge
