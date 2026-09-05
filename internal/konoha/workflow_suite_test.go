@@ -1,6 +1,7 @@
 package konoha
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -9,27 +10,51 @@ import (
 
 // --- Workflow tests (§41) via the Temporal testsuite -------------------------
 //
-// The agent activities (AnalyzeIssue/EstimateIssue) shell out to `opencode`, so
-// they are mocked with testify Anything matchers. RecordCycleMetrics runs for
-// real (replay-safe activity) and mutates the §39 sink, so the tests assert the
-// terminal state via the "state" query handler and that the sink recorded the
-// right route.
+// Agent activities (AnalyzeIssue/EstimateIssue/RunDeveloper/RunReviewer/
+// RunRepair) shell out to `opencode`/`gh`, so they are mocked with testify
+// Anything matchers (one per argument). RecordCycleMetrics runs for real; the
+// tests assert the terminal §6 state via the "state" query handler.
 
-func runCycle(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironment {
+const testIssue = 7
+
+// mockCycleEnv returns an env with the analysis/estimate mocks wired and
+// RecordCycleMetrics registered, primed for the given estimate.
+func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironment {
 	t.Helper()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+	env.RegisterActivity(RecordCycleMetrics)
 
 	analysis := IssueAnalysis{
 		Title: "t", Body: "b", Summary: "s", Spec: specFallback,
 		Requirements: []string{"r1"}, AcceptanceCriteria: []string{"Given c When d Then e"},
 	}
-	env.RegisterActivity(RecordCycleMetrics)
 	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
 	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(est, nil)
+	return env
+}
 
-	// Phase-3 repo (supervised-autonomous, ceiling 4, risk-based) so routing is
-	// meaningful — an empty config would be the conservative shadow default.
-	in := IssueInput{Owner: "o", Repo: "r", IssueNum: 7, RepoPath: t.TempDir(),
+// mockSmallPath wires the dev→publish→review activities for a clean APPROVE.
+func mockSmallPath(env *testsuite.TestWorkflowEnvironment) {
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"},
+		Summary: "change", Validated: true,
+	}, nil)
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(PublishResult{
+		Branch: "konoha/issue-7", PRNumber: 101, PRURL: "https://x/pr/101", Validated: true,
+	}, nil)
+	env.OnActivity(FetchPRHead, mock.Anything, mock.Anything).Return("headsha", nil)
+	env.OnActivity(FetchPRDiff, mock.Anything, mock.Anything).Return("+1 line", nil)
+	env.OnActivity(RunReviewer, mock.Anything, mock.Anything).Return(ReviewResult{
+		Verdict: "APPROVE", CommitSHA: "headsha", PRNumber: 101,
+	}, nil)
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
+}
+
+// runAndAssert executes the workflow and asserts it completed without error.
+func runAndAssert(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
+	t.Helper()
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(),
 		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4}}
 	env.ExecuteWorkflow(IssueCycleWorkflow, in)
 	if env.IsWorkflowCompleted() {
@@ -37,10 +62,8 @@ func runCycle(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironme
 			t.Fatalf("workflow error: %v", err)
 		}
 	}
-	return env
 }
 
-// terminalState queries the §6 "state" handler.
 func terminalState(t *testing.T, env *testsuite.TestWorkflowEnvironment) string {
 	t.Helper()
 	query, err := env.QueryWorkflow("state")
@@ -54,51 +77,150 @@ func terminalState(t *testing.T, env *testsuite.TestWorkflowEnvironment) string 
 	return s
 }
 
-// §41 autonomous-small path: complexity within threshold → SMALL, and the §39
-// metrics activity (executed for real) records the SMALL route.
-func TestWorkflowSmallRouting(t *testing.T) {
+// §46/§41: SMALL happy path — dev → publish → APPROVE → close, exactly one PR.
+func TestWorkflowSmallAutonomousClose(t *testing.T) {
 	resetMetrics()
-	est := EstimateResult{Complexity: 3, Confidence: "high"}
-	env := runCycle(t, est)
-	if got := terminalState(t, env); got != stateSmall {
-		t.Fatalf("small route terminal state = %q, want SMALL", got)
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("small autonomous path terminal = %q, want CLOSED", got)
 	}
-	if v := sink.get(mSplitSmall); v != 1 {
-		t.Fatalf("issue_route_small = %v, want 1", v)
+	if v := sink.get(mCyclesCompletedAuton); v != 1 {
+		t.Fatalf("autonomous completes = %v, want 1", v)
 	}
 }
 
-// §41 autonomous-large path: complexity above threshold → LARGE, record LARGE.
-func TestWorkflowLargeRouting(t *testing.T) {
+// §46/§41: one REQUEST_CHANGES then APPROVE → repair round once, close.
+func TestWorkflowSmallRepairLoop(t *testing.T) {
 	resetMetrics()
-	est := EstimateResult{Complexity: 7, Confidence: "medium"}
-	env := runCycle(t, est)
-	if got := terminalState(t, env); got != stateLarge {
-		t.Fatalf("large route terminal state = %q, want LARGE", got)
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"bug"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"}, Summary: "c", Validated: true,
+	}, nil)
+
+	// first publish
+	first := true
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(func(ctx context.Context, in PublishInput) (PublishResult, error) {
+		_ = ctx
+		if first {
+			first = false
+		}
+		return PublishResult{Branch: "konoha/issue-7", PRNumber: 101, Validated: true}, nil
+	})
+	env.OnActivity(FetchPRHead, mock.Anything, mock.Anything).Return("headsha", nil)
+	env.OnActivity(FetchPRDiff, mock.Anything, mock.Anything).Return("+1 line", nil)
+	// first review → REQUEST_CHANGES, then APPROVE
+	calls := 0
+	env.OnActivity(RunReviewer, mock.Anything, mock.Anything).Return(func(ctx context.Context, r ReviewRequest) (ReviewResult, error) {
+		_ = ctx
+		calls++
+		if calls == 1 {
+			return ReviewResult{Verdict: "REQUEST_CHANGES", CommitSHA: "headsha", PRNumber: 101,
+				Blocking: []string{"auth gap"}}, nil
+		}
+		return ReviewResult{Verdict: "APPROVE", CommitSHA: "headsha", PRNumber: 101}, nil
+	})
+	// repair runs once
+	env.OnActivity(RunRepair, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt2", CommitSHA: "repairsha", ChangedFiles: []string{"pkg/worker.go"}, Summary: "fixed", Validated: true,
+	}, nil)
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
+
+	runAndAssert(t, env)
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("repair-loop path terminal = %q, want CLOSED", got)
+	}
+	if calls != 2 {
+		t.Fatalf("reviewer called %d times, want 2", calls)
+	}
+}
+
+// §46/§41/§16: REQUEST_CHANGES past the cap → BLOCKED, never close.
+func TestWorkflowSmallRepairCapBlocked(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"bug"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"}, Summary: "c", Validated: true,
+	}, nil)
+	// always fails review, cap 2 (default) → attempt 2 escalates.
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(PublishResult{Branch: "b", PRNumber: 101, Validated: true}, nil)
+	env.OnActivity(FetchPRHead, mock.Anything, mock.Anything).Return("headsha", nil)
+	env.OnActivity(FetchPRDiff, mock.Anything, mock.Anything).Return("+1 line", nil)
+	env.OnActivity(RunReviewer, mock.Anything, mock.Anything).Return(ReviewResult{
+		Verdict: "REQUEST_CHANGES", CommitSHA: "headsha", PRNumber: 101, Blocking: []string{"nope"},
+	}, nil)
+	env.OnActivity(RunRepair, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt2", CommitSHA: "repairsha", ChangedFiles: []string{"pkg/worker.go"}, Summary: "f", Validated: true,
+	}, nil)
+	// EnsureIssueState(CLOSED) must NEVER run.
+	closed := 0
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(func(ctx context.Context, s StateRequest) error {
+		_ = ctx
+		if s.State == "closed" {
+			closed++
+		}
+		return nil
+	})
+
+	runAndAssert(t, env)
+	if got := terminalState(t, env); got != stateBlocked {
+		t.Fatalf("cap path terminal = %q, want BLOCKED", got)
+	}
+	if closed != 0 {
+		t.Fatalf("EnsureIssueState(closed) called %d times; cap must never close (§40)", closed)
+	}
+}
+
+// §46/§20: dev diff touching a restricted path → HUMAN_REQUIRED, no publish.
+func TestWorkflowSmallRiskGateHumanRequired(t *testing.T) {
+	resetMetrics()
+	lc := LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4,
+		Autonomy: Autonomy{HumanRequiredPaths: []string{"infra/**"}}}
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(IssueAnalysis{
+		Title: "t", Body: "b", Summary: "s", Requirements: []string{"r1"}, AcceptanceCriteria: []string{"c"}, Spec: specFallback,
+	}, nil)
+	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(EstimateResult{Complexity: 3, Confidence: "high"}, nil)
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"infra/prod.yaml"}, Summary: "c", Validated: true,
+	}, nil)
+	published := 0
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(func(ctx context.Context, in PublishInput) (PublishResult, error) {
+		_ = ctx
+		published++
+		return PublishResult{}, nil
+	})
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(), Lifecycle: lc}
+	env.ExecuteWorkflow(IssueCycleWorkflow, in)
+	if env.IsWorkflowCompleted() {
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("workflow error: %v", err)
+		}
+	}
+	if got := terminalState(t, env); got != stateHumanRequired {
+		t.Fatalf("risk-gate terminal = %q, want HUMAN_REQUIRED", got)
+	}
+	if published != 0 {
+		t.Fatalf("publish called %d times; §20 must suppress publish before mutation", published)
+	}
+}
+
+// §46: LARGE route ends at the deterministic NOT_WIRED terminal (children
+// follow-up), with the large route metric recorded — never a silent drop.
+func TestWorkflowLargeNotWired(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 7, Confidence: "medium"})
+	runAndAssert(t, env)
+	if got := terminalState(t, env); got != stateNotWired {
+		t.Fatalf("large route terminal = %q, want NOT_WIRED", got)
 	}
 	if v := sink.get(mSplitLarge); v != 1 {
 		t.Fatalf("issue_route_large = %v, want 1", v)
-	}
-}
-
-// §41 review-retry-cap boundary (§16): attempts under the cap allow a repair;
-// at/over the cap the bounded loop escalates to §17 AI diagnosis, never a
-// silent pass and never an unbounded loop.
-func TestReviewRetryCapBoundary(t *testing.T) {
-	// default cap 2: 0 and 1 completed attempts → repair still allowed.
-	for _, done := range []int{0, 1} {
-		if !EvaluateRepairLoop(LifecycleConfig{}, done).Allowed {
-			t.Fatalf("cap 2: %d completed must still allow a repair", done)
-		}
-	}
-	// 2 completed → escalate (allowed=false, escalate=true).
-	d := EvaluateRepairLoop(LifecycleConfig{}, 2)
-	if d.Allowed || !d.Escalate {
-		t.Fatalf("cap 2: 2 completed attempts must escalate, got %+v", d)
-	}
-	// config cap override: 3 allows the 3rd attempt, 4 escalates.
-	lc3 := LifecycleConfig{MaxDevReviewAttempts: 3}
-	if !EvaluateRepairLoop(lc3, 2).Allowed || EvaluateRepairLoop(lc3, 3).Allowed {
-		t.Fatal("config cap 3 boundary violated (3rd attempt allowed, 4th escalates)")
 	}
 }

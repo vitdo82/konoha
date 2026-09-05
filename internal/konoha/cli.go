@@ -125,6 +125,8 @@ func Main() {
 	w.RegisterWorkflowWithOptions(IssueCycleWorkflow, workflow.RegisterOptions{Name: "IssueCycleWorkflow"})
 	w.RegisterWorkflowWithOptions(IssueAllWorkflow, workflow.RegisterOptions{Name: "IssueAllWorkflow"})
 	w.RegisterActivity(FetchDiff)
+	w.RegisterActivity(FetchPRHead)
+	w.RegisterActivity(FetchPRDiff)
 	w.RegisterActivity(ReviewWithOpencode)
 	w.RegisterActivity(SubmitReview)
 	w.RegisterActivity(ListUnreviewedPRs)

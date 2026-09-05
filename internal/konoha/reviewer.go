@@ -243,3 +243,14 @@ func prDiff(owner, repo string, pr int) (string, error) {
 	}
 	return string(out), nil
 }
+
+// FetchPRHead is the workflow activity wrapper resolving a PR's current head
+// SHA (§15 commit-bound review). Add-only, signature-stable (in-flight safe).
+func FetchPRHead(ctx context.Context, in PrInput) (string, error) {
+	return prHeadSHA(ctx, in.Owner, in.Repo, in.PrNum)
+}
+
+// FetchPRDiff is the workflow activity wrapper for the PR diff.
+func FetchPRDiff(ctx context.Context, in PrInput) (string, error) {
+	return prDiff(in.Owner, in.Repo, in.PrNum)
+}
