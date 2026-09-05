@@ -80,7 +80,9 @@ fails closed, §36), and `./prbot split` (runs the Issue Analyst + Estimator +
 Splitter agents and prints the validated `SplitResult` JSON; same env
 overrides; no Temporal), and `./prbot diagnose` (runs the Issue Analyst +
 Diagnosis agents and prints the validated `DiagnosisResult` JSON; same env
-overrides plus `DIAG_REASON`/`ATTEMPTS`/`ATTEMPT_SUMMARIES`).
+overrides plus `DIAG_REASON`/`ATTEMPTS`/`ATTEMPT_SUMMARIES`), and
+`./prbot labels` (ensures the full §21 `konoha:*` label set exists in the
+repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -139,6 +141,14 @@ overrides plus `DIAG_REASON`/`ATTEMPTS`/`ATTEMPT_SUMMARIES`).
   `BlockedLabels`). The workflow's state constants (`HUMAN_REQUIRED`/`BLOCKED`/
   `CANCELLED`/`CLOSED`/`FAILED`, workflow.go §6) are the authoritative record;
   labels are only a projection (§44 #20).
+- `labels.go` owns the §21/§22 label projection: the full `konoha:*` label set
+  (`projectableLabels`), `ProjectLabels` — the PURE state→label mapping (exactly
+  one complexity label, `estimate-large` for complexity>4, transient
+  `review`/`changes-requested` only while active) — plus two reconcile
+  activities: `EnsureRepoLabels` (create the §21 set if missing, idempotent) and
+  `ApplyIssueLabels` (diff current labels → desired: add missing, drop stale
+  projectable transients/old-complexity, leave non-konoha human labels alone;
+  §24/§31). Temporal state drives it; labels never drive workflow state (§44 #20).
 - `completion.go` owns the Completion agent (§4.7/§14/§29/§30): `RunCompletion`
   is a **separate** opencode execution (independent from the developer, §4.7)
   that re-checks the implementation against the machine-checkable acceptance

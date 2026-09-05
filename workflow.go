@@ -93,18 +93,20 @@ func ReviewAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 // Issue lifecycle states (§6). Workflow history is the authoritative lifecycle
 // record: each transition is logged and readable via the "state" query handler.
 const (
-	stateDiscovered    = "DISCOVERED"
-	stateAnalyzing     = "ANALYZING"
-	stateEstimating    = "ESTIMATING"
-	stateSmall         = "SMALL"
-	stateLarge         = "LARGE"
-	stateDeveloping    = "DEVELOPING"     // §17: diagnosis said retry
-	stateSplitting     = "SPLITTING"      // §17: diagnosis said repartition
-	stateHumanRequired = "HUMAN_REQUIRED" // §18: waiting on a human exception handler
-	stateBlocked       = "BLOCKED"        // §18/§40: blocked; a timeout keeps it here
-	stateCancelled     = "CANCELLED"      // §18: human decision "cancel"
-	stateClosed        = "CLOSED"         // §14/§19: policy-permitted close
-	stateFailed        = "FAILED"         // §40: terminal failure (never silent success)
+	stateDiscovered       = "DISCOVERED"
+	stateAnalyzing        = "ANALYZING"
+	stateEstimating       = "ESTIMATING"
+	stateSmall            = "SMALL"
+	stateLarge            = "LARGE"
+	stateDeveloping       = "DEVELOPING"        // §17: diagnosis said retry
+	stateSplitting        = "SPLITTING"         // §17: diagnosis said repartition
+	stateReviewing        = "REVIEWING"         // §22: a review is in flight (transient label)
+	stateChangesRequested = "CHANGES_REQUESTED" // §22: repair loop (transient label)
+	stateHumanRequired    = "HUMAN_REQUIRED"    // §18: waiting on a human exception handler
+	stateBlocked          = "BLOCKED"           // §18/§40: blocked; a timeout keeps it here
+	stateCancelled        = "CANCELLED"         // §18: human decision "cancel"
+	stateClosed           = "CLOSED"            // §14/§19: policy-permitted close
+	stateFailed           = "FAILED"            // §40: terminal failure (never silent success)
 )
 
 // IssueCycleWorkflow drives one issue through the lifecycle state machine
