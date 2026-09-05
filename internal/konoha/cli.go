@@ -6,21 +6,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
-
-const taskQueue = "review-queue"
-
-// defaultWorkerMaxConcurrentActivities is the §43 worker-level cap on
-// concurrent activity executions across all repos (env override:
-// WORKER_MAX_CONCURRENT_ACTIVITIES). 10 opencode/gh subprocesses at once keeps
-// a single worker from being exhausted by fan-out.
-const defaultWorkerMaxConcurrentActivities = 10
 
 func Main() {
 	// Pure-CLI commands that need no Temporal connection.
@@ -106,6 +97,16 @@ func Main() {
 		}
 	}
 
+	// Bootstrap application config (#48): konoha.yaml (strict) merged over
+	// bundled defaults, then env overrides (env > file > default). Fixed for the
+	// process lifetime so workflow/activity replay sees a stable value.
+	if cfg, err := loadAppConfig(defaultAppConfigPath()); err != nil {
+		log.Fatalf("config: %v", err)
+	} else {
+		appCfg = cfg
+	}
+	applyEnvOverrides()
+
 	addr := os.Getenv("TEMPORAL_ADDRESS")
 	if addr == "" {
 		addr = "127.0.0.1:7233"
@@ -116,7 +117,7 @@ func Main() {
 	}
 	defer c.Close()
 
-	w := worker.New(c, taskQueue, worker.Options{
+	w := worker.New(c, appCfg.Worker.TaskQueue, worker.Options{
 		MaxConcurrentActivityExecutionSize: workerMaxConcurrentActivities(),
 	})
 	w.RegisterWorkflowWithOptions(PrReviewWorkflow, workflow.RegisterOptions{Name: "PrReviewWorkflow"})
@@ -164,7 +165,7 @@ func Main() {
 		startReviewWorkflow(c)
 	}
 
-	log.Printf("prreview worker running on %s, queue %s. Ctrl-C to stop.", addr, taskQueue)
+	log.Printf("prreview worker running on %s, queue %s. Ctrl-C to stop.", addr, appCfg.Worker.TaskQueue)
 	err = w.Run(worker.InterruptCh())
 	if err != nil {
 		log.Fatal(err)
@@ -197,13 +198,6 @@ func runConfig(args []string) error {
 		fmt.Println(l)
 	}
 	return nil
-}
-
-func workerMaxConcurrentActivities() int {
-	if n, err := strconv.Atoi(os.Getenv("WORKER_MAX_CONCURRENT_ACTIVITIES")); err == nil && n >= 1 {
-		return n
-	}
-	return defaultWorkerMaxConcurrentActivities
 }
 
 func runPublish() error {
@@ -711,7 +705,7 @@ func startReviewWorkflow(c client.Client) {
 	if n := os.Getenv("PR_NUM"); n != "" {
 		fmt.Sscan(n, &pr)
 	}
-	wo := client.StartWorkflowOptions{ID: fmt.Sprintf("pr-review-%d", pr), TaskQueue: taskQueue}
+	wo := client.StartWorkflowOptions{ID: fmt.Sprintf("pr-review-%d", pr), TaskQueue: appCfg.Worker.TaskQueue}
 	exec, err := c.ExecuteWorkflow(context.Background(), wo, "PrReviewWorkflow", PrInput{
 		Owner: "vitdo82", Repo: "ducklambda", PrNum: pr,
 		RepoPath: "/Users/vit/projects/ducklambda",

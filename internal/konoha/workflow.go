@@ -2,7 +2,6 @@ package konoha
 
 import (
 	"fmt"
-	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -29,9 +28,9 @@ func batchRuns(n, max int) [][2]int {
 // PrReviewWorkflow: fetch diff -> opencode review -> post verdict back to PR.
 func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: 15 * time.Minute,
+		StartToCloseTimeout: appCfg.Worker.startToClose(),
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
@@ -63,9 +62,9 @@ func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 // failure in one doesn't abort the rest; stable child ID prevents double review.
 func ReviewAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: 10 * time.Minute,
+		StartToCloseTimeout: appCfg.Worker.sweepWindow(),
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 2,
+			MaximumAttempts: int32(appCfg.Worker.SweepRetryMaxAttempts),
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
@@ -119,9 +118,9 @@ const (
 // stable <repo>-issue-<n> ID guarantees only one run is active at a time.
 func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: 15 * time.Minute,
+		StartToCloseTimeout: appCfg.Worker.startToClose(),
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
@@ -208,9 +207,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 // WorkflowExecutionAlreadyStarted and is skipped.
 func IssueAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: 10 * time.Minute,
+		StartToCloseTimeout: appCfg.Worker.sweepWindow(),
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 2,
+			MaximumAttempts: int32(appCfg.Worker.SweepRetryMaxAttempts),
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)

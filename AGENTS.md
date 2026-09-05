@@ -106,6 +106,15 @@ without restarting a completed workflow. Deliveries with an invalid
   fail fast at apply time. The schema lives in `config.go`
   (`RepoConfig`/`LifecycleConfig`, §§33/43) — adding keys to `repos.yaml`
   requires updating those structs, not grep/awk in `apply.sh`.
+- **Runtime config is `konoha.yaml`** (`configs/`), resolved once at bootstrap
+  as `env > file > bundled default` (`appconfig.go` → `appCfg`, fixed for the
+  process lifetime so workflow replay is deterministic). `worker.*` holds the
+  task queue, activity timeouts, retries, and worker capacity; `defaults.lifecycle.*`
+  are the fallback policy when `repos.yaml` leaves a field unset (threaded into
+  the policy helpers). Only deployment/host keys are env-overridable
+  (`WORKER_MAX_CONCURRENT_ACTIVITIES`, `KONOHA_TASK_QUEUE`); policy/timeouts are
+  NOT — a host env must not fork deterministic behavior. Contract/invariant
+  strings (markers, `VERDICT:` parser, §6 states) are never config-driven.
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are
