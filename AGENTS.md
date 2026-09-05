@@ -30,6 +30,14 @@ GH_APP_ID=<id> GH_APP_INSTALL_ID=<id> GH_APP_PEM=<path> make run
 make token            # smoke-test app auth: prints a masked installation token
 ```
 
+Webhook fast-path (optional, §32): set `GH_WEBHOOK_SECRET` (App secret) and
+`WEBHOOK_ADDR` (e.g. `127.0.0.1:8080`) so issue `opened` events start
+`IssueCycleWorkflow` within seconds instead of waiting for the sweep. The
+deterministic `<repo>-issue-<n>` ID makes webhook + sweep starts converge
+(§32); `edited`/`labeled`/`closed` reconcile via the sweep/running cycle
+without restarting a completed workflow. Deliveries with an invalid
+`X-Hub-Signature-256` HMAC are rejected.
+
 ## Architecture / gotchas
 
 - **Workflows vs activities** (`workflow.go` vs `activities.go`): Temporal workflows
@@ -102,6 +110,13 @@ mutating).
   `MetricsText`/`StartMetricsServer` export the registry with STABLE §39 names
   (no prometheus dep in go.mod — stdlib `/metrics` only; METRICS_ADDR env);
   `logCycleEvent` emits the §39 field set on every workflow transition.
+- `webhook.go` owns the §32 event-driven fast-path: `StartWebhookServer`
+  (needs `GH_WEBHOOK_SECRET` + `WEBHOOK_ADDR`) serves `/webhook` and verifies
+  each delivery's `X-Hub-Signature-256` HMAC-SHA256 (constant-time, reject on
+  bad/missing). `opened` → `DefaultStarter` starts `IssueCycleWorkflow` with the
+  deterministic `<repo>-issue-<n>` ID and treats `WorkflowExecutionAlreadyStarted`
+  as convergence (§32/§41 dual-sweep); `edited`/`labeled`/`closed` → reconcile
+  only (never restart a completed workflow, §31). The sweep stays the backstop.
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and

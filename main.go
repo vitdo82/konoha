@@ -152,6 +152,14 @@ func main() {
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
 
+	// §32 webhook fast-path trigger (env GH_WEBHOOK_SECRET + WEBHOOK_ADDR).
+	// Loads repos.yaml so events route to the configured lifecycle policy.
+	if repos, err := LoadReposConfig("repos.yaml"); err == nil {
+		StartWebhookServer(c, repos)
+	} else {
+		log.Printf("webhook disabled: repos.yaml: %v", err)
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "start" {
 		startReviewWorkflow(c)
 	}
