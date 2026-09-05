@@ -160,6 +160,16 @@ repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode),
 and `./prbot children` (runs the Analyst + Estimator + Splitter + child
 creation; `DRY_RUN=1` prints the validated `ChildIssue` identities without
 mutating).
+- `workflow.go` owns the lifecycle state machine: `IssueCycleWorkflow` now
+  wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
+  (suppresses publish on restricted paths/labels) → publish (idempotent PR) →
+  REVIEWING → bounded repair loop (§16, `RunRepair(PreviousCommit=<reviewed
+  SHA>)`, cap → BLOCKED / never close) → APPROVED (commit-bound §15) →
+  CLOSED. Every terminal funnels through `recordTerminal` → `RecordCycleMetrics`
+  (autonomous vs human/blocked, §39). Follow-ups NOT yet wired: completion gate
+  (§14/§19), disagreement (§37), diagnosis → HUMAN_REQUIRED (§17/§18), and the
+  LARGE path (split/children — currently ends at the deterministic `NOT_WIRED`
+  terminal, never a silent drop). All I/O stays in activities (replay-safe).
 - `observability.go` owns the §39 metrics sink + structured workflow logging:
   `RecordCycleMetrics` is an ACTIVITY (metrics are incremented once, never in
   replay-prone workflow code) that applies a `CycleOutcome` against a

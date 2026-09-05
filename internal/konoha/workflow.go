@@ -106,6 +106,7 @@ const (
 	stateCancelled        = "CANCELLED"         // §18: human decision "cancel"
 	stateClosed           = "CLOSED"            // §14/§19: policy-permitted close
 	stateFailed           = "FAILED"            // §40: terminal failure (never silent success)
+	stateNotWired         = "NOT_WIRED"         // §46: branch this increment does not handle (LARGE)
 )
 
 // IssueCycleWorkflow drives one issue through the lifecycle state machine
@@ -161,22 +162,11 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
 		"complexity", est.Complexity, "confidence", est.Confidence)
 
-	// §39 observability state tracked across transitions (logged above).
-	// Deterministic policy (§4.8): the autonomy §12 predicate decides whether
-	// this issue can run autonomously. Touched paths/labels are unknown at this
-	// stage, so only complexity/confidence gate it; restricted-path escalation
-	// applies once the work touches files (§20 wiring lands with DEVELOPMENT).
-	aut := EvaluateAutonomy(in.Lifecycle, est, nil, nil)
-	workflow.GetLogger(ctx).Info("autonomy decision",
-		"workflow", info.WorkflowExecution.ID, "issue", in.IssueNum,
-		"autonomous", aut.Autonomous, "reasons", aut.Reasons)
+	lastAttempts, lastReviewRounds = 0, 0
 
-	lastComplexity, lastConfidence = est.Complexity, est.Confidence
-
-	// deterministic routing policy (§11): complexity within the executable
-	// threshold → SMALL, else LARGE. Threshold is phase-gated (§42): the min of
-	// the repo's declared ceiling and the rollout phase ceiling, so a shadow or
-	// phase-2 repo never develops beyond what its phase permits.
+	// -- routing (§11) --
+	// deterministic routing policy: complexity within the phase-gated executable
+	// threshold → SMALL, else LARGE.
 	var route string
 	if est.Complexity >= 1 && est.Complexity <= effectiveDevelopmentMax(in.Lifecycle) {
 		route = stateSmall
@@ -185,15 +175,184 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 	transition(route)
 
-	// §39 metrics recording is an ACTIVITY (replay-safe). The current scope ends
-	// at the routing branch; the record carries the fields known so far so the
-	// sink reflects the run even before the later DEV/CLOSE wiring fills the rest.
-	if err := workflow.ExecuteActivity(ctx, RecordCycleMetrics, CycleOutcome{
+	if route == stateLarge {
+		// §46 out of scope: LARGE (split/children) is a follow-up. End at a
+		// deterministic NOT_WIRED terminal with metrics — never a silent drop.
+		transition(stateNotWired)
+		return recordTerminal(ctx, info, in, CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateNotWired,
+		})
+	}
+
+	// -- §4.4 DEVELOPING --
+	transition(stateDeveloping)
+	var dev DevelopResult
+	if err := workflow.ExecuteActivity(ctx, RunDeveloper, DevelopRequest{
+		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+		WorkflowID:         info.WorkflowExecution.ID,
+		Title:              a.Title,
+		Body:               a.Body,
+		Spec:               a.Spec,
+		Requirements:       a.Requirements,
+		AcceptanceCriteria: a.AcceptanceCriteria,
+		Constraints:        a.Constraints,
+		Assumptions:        a.Assumptions,
+		OpenQuestions:      a.OpenQuestions,
+	}).Get(ctx, &dev); err != nil {
+		return err
+	}
+	lastAttempts++
+
+	// -- §20 risk gate before any GitHub mutation --
+	var labels []string
+	if err := workflow.ExecuteActivity(ctx, FetchIssueLabels, in).Get(ctx, &labels); err != nil {
+		return err
+	}
+	if rk := DetectHumanEscalation(in.Lifecycle, dev.ChangedFiles, labels); rk.Escalate {
+		transition(stateHumanRequired)
+		return recordTerminal(ctx, info, in, CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState:    stateHumanRequired,
+			HumanRequired:    true,
+			EscalationReason: reasonPolicyViolation,
+		})
+	}
+
+	// -- publish (idempotent PR, §25) --
+	var pub PublishResult
+	pubIn := PublishInput{
+		Owner: in.Owner, Repo: in.Repo, RepoPath: dev.WorktreeDir,
+		Branch:         fmt.Sprintf("konoha/issue-%d", in.IssueNum),
+		BaseBranch:     "main",
+		Title:          a.Title,
+		Body:           in.Repo + " issue #" + fmt.Sprint(in.IssueNum) + ": " + a.Summary,
+		ValidationCmd:  "", // §26 repo validation; config later
+		AllowOnFailure: false,
+		DryRun:         in.Lifecycle.DryRun,
+	}
+	if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
+		return err
+	}
+
+	// -- review loop (§15) --
+	var approved ReviewResult
+	reviewedSHA := ""
+	for attempt := 0; ; attempt++ {
+		transition(stateReviewing)
+		var headSha string
+		if err := workflow.ExecuteActivity(ctx, FetchPRHead, PrInput{Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber}).Get(ctx, &headSha); err != nil {
+			return err
+		}
+		var diff string
+		if err := workflow.ExecuteActivity(ctx, FetchPRDiff, PrInput{Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber}).Get(ctx, &diff); err != nil {
+			return err
+		}
+		reviewedSHA = headSha
+		var rev ReviewResult
+		if err := workflow.ExecuteActivity(ctx, RunReviewer, ReviewRequest{
+			Owner: in.Owner, Repo: in.Repo, PRNumber: pub.PRNumber, RepoPath: in.RepoPath,
+			CommitSHA:          headSha,
+			Diff:               diff,
+			ValidationOutput:   dev.ValidationOutput,
+			Title:              a.Title,
+			Body:               a.Body,
+			Spec:               a.Spec,
+			Requirements:       a.Requirements,
+			AcceptanceCriteria: a.AcceptanceCriteria,
+			Constraints:        a.Constraints,
+			Assumptions:        a.Assumptions,
+		}).Get(ctx, &rev); err != nil {
+			return err
+		}
+		lastReviewRounds++
+
+		if rev.Verdict == "APPROVE" {
+			approved = rev
+			break
+		}
+
+		// REQUEST_CHANGES → bounded repair loop (§16). Evaluate against the
+		// completed develop/repair attempts (dev = 1; a repair is allowed while
+		// still under the cap, then the NEXT request escalates).
+		if rl := EvaluateRepairLoop(in.Lifecycle, lastAttempts); !rl.Allowed {
+			transition(stateBlocked)
+			return recordTerminal(ctx, info, in, CycleOutcome{
+				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+				Owner: in.Owner, Repo: in.Repo,
+				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+				TerminalState: stateBlocked,
+				Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+			})
+		}
+		lastAttempts++
+		transition(stateChangesRequested)
+		var repaired DevelopResult
+		if err := workflow.ExecuteActivity(ctx, RunRepair, RepairRequest{
+			Develop: DevelopRequest{
+				Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+				WorkflowID:         info.WorkflowExecution.ID,
+				Title:              a.Title,
+				Body:               a.Body,
+				Spec:               a.Spec,
+				Requirements:       a.Requirements,
+				AcceptanceCriteria: a.AcceptanceCriteria,
+				Constraints:        a.Constraints,
+				Assumptions:        a.Assumptions,
+				OpenQuestions:      a.OpenQuestions,
+			},
+			Review:         rev,
+			PreviousCommit: reviewedSHA, // the SHA the reviewer actually saw (§15)
+		}).Get(ctx, &repaired); err != nil {
+			return err
+		}
+		// re-publish the repaired worktree onto the same branch (idempotent).
+		pubIn.RepoPath = repaired.WorktreeDir
+		if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
+			return err
+		}
+		dev = repaired
+	}
+
+	// -- APPROVED → close (§15/§25; completion gate is the follow-up) --
+	if !ReviewAppliesTo(approved, reviewedSHA) {
+		// head moved under us: re-review required — this increment escalates
+		// deterministically instead of closing on a stale approval.
+		transition(stateBlocked)
+		return recordTerminal(ctx, info, in, CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateBlocked,
+			Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
+	transition(stateClosed)
+	if err := workflow.ExecuteActivity(ctx, EnsureIssueState, StateRequest{
+		Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, State: "closed", DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, nil); err != nil {
+		return err
+	}
+	return recordTerminal(ctx, info, in, CycleOutcome{
 		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 		Owner: in.Owner, Repo: in.Repo,
-		Route:      route,
-		Complexity: est.Complexity, Confidence: est.Confidence,
-	}).Get(ctx, nil); err != nil {
+		Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+		TerminalState:   stateClosed,
+		AutonomousClose: true,
+		Attempts:        lastAttempts, ReviewRounds: lastReviewRounds,
+	})
+}
+
+// recordTerminal records the §39 terminal metrics for a finished cycle and
+// returns nil. All terminal paths funnel through it so the sink always sees the
+// run's terminal state + autonomous-vs-human outcome (no silent drops).
+func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, out CycleOutcome) error {
+	if err := workflow.ExecuteActivity(ctx, RecordCycleMetrics, out).Get(ctx, nil); err != nil {
 		return err
 	}
 	return nil
