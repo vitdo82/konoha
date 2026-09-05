@@ -63,9 +63,12 @@ overrides; no Temporal needed), and
 prints the validated `EstimateResult` JSON; same env overrides; no Temporal),
 and `./prbot develop` (runs the Issue Analyst + Developer agents and prints
 the validated `DevelopResult` JSON; same env overrides plus `BASE_SHA`/
-`VALIDATION_CMD`), and `./prbot review` (runs the Issue Analyst +
-Reviewer agents and prints the validated, commit-bound `ReviewResult` JSON;
-same env overrides plus `PR_NUM`/`REVIEW_SHA`).
+`VALIDATION_CMD`), and `./prbot review` (runs the Issue Analyst + Reviewer agents and prints the
+validated, commit-bound `ReviewResult` JSON; same env overrides plus
+`PR_NUM`/`REVIEW_SHA`), and `./prbot repair` (runs the Issue Analyst +
+Repair agents and prints the validated `DevelopResult` JSON; same env
+overrides plus `PRIOR_SHA` and newline-separated `REVIEW_BLOCKING`/
+`REVIEW_NITS`).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -81,7 +84,9 @@ same env overrides plus `PR_NUM`/`REVIEW_SHA`).
 - `policy.go` owns the deterministic policy engine (§4.8): `EvaluateAutonomy`
   (§12 predicate), `EvaluateCompletion` (§14 gate, blocks on agent
   disagreement §18), `EvaluateClosePolicy` (§19 `autonomous`/`risk-based`/
-  `human-required`, default risk-based), plus the `**`-aware `globMatch`
+  `human-required`, default risk-based), `EvaluateRepairLoop` (§16 bounded
+  REQUEST_CHANGES loop: cap on development/repair attempts → §17 AI escalation),
+  plus the `**`-aware `globMatch`
   for §20 `humanRequiredPaths`. Pure Go, zero LLM calls; inputs are only
   validated `EstimateResult`/config/observed facts, never issue text (§5/§27
   authority ordering). No agent can self-authorize a close (§44 #5) —
@@ -106,3 +111,18 @@ same env overrides plus `PR_NUM`/`REVIEW_SHA`).
   `VERDICT:<value>` line and defaults to `REQUEST_CHANGES`. `ValidateReview`
   gates verdict+commit SHA; `ReviewAppliesTo` is the §15 commit-binding
   predicate (an approval is valid only for the exact SHA it reviewed).
+- `repair.go` owns the Repair agent (§4.6/§16/§27): `RunRepair` runs a **fresh**
+  opencode execution — same model ok, never the developer's/reviewer's
+  transcript — fed the Reviewer's **structured** findings (`ReviewResult`
+  `Blocking`/`Nits`, §35). It reuses `runAgentInWorktree` (the shared §4.4/§4.6
+  body extracted from `RunDeveloper`), resetting the owned worktree onto
+  `PreviousCommit` (the SHA the review actually looked at, §15) so the repair
+  commit sits on top of the reviewed commit. Returns a new local commit only
+  (never pushes, §25). The bounded REQUEST_CHANGES loop is `EvaluateRepairLoop`
+  (policy.go): a pure §16 decision answering "can another development attempt
+  occur?" — within the `maxDevReviewAttempts` cap (default 2, counted per issue,
+  1 = initial develop) it allows a repair, at/over the cap it returns
+  `Escalate` so the workflow must route to the §17 AI-diagnosis path and never
+  treat a REQUEST_CHANGES verdict as silent success (§40). Changing the verdict
+  parser or prompt shape touches `parseReviewOutput`/`repairSystem` in one
+  place each.

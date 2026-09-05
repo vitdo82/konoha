@@ -13,12 +13,15 @@ BLOCKING:
 NITS:
 - naming nit
 CONCLUDE: looks good`
-	v, s := parseReviewOutput([]byte(approve))
+	v, blocking, nits, s := parseReviewOutput([]byte(approve))
 	if v != "APPROVE" {
 		t.Fatalf("expected APPROVE, got %q", v)
 	}
 	if !strings.Contains(s, "APPROVE") || !strings.Contains(s, "naming nit") {
 		t.Fatalf("approve summary missing sections: %q", s)
+	}
+	if len(blocking) != 0 || len(nits) != 1 || nits[0] != "naming nit" {
+		t.Fatalf("approve structured findings wrong: blocking=%v nits=%v", blocking, nits)
 	}
 
 	changes := `VERDICT:REQUEST_CHANGES
@@ -27,12 +30,18 @@ BLOCKING:
 NITS:
 - none
 CONCLUDE: needs key handling fix`
-	v, s = parseReviewOutput([]byte(changes))
+	v, blocking, nits, s = parseReviewOutput([]byte(changes))
 	if v != "REQUEST_CHANGES" {
 		t.Fatalf("expected REQUEST_CHANGES, got %q", v)
 	}
 	if !strings.Contains(s, "missing auth check") {
 		t.Fatalf("blocking finding missing from summary: %q", s)
+	}
+	if len(blocking) != 1 || blocking[0] != "missing auth check" {
+		t.Fatalf("changes structured findings wrong: blocking=%v", blocking)
+	}
+	if len(nits) != 0 {
+		t.Fatalf("'none' must not become a nits finding: %v", nits)
 	}
 }
 
@@ -51,7 +60,7 @@ func TestParseReviewOutputFailClosed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v, _ := parseReviewOutput([]byte(tc.in))
+			v, _, _, _ := parseReviewOutput([]byte(tc.in))
 			if v != "REQUEST_CHANGES" {
 				t.Fatalf("output %q must fail closed to REQUEST_CHANGES, got %q", tc.in, v)
 			}

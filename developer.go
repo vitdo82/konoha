@@ -320,26 +320,28 @@ func cleanupWorktree(ctx context.Context, repoPath, dir, workflowID string) {
 	_ = os.Remove(ownerPath(dir))
 }
 
-// RunDeveloper implements a single development attempt (§4.4):
-// ensure isolated owned worktree → run the Developer agent inside it →
-// deterministically capture the resulting commit and changed files → record the
-// §26 validation result → clean up the worktree (deferred, also on failure).
+// runAgentInWorktree is the shared §4.4/§4.6 body behind a single development
+// or repair attempt: ensure the isolated owned worktree (optionally resetting it
+// first to priorSHA so a repair continues from the exact commit the review saw,
+// §16), run one fresh opencode agent with the given prompt inside it,
+// deterministically capture the resulting commit + changed files, record the
+// §26 validation result, and clean up the worktree (deferred, also on failure).
 // Returns only a local commit artifact; nothing is pushed or published here
 // (§25). A worktree left with uncommitted changes means the agent violated its
 // contract and the attempt fails closed (bounded retry in the workflow).
-func RunDeveloper(ctx context.Context, in DevelopRequest) (DevelopResult, error) {
+func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt string) (DevelopResult, error) {
 	repoPath := filepath.Clean(in.RepoPath)
 	dir := worktreeDir(repoPath, in.Repo, in.IssueNum)
 
 	if in.WorkflowID == "" {
-		return DevelopResult{}, fmt.Errorf("RunDeveloper: WorkflowID required for worktree ownership (§4.4)")
+		return DevelopResult{}, fmt.Errorf("WorkflowID required for worktree ownership (§4.4)")
 	}
 	baseSHA := strings.TrimSpace(in.BaseSHA)
 	if baseSHA == "" {
 		baseSHA = localHead(ctx, repoPath)
 	}
 	if baseSHA == "" {
-		return DevelopResult{}, fmt.Errorf("RunDeveloper: cannot resolve base commit from %s", repoPath)
+		return DevelopResult{}, fmt.Errorf("cannot resolve base commit from %s", repoPath)
 	}
 	owner := worktreeOwner{WorkflowID: in.WorkflowID, BaseSHA: baseSHA}
 
@@ -348,7 +350,18 @@ func RunDeveloper(ctx context.Context, in DevelopRequest) (DevelopResult, error)
 	}
 	defer cleanupWorktree(ctx, repoPath, dir, in.WorkflowID) // also on failure
 
-	prompt := developerPrompt(in, baseSHA)
+	// Repair continues from the exact commit the review looked at (§16/§35).
+	// That commit object lives in the main repo's shared object DB (the worktree
+	// is a linked worktree), so it survives worktree cleanup and can be pointed
+	// at again: reset the recreated, detached worktree onto it before the agent
+	// runs. Guaranteed-fast-forward in practice (priorSHA is a descendant of
+	// baseSHA); reset moves the detached HEAD regardless of relationship.
+	if priorSHA != "" && localHead(ctx, dir) != priorSHA {
+		if _, err := execGit(ctx, dir, "reset", "--hard", priorSHA); err != nil {
+			return DevelopResult{}, fmt.Errorf("reset worktree to %s: %w", priorSHA, err)
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, "opencode", "run", prompt)
 	cmd.Dir = dir
 	cmd.Env = cmdEnv(dir) // §23: no GitHub write credential reaches the agent
@@ -372,7 +385,7 @@ func RunDeveloper(ctx context.Context, in DevelopRequest) (DevelopResult, error)
 		return DevelopResult{}, err
 	}
 	if !clean {
-		return DevelopResult{}, fmt.Errorf("developer left uncommitted changes in %s (expected a local commit)", dir)
+		return DevelopResult{}, fmt.Errorf("agent left uncommitted changes in %s (expected a local commit)", dir)
 	}
 
 	res := DevelopResult{
@@ -390,4 +403,15 @@ func RunDeveloper(ctx context.Context, in DevelopRequest) (DevelopResult, error)
 		return DevelopResult{}, err
 	}
 	return res, nil
+}
+
+// RunDeveloper implements a single development attempt (§4.4): a fresh Developer
+// agent in the isolated owned worktree → local commit artifact. See
+// runAgentInWorktree for the shared body.
+func RunDeveloper(ctx context.Context, in DevelopRequest) (DevelopResult, error) {
+	baseSHA := strings.TrimSpace(in.BaseSHA)
+	if baseSHA == "" {
+		baseSHA = localHead(ctx, filepath.Clean(in.RepoPath))
+	}
+	return runAgentInWorktree(ctx, in, "", developerPrompt(in, baseSHA))
 }
