@@ -68,7 +68,9 @@ validated, commit-bound `ReviewResult` JSON; same env overrides plus
 `PR_NUM`/`REVIEW_SHA`), and `./prbot repair` (runs the Issue Analyst +
 Repair agents and prints the validated `DevelopResult` JSON; same env
 overrides plus `PRIOR_SHA` and newline-separated `REVIEW_BLOCKING`/
-`REVIEW_NITS`).
+`REVIEW_NITS`), and `./prbot complete` (runs the Issue Analyst + Completion
+agents and prints the validated `CompletionResult` JSON; same env overrides
+plus `PR_NUM`/`REVIEW_VERDICT`/`REVIEW_SUMMARY`/`DIFF`/`VALIDATION_OUTPUT`).
 - `analyst.go` owns the Issue Analyst (§4.1/§28/§36): spec-first discovery
   (`findSpecs`), the system-instruction constant + untrusted-data prompt
   (`analystPrompt`, §27), strict JSON parsing (`parseIssueAnalysisJSON`), and
@@ -92,6 +94,16 @@ overrides plus `PRIOR_SHA` and newline-separated `REVIEW_BLOCKING`/
   authority ordering). No agent can self-authorize a close (§44 #5) —
   `EvaluateCompletion` is conjunctive and `CompletionAgentComplete` alone is
   never sufficient.
+- `completion.go` owns the Completion agent (§4.7/§14/§29/§30): `RunCompletion`
+  is a **separate** opencode execution (independent from the developer, §4.7)
+  that re-checks the implementation against the machine-checkable acceptance
+  criteria and emits a validated `CompletionResult` (`CriterionResult` per
+  criterion, `Recommendation` ∈ `close|reopen|blocked`, §30). It only
+  *recommends*: the workflow must run the §14 gate (`EvaluateCompletion`) and
+  §19 close policy (`EvaluateClosePolicy`) before any `EnsureIssueState(CLOSED)`;
+  `CompletionConflict` flags a `close` recommendation the policy denies so the
+  workflow routes to §37 disagreement/resolution instead of ever force-closing
+  (`LLMs propose; deterministic policy decides`, §44 #4).
 - `developer.go` owns the Developer agent (§4.4/§25/§26/§34/§35): `RunDeveloper`
   runs a fresh opencode execution inside an **isolated, workflow-owned worktree**
   (deterministic sibling `.konoha/<repo>-issue-<n>` dir, ownership claim file

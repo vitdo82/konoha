@@ -61,6 +61,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "complete":
+			if err := runComplete(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -98,6 +103,7 @@ func main() {
 	w.RegisterActivity(RunDeveloper)
 	w.RegisterActivity(RunReviewer)
 	w.RegisterActivity(RunRepair)
+	w.RegisterActivity(RunCompletion)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
@@ -364,6 +370,55 @@ func linesEnv(k string) []string {
 		}
 	}
 	return out
+}
+
+func runComplete() error {
+	// debug: run the Issue Analyst + Completion agents against one issue directly
+	// (no Temporal), printing the validated CompletionResult (§4.7/§30) as JSON.
+	// Env: OWNER, REPO, REPO_PATH; issue number is arg 2 or ISSUE_NUM.
+	// Optional: PR_NUM (default 0 = no PR yet), REVIEW_VERDICT/REVIEW_SUMMARY,
+	// and DIFF/VALIDATION_OUTPUT for observed artifacts.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+
+	pr := 0
+	fmt.Sscan(getenv("PR_NUM", ""), &pr)
+	diff := os.Getenv("DIFF")
+	if diff == "" && pr > 0 {
+		if d, err := prDiff(in.Owner, in.Repo, pr); err == nil {
+			diff = d
+		}
+	}
+
+	c, err := RunCompletion(context.Background(), CompletionRequest{
+		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, PRNumber: pr,
+		RepoPath: in.RepoPath,
+		Title:    a.Title, Body: a.Body, Spec: a.Spec,
+		Requirements:       a.Requirements,
+		AcceptanceCriteria: a.AcceptanceCriteria,
+		Constraints:        a.Constraints,
+		Assumptions:        a.Assumptions,
+		ReviewVerdict:      getenv("REVIEW_VERDICT", ""),
+		ReviewSummary:      os.Getenv("REVIEW_SUMMARY"),
+		Diff:               diff,
+		ValidationOutput:   os.Getenv("VALIDATION_OUTPUT"),
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
 }
 
 func issueNumArg() (int, error) {
