@@ -2,6 +2,7 @@ package konoha
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -211,16 +212,75 @@ func TestWorkflowSmallRiskGateHumanRequired(t *testing.T) {
 	}
 }
 
-// §46: LARGE route ends at the deterministic NOT_WIRED terminal (children
-// follow-up), with the large route metric recorded — never a silent drop.
-func TestWorkflowLargeNotWired(t *testing.T) {
+// §8/§19: LARGE route splits → creates child issues → each child runs the real
+// SMALL IssueCycleWorkflow (mocked activities) → all complete → parent CLOSED.
+func TestWorkflowLargeSplitChildrenClose(t *testing.T) {
 	resetMetrics()
-	env := mockCycleEnv(t, EstimateResult{Complexity: 7, Confidence: "medium"})
+	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+	env.RegisterActivity(RecordCycleMetrics)
+	analysis := IssueAnalysis{Title: "t", Body: "b", Summary: "s", Spec: specFallback,
+		Requirements: []string{"r1"}, AcceptanceCriteria: []string{"Given c When d Then e"}}
+	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
+	// parent (issue testIssue) is LARGE; children (any other issue #) are SMALL.
+	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in IssueInput, a IssueAnalysis) (EstimateResult, error) {
+			if in.IssueNum == testIssue {
+				return EstimateResult{Complexity: 7, Confidence: "medium"}, nil
+			}
+			return EstimateResult{Complexity: 2, Confidence: "high"}, nil
+		})
+	env.OnActivity(RunSplit, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(SplitResult{
+		Tickets: []SplitTicket{{Key: "01", Title: "child-a", Complexity: 2, Requirements: []string{"r"}, AcceptanceCriteria: []string{"c"}}},
+	}, nil)
+	env.OnActivity(EnsureChildren, mock.Anything, mock.Anything).Return([]ChildIssue{
+		{Key: "01", ParentIssueNumber: testIssue, GitHubIssueNumber: 101, Complexity: 2, Title: "child-a"},
+	}, nil)
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
+	// Child issue #101 runs the real SMALL path: dev → publish → APPROVE → close.
+	mockSmallPath(env) // activity mocks are global (mock.Anything), reused by child
+
 	runAndAssert(t, env)
-	if got := terminalState(t, env); got != stateNotWired {
-		t.Fatalf("large route terminal = %q, want NOT_WIRED", got)
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("large route terminal = %q, want CLOSED", got)
 	}
 	if v := sink.get(mSplitLarge); v != 1 {
-		t.Fatalf("issue_route_large = %v, want 1", v)
+		t.Fatalf("issue_route_large = %v, want 1", int(v))
+	}
+}
+
+// §8/§40: a child failure fails the parent into BLOCKED (no silent skip).
+func TestWorkflowLargeChildFailureBlocksParent(t *testing.T) {
+	resetMetrics()
+	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+	env.RegisterActivity(RecordCycleMetrics)
+	analysis := IssueAnalysis{Title: "t", Body: "b", Summary: "s", Spec: specFallback,
+		Requirements: []string{"r1"}, AcceptanceCriteria: []string{"Given c When d Then e"}}
+	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
+	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in IssueInput, a IssueAnalysis) (EstimateResult, error) {
+			if in.IssueNum == testIssue {
+				return EstimateResult{Complexity: 7, Confidence: "medium"}, nil
+			}
+			return EstimateResult{Complexity: 2, Confidence: "high"}, nil
+		})
+	env.OnActivity(RunSplit, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(SplitResult{
+		Tickets: []SplitTicket{{Key: "01", Title: "child-a", Complexity: 2, Requirements: []string{"r"}, AcceptanceCriteria: []string{"c"}}},
+	}, nil)
+	env.OnActivity(EnsureChildren, mock.Anything, mock.Anything).Return([]ChildIssue{
+		{Key: "01", ParentIssueNumber: testIssue, GitHubIssueNumber: 101, Complexity: 2, Title: "child-a"},
+	}, nil)
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
+	// Child runs the real SMALL path but its RunDeveloper fails → child fails →
+	// parent must BLOCK (never silently continue).
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{}, errors.New("dev failed"))
+	env.OnActivity(FetchPRHead, mock.Anything, mock.Anything).Return("headsha", nil)
+	env.OnActivity(FetchPRDiff, mock.Anything, mock.Anything).Return("+1", nil)
+	env.OnActivity(RunReviewer, mock.Anything, mock.Anything).Return(ReviewResult{Verdict: "APPROVE", CommitSHA: "headsha", PRNumber: 101}, nil)
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(PublishResult{PRNumber: 101}, nil)
+
+	runAndAssert(t, env)
+	if got := terminalState(t, env); got != stateBlocked {
+		t.Fatalf("child failure must block parent, got %q", got)
 	}
 }

@@ -204,15 +204,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 
 	if route == stateLarge {
-		// §46 out of scope: LARGE (split/children) is a follow-up. End at a
-		// deterministic NOT_WIRED terminal with metrics — never a silent drop.
-		transition(stateNotWired)
-		return recordTerminal(ctx, info, in, CycleOutcome{
-			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
-			Owner: in.Owner, Repo: in.Repo,
-			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
-			TerminalState: stateNotWired,
-		})
+		return runLargePath(ctx, devCtx, in, a, est, info, route, transition, projectLabels)
 	}
 
 	// -- §4.4 DEVELOPING --
@@ -381,6 +373,109 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		AutonomousClose: true,
 		Attempts:        lastAttempts, ReviewRounds: lastReviewRounds,
 	})
+}
+
+// runLargePath implements the §8/§19 large flow: SPLITTING → RunSplit
+// (validated §36) → EnsureChildren → dependency-respecting batches (§10) →
+// child IssueCycleWorkflow fan-out (bounded by §43 cap) → all children complete
+// → parent CLOSED. A child failure fails the whole parent (§44) and routes to
+// BLOCKED — never a silent skip. Child cycles are started with the deterministic
+// <repo>-issue-<childNumber> ID so sweeps/retries converge (§32/§24).
+func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int)) error {
+	transition(stateSplitting)
+	var split SplitResult
+	if err := workflow.ExecuteActivity(ctx, RunSplit, in, a, est).Get(ctx, &split); err != nil {
+		return err
+	}
+	if err := ValidateSplit(in.Lifecycle, split); err != nil {
+		return err // §36 fail-closed; bounded retry, never a mutation
+	}
+
+	// Idempotently create child issues (§8/§9/§24), guarded by DryRun.
+	children, err := ensureChildrenActivity(ctx, in, split)
+	if err != nil {
+		return err
+	}
+
+	// Dependency-respecting batches (§10), capped by §43 (default 1).
+	batches, err := scheduleChildBatches(split.Tickets, in.Lifecycle.ConcurrentChildrenPerIssue())
+	if err != nil {
+		return err // invalid DAG → fail closed, never blind fan-out
+	}
+
+	// Execute batches in order; within a batch, run children concurrently.
+	for _, batch := range batches {
+		type childRun struct {
+			future workflow.Future
+			n      int
+		}
+		var runs []childRun
+		for _, key := range batch {
+			var num int
+			for _, c := range children {
+				if c.Key == key {
+					num = c.GitHubIssueNumber
+					break
+				}
+			}
+			if num == 0 {
+				return fmt.Errorf("child %q has no GitHub issue (EnsureChildren failed?)", key)
+			}
+			cwo := workflow.ChildWorkflowOptions{
+				WorkflowID: fmt.Sprintf("%s-issue-%d", in.Repo, num), // deterministic (§32)
+			}
+			cctx := workflow.WithChildOptions(devCtx, cwo)
+			childIn := IssueInput{
+				Owner: in.Owner, Repo: in.Repo, IssueNum: num,
+				RepoPath: in.RepoPath, Lifecycle: in.Lifecycle,
+			}
+			runs = append(runs, childRun{workflow.ExecuteChildWorkflow(cctx, IssueCycleWorkflow, childIn), num})
+		}
+		for _, r := range runs {
+			if err := r.future.Get(ctx, nil); err != nil {
+				workflow.GetLogger(ctx).Error("child cycle failed", "issue", r.n, "err", err)
+				// §44 #1/#40: a child failure must NOT be silently skipped.
+				// Aggregate into a parent BLOCKED terminal.
+				transition(stateBlocked)
+				return recordTerminal(ctx, info, in, CycleOutcome{
+					WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+					Owner: in.Owner, Repo: in.Repo,
+					Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+					TerminalState: stateBlocked, HumanRequired: true,
+					EscalationReason: reasonAgentFailure,
+				})
+			}
+		}
+	}
+
+	// All children complete → parent closes (completion gate is the follow-up).
+	transition(stateClosed)
+	if err := workflow.ExecuteActivity(ctx, EnsureIssueState, StateRequest{
+		Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, State: "closed", DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, nil); err != nil {
+		return err
+	}
+	projectLabels(stateClosed, est.Complexity)
+	return recordTerminal(ctx, info, in, CycleOutcome{
+		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+		Owner: in.Owner, Repo: in.Repo,
+		Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+		TerminalState:   stateClosed,
+		AutonomousClose: true,
+	})
+}
+
+// ensureChildrenActivity wraps EnsureChildren so it's replay-safe (an activity),
+// respecting the parent's DryRun (§42).
+func ensureChildrenActivity(ctx workflow.Context, in IssueInput, split SplitResult) ([]ChildIssue, error) {
+	var children []ChildIssue
+	if err := workflow.ExecuteActivity(ctx, EnsureChildren, ChildCreateRequest{
+		Owner: in.Owner, Repo: in.Repo, ParentNum: in.IssueNum,
+		Tickets: split.Tickets, DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, &children); err != nil {
+		return nil, err
+	}
+	return children, nil
 }
 
 // recordTerminal records the §39 terminal metrics for a finished cycle and
