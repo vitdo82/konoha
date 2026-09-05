@@ -50,6 +50,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "review":
+			if err := runReview(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -85,6 +90,7 @@ func main() {
 	w.RegisterActivity(AnalyzeIssue)
 	w.RegisterActivity(EstimateIssue)
 	w.RegisterActivity(RunDeveloper)
+	w.RegisterActivity(RunReviewer)
 	w.RegisterActivity(EnsurePullRequest)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
@@ -230,6 +236,57 @@ func runDevelop() error {
 		return err
 	}
 	b, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runReview() error {
+	// debug: run the Issue Analyst + Reviewer against one PR directly (no
+	// Temporal), printing the validated, commit-bound ReviewResult (§4.5/§15)
+	// as JSON. PR number is arg 2 or PR_NUM; issue context for the analyst is
+	// arg 2's ISSUE_NUM default (or ISSUE_NUM env). Commit HEAD is resolved
+	// from the PR; override the reviewed SHA with REVIEW_SHA.
+	n, err := issueNumArg()
+	if err != nil {
+		return err
+	}
+	in := debugIssueInput(n)
+	a, err := AnalyzeIssue(context.Background(), in)
+	if err != nil {
+		return err
+	}
+
+	pr := 0
+	fmt.Sscan(getenv("PR_NUM", "1"), &pr)
+	if pr <= 0 {
+		return fmt.Errorf("PR_NUM required for review")
+	}
+	diff, err := prDiff(in.Owner, in.Repo, pr)
+	if err != nil {
+		return err
+	}
+	sha := getenv("REVIEW_SHA", "")
+	if sha == "" {
+		sha, err = prHeadSHA(context.Background(), in.Owner, in.Repo, pr)
+		if err != nil {
+			return err
+		}
+	}
+
+	r, err := RunReviewer(context.Background(), ReviewRequest{
+		Owner: in.Owner, Repo: in.Repo, PRNumber: pr, RepoPath: in.RepoPath,
+		CommitSHA: sha, Diff: diff,
+		Title: a.Title, Body: a.Body, Spec: a.Spec,
+		Requirements: a.Requirements, AcceptanceCriteria: a.AcceptanceCriteria,
+		Constraints: a.Constraints, Assumptions: a.Assumptions,
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
