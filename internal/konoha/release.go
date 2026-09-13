@@ -298,22 +298,28 @@ func RunRelease(ctx context.Context, in ReleaseRequest) (ReleaseResult, error) {
 	}, nil
 }
 
-// PostMergeInput identifies a merged PR whose release should be published.
+// PostMergeInput identifies a merged PR whose release should be published and
+// deployed. IssueNum lets a deploy/verify failure escalate the (now closed)
+// issue back to HUMAN_REQUIRED.
 type PostMergeInput struct {
 	Owner      string          `json:"owner"`
 	Repo       string          `json:"repo"`
 	RepoPath   string          `json:"repoPath"`
 	PrNum      int             `json:"pr,omitempty"`
+	IssueNum   int             `json:"issue,omitempty"`
 	BaseBranch string          `json:"baseBranch,omitempty"`
 	Lifecycle  LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
-// PostMergeWorkflow runs the §50 release after a merge lands. It is started from
-// the merge-complete path in IssueCycleWorkflow and is safe to re-run (the tag
-// check makes it idempotent); a cron/manual invocation is a valid backstop.
-// Deterministic: all I/O lives in the RunRelease activity.
+// PostMergeWorkflow runs the §50 release and §51 deploy+verify after a merge
+// lands. It is started from the merge-complete path in IssueCycleWorkflow and is
+// safe to re-run (the release tag check and the deploy tag guard make it
+// idempotent); a cron/manual invocation is a valid backstop. A permanent
+// post-deploy verification failure is never a silent success (§40): it emits the
+// rollback signal and escalates the issue to HUMAN_REQUIRED. Deterministic: all
+// I/O lives in the release/deploy/verify activities.
 func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
-	if !ReleaseEnabled(in.Lifecycle) {
+	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) {
 		return nil
 	}
 	ao := workflow.ActivityOptions{
@@ -324,16 +330,85 @@ func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
 
-	var res ReleaseResult
-	if err := workflow.ExecuteActivity(ctx, RunRelease, ReleaseRequest{
-		Owner: in.Owner, Repo: in.Repo, PrNum: in.PrNum, BaseBranch: in.BaseBranch,
-		Config: in.Lifecycle.Release, DryRun: in.Lifecycle.DryRun,
-	}).Get(ctx, &res); err != nil {
+	tag := ""
+	if ReleaseEnabled(in.Lifecycle) {
+		var res ReleaseResult
+		if err := workflow.ExecuteActivity(ctx, RunRelease, ReleaseRequest{
+			Owner: in.Owner, Repo: in.Repo, PrNum: in.PrNum, BaseBranch: in.BaseBranch,
+			Config: in.Lifecycle.Release, DryRun: in.Lifecycle.DryRun,
+		}).Get(ctx, &res); err != nil {
+			return err
+		}
+		workflow.GetLogger(ctx).Info("post-merge release",
+			"repo", in.Owner+"/"+in.Repo, "skipped", res.Skipped, "tag", res.Tag, "reason", res.Reason)
+		tag = res.Tag
+	}
+
+	if !DeployEnabled(in.Lifecycle) {
+		return nil
+	}
+
+	var dep DeployResult
+	if err := workflow.ExecuteActivity(ctx, DeployRelease, DeployRequest{
+		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, Tag: tag,
+		Config: in.Lifecycle.Deploy, DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, &dep); err != nil {
 		return err
 	}
-	workflow.GetLogger(ctx).Info("post-merge release",
-		"repo", in.Owner+"/"+in.Repo, "skipped", res.Skipped, "tag", res.Tag, "reason", res.Reason)
-	return nil
+	if dep.Skipped {
+		workflow.GetLogger(ctx).Info("post-merge deploy skipped",
+			"repo", in.Owner+"/"+in.Repo, "reason", dep.Reason)
+		return nil
+	}
+	if dep.Rollback {
+		return escalateDeployFailure(ctx, in, dep.Detail)
+	}
+
+	// The verify poll can span the full maxWait; give it a window that outlives
+	// the bounded poll (mirrors the §49 CI gate).
+	vctx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: DeployMaxWait(in.Lifecycle) + time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
+		},
+	})
+	var ver VerifyResult
+	if err := workflow.ExecuteActivity(vctx, VerifyDeployment, VerifyRequest{
+		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, Tag: tag,
+		DeploymentID: dep.DeploymentID, Config: in.Lifecycle.Deploy,
+		RollbackOnFail: RollbackOnFail(in.Lifecycle), DryRun: in.Lifecycle.DryRun,
+	}).Get(vctx, &ver); err != nil {
+		return err
+	}
+	if ver.Skipped || ver.Verified {
+		workflow.GetLogger(ctx).Info("post-merge deploy verified",
+			"repo", in.Owner+"/"+in.Repo, "tag", tag, "skipped", ver.Skipped, "detail", ver.Detail)
+		return nil
+	}
+	return escalateDeployFailure(ctx, in, ver.Detail)
+}
+
+// escalateDeployFailure routes a failed deploy/verify to HUMAN_REQUIRED (§51,
+// §40): the issue (already closed on merge) is reopened and marked
+// konoha:human-required — labels are a projection; the failure is also returned
+// so the post-merge workflow is never a silent success. No activity runs under
+// DryRun (the deploy stages are shadowed, so this is unreachable).
+func escalateDeployFailure(ctx workflow.Context, in PostMergeInput, detail string) error {
+	workflow.GetLogger(ctx).Error("post-deploy verification failed → HUMAN_REQUIRED",
+		"repo", in.Owner+"/"+in.Repo, "issue", in.IssueNum, "reason", reasonDeployFailed, "detail", detail)
+	if err := workflow.ExecuteActivity(ctx, EnsureIssueState, StateRequest{
+		Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, State: "open", DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, nil); err != nil {
+		return err
+	}
+	if err := workflow.ExecuteActivity(ctx, ApplyIssueLabels, LabelsRequest{
+		Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum,
+		Labels: append([]string{labelManaged}, HumanRequiredLabels()...),
+		DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, nil); err != nil {
+		return err
+	}
+	return fmt.Errorf("post-deploy verification failed: %s", detail)
 }
 
 // repoDefaultBranch resolves the repo's default branch via the App token.

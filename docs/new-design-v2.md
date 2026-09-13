@@ -1460,6 +1460,47 @@ lifecycle:
     versionPrefix: v
 ```
 
+### Deploy + verify stage (§51, extends this section)
+
+A release is not a running deployment. When `deploy.enabled`, the post-merge
+workflow continues after the release tag exists:
+
+```
+RunRelease (tag) ──▶ DeployRelease        # activity: GitHub deployment + hook
+                          │                 tag guard: success for ref → no-op
+                          ↓
+                     VerifyDeployment      # activity: bounded smoke/health poll
+                          ├─ exit 0            → deployed (terminal)
+                          └─ window expired    → rollback signal + HUMAN_REQUIRED
+```
+
+`DeployRelease` records a GitHub Deployment for the released tag, then runs the
+configured hook from the main checkout (never inside the ephemeral agent
+worktree) with `KONOHA_RELEASE_TAG` and `KONOHA_DEPLOY_ENV` exported. The deploy
+is idempotent by construction: a tag whose latest deployment status is `success`
+is never re-deployed (§24), so a Temporal retry or duplicated post-merge run
+converges. A hook failure marks the deployment `failure` and returns a rollback
+recommendation.
+
+`VerifyDeployment` runs the configured smoke/health command with bounded retries
+until it exits 0 or `maxWait` expires. Expiry is a **permanent** failure (§40):
+`verified=false`, never a silent success. With `rollbackOnFail` the deployment
+is marked `inactive` (the rollback signal) and `PostMergeWorkflow` reopens the
+issue and projects `konoha:human-required` — a failed deploy/verify is never
+reported as deployed. Both stages honor `DryRun` (§42) and are no-ops when the
+repo has not opted in (no remote calls).
+
+```yaml
+lifecycle:
+  deploy:
+    enabled: false          # opt-in; false/unset = no-op
+    command: ""             # deploy hook (sh -c) run in the main checkout
+    env: production         # deployment environment (GitHub + KONOHA_DEPLOY_ENV)
+    verify: ""              # smoke/health command; exit 0 = healthy
+    maxWait: 5m             # bounded verify poll window
+    rollbackOnFail: true    # emit a rollback signal on failure
+```
+
 ---
 
  # 31\. External GitHub changes

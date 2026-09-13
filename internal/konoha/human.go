@@ -27,8 +27,9 @@ const (
 	reasonPolicyViolation          = "policy_violation"
 	reasonAgentFailure             = "agent_failure"
 	reasonConflictingRequirements  = "conflicting_requirements"
-	reasonCIFailed                 = "ci_failed"    // §49: CI gate not green before merge
-	reasonMergeFailed              = "merge_failed" // §49: PR merge failed after approval
+	reasonCIFailed                 = "ci_failed"     // §49: CI gate not green before merge
+	reasonMergeFailed              = "merge_failed"  // §49: PR merge failed after approval
+	reasonDeployFailed             = "deploy_failed" // §51: post-deploy verification failed
 )
 
 func validHumanReason(r string) bool {
@@ -36,7 +37,7 @@ func validHumanReason(r string) bool {
 	case reasonRequirementsAmbiguous, reasonSecuritySensitive, reasonArchitectureChange,
 		reasonRepeatedReviewFailure, reasonInsufficientTestCoverage, reasonExternalDependency,
 		reasonPolicyViolation, reasonAgentFailure, reasonConflictingRequirements,
-		reasonCIFailed, reasonMergeFailed:
+		reasonCIFailed, reasonMergeFailed, reasonDeployFailed:
 		return true
 	}
 	return false

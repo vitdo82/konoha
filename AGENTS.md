@@ -157,6 +157,21 @@ without restarting a completed workflow. Deliveries with an invalid
   release failure is logged but never changes the issue's terminal state (the PR
   already merged). `ghTokenRunner` is the shared test seam; never call
   `activity.GetLogger` in these activities (panics on non-Temporal ctx).
+- `deploy.go` owns the §51 deploy + post-deploy verification: after §50, when
+  `lifecycle.deploy.enabled`, `PostMergeWorkflow` runs `DeployRelease` (records
+  a GitHub Deployment for the released tag, runs the config `deploy.command` via
+  `sh -c` from the MAIN checkout — never the agent worktree — with
+  `KONOHA_RELEASE_TAG`/`KONOHA_DEPLOY_ENV`) then `VerifyDeployment` (bounded
+  `deploy.verify` poll up to `maxWait`). Deploy is idempotent by a tag-based
+  guard: a tag whose latest deployment status is `success` is never
+  re-deployed (§24). Failure semantics are fail-closed (§40): a failing hook
+  marks the deployment `failure` and a permanently failing verify marks it
+  `inactive` (the rollback signal when `rollbackOnFail`), and
+  `PostMergeWorkflow` routes the issue to `HUMAN_REQUIRED` by reopening it and
+  projecting `konoha:human-required` — a failed deploy/verify is never reported
+  as deployed. Disabled/absent and `DryRun` (§42) are no-ops (no remote calls).
+  `ghTokenRunner` is the shared test seam; never call `activity.GetLogger` in
+  these activities (panics on non-Temporal ctx).
 - `main.go` has several debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
   by default; `PR_NUM` env overrides), `./prbot publish` (runs

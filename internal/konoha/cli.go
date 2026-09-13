@@ -159,6 +159,8 @@ func Main() {
 	w.RegisterActivity(WaitForCI)
 	w.RegisterActivity(MergePullRequest)
 	w.RegisterActivity(RunRelease)
+	w.RegisterActivity(DeployRelease)
+	w.RegisterActivity(VerifyDeployment)
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
