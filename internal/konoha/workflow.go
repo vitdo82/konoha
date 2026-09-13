@@ -567,6 +567,10 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	if err := workflow.ExecuteActivity(ctx, RecordCycleMetrics, out).Get(ctx, nil); err != nil {
 		return err
 	}
+	// §53 failure feedback: a terminal BLOCKED/FAILED run files at most one
+	// idempotent bug issue (only when the repo opted into alerting). Best-effort:
+	// a feedback problem never changes the run's authoritative terminal state.
+	startFailureFeedback(ctx, in, out)
 	return nil
 }
 

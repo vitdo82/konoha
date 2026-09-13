@@ -136,6 +136,8 @@ func Main() {
 	w.RegisterWorkflowWithOptions(IssueAllWorkflow, workflow.RegisterOptions{Name: "IssueAllWorkflow"})
 	w.RegisterWorkflowWithOptions(PostMergeWorkflow, workflow.RegisterOptions{Name: "PostMergeWorkflow"})
 	w.RegisterWorkflowWithOptions(DependencyWorkflow, workflow.RegisterOptions{Name: "DependencyWorkflow"})
+	w.RegisterWorkflowWithOptions(AlertWorkflow, workflow.RegisterOptions{Name: "AlertWorkflow"})
+	w.RegisterWorkflowWithOptions(FailureFeedbackWorkflow, workflow.RegisterOptions{Name: "FailureFeedbackWorkflow"})
 	w.RegisterActivity(FetchDiff)
 	w.RegisterActivity(FetchPRHead)
 	w.RegisterActivity(FetchPRDiff)
@@ -169,6 +171,8 @@ func Main() {
 	w.RegisterActivity(VerifyDeployment)
 	w.RegisterActivity(ScanDependencies)
 	w.RegisterActivity(EnsureDependencyIssue)
+	w.RegisterActivity(EvaluateAlerts)
+	w.RegisterActivity(EnsureFailureIssue)
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
@@ -205,22 +209,30 @@ func defaultReposPath() string {
 // config prints repos.yaml-derived schedule inputs for apply.sh, which feeds
 // each line to `temporal schedule create`. Path is the first non-flag arg or
 // $KONOHA_CONFIG_DIR/repos.yaml (default ./configs/repos.yaml). `--deps` emits
-// the §52 dependency schedules instead ("<repo>\t<interval>\t<json>").
+// the §52 dependency schedules and `--alerts` the §53 alert schedules instead
+// ("<repo>\t<interval>\t<json>").
 func runConfig(args []string) error {
 	path := defaultReposPath()
-	deps := false
+	deps, alerts := false, false
 	for _, a := range args {
-		if a == "--deps" {
+		switch a {
+		case "--deps":
 			deps = true
+			continue
+		case "--alerts":
+			alerts = true
 			continue
 		}
 		path = a
 	}
 	var lines []string
 	var err error
-	if deps {
+	switch {
+	case alerts:
+		lines, err = alertsScheduleInputs(path)
+	case deps:
 		lines, err = depsScheduleInputs(path)
-	} else {
+	default:
 		lines, err = scheduleInputs(path)
 	}
 	if err != nil {

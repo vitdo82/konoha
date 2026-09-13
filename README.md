@@ -49,6 +49,14 @@ repos:
         schedule: 24h                  # per-repo scan cadence (<repo>-deps schedule)
         label: konoha:dependency       # base label; vulnerabilities also get konoha:security
         autoFileIssues: true           # false = scan/report only
+      alerting:                        # §53 rate-drift alerts + failure feedback
+        enabled: false                 # opt-in; false/unset = no alerts, no bug issues
+        notify: ""                     # webhook URL (slack-compatible); empty = log only
+        schedule: 24h                  # evaluation cadence (<repo>-alerts schedule)
+        onRates: []                    # optional subset; empty = every configured threshold
+        thresholds:                    # autonomous rate alerts below; all others above
+          autonomous_completion_rate: 0.7
+          human_escalation_rate: 0.3
       poGateTimeout: 168h              # §18/§33 human-response window
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
@@ -131,18 +139,27 @@ parser contract, §6 workflow state names, and GitHub API base.
   carries `konoha:dependency`, plus `konoha:security` for a known vulnerability —
   both are built-in §20 escalation labels, so a dependency/CVE update always
   routes to `HUMAN_REQUIRED` before a PR is published, even under
-  `closePolicy: autonomous`.
+  `closePolicy: autonomous`. When `alerting.enabled`, a per-repo `<repo>-alerts`
+  schedule runs `AlertWorkflow` → `EvaluateAlerts`, which reads the §39 rate
+  gauges and emits one alert per violated metric per window (deduped; log +
+  optional `notify` webhook). The same flag makes a terminal `BLOCKED`/`FAILED`
+  cycle start `FailureFeedbackWorkflow`, which files at most one bug issue per
+  run (`EnsureFailureIssue`, marker `<!-- konoha-failure: … -->`) carrying the
+  structured failure; the filed issue is a normal issue (no `konoha:managed`
+  label) so the sweep drives it back through the lifecycle. Alerting never
+  resolves a stuck run — Temporal state stays authoritative.
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, §43
-  concurrency caps, and §52 `deps`.
+  concurrency caps, §52 `deps`, and §53 `alerting`.
 - **Runtime config**: `konoha.yaml` — worker/runtime values + code-level
   `defaults.lifecycle` fallbacks (see Configuration below).
 - **Apply**: `scripts/apply.sh` builds the worker and asks `prbot config` (the
   shared Go loader) for each repo's schedule input JSON — unknown keys / bad
   values in `repos.yaml` fail fast. It then (re)creates `<repo>-review-all` and
   `<repo>-issue-all` schedules per repo, plus a `<repo>-deps` schedule for each
-  `deps.enabled` repo (`prbot config --deps`).
+  `deps.enabled` repo (`prbot config --deps`) and a `<repo>-alerts` schedule for
+  each `alerting.enabled` repo (`prbot config --alerts`).
 
 ## Layout
 
@@ -185,7 +202,8 @@ activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
 `VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override), and `/tmp/prbot deps`
 (runs the §52 dependency scan for `OWNER`/`REPO`/`REPO_PATH` and prints the
 validated `DependencyReport`; `SCAN_CMD` required). `prbot config --deps`
-prints the §52 dependency schedule inputs for `apply.sh`.
+prints the §52 dependency schedule inputs for `apply.sh`, and
+`prbot config --alerts` prints the §53 alert schedule inputs.
 
 ## Add a repo
 
