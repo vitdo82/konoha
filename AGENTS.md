@@ -110,8 +110,8 @@ without restarting a completed workflow. Deliveries with an invalid
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
   fail fast at apply time. The schema lives in `config.go`
-  (`RepoConfig`/`LifecycleConfig`, §§33/43) — adding keys to `repos.yaml`
-  requires updating those structs, not grep/awk in `apply.sh`.
+  (`RepoConfig`/`LifecycleConfig`/`MergeConfig`, §§33/43/49) — adding keys to
+  `repos.yaml` requires updating those structs, not grep/awk in `apply.sh`.
 - **Runtime config is `konoha.yaml`** (`configs/`), resolved once at bootstrap
   as `env > file > bundled default` (`appconfig.go` → `appCfg`, fixed for the
   process lifetime so workflow replay is deterministic). `worker.*` holds the
@@ -131,6 +131,18 @@ without restarting a completed workflow. Deliveries with an invalid
   the unit tests use).
 - PR idempotency for the publish path lives in `publish.go` (`EnsurePullRequest`,
   search by head branch, not by marker).
+- `merge.go` owns the §49 merge + CI status gate: `WaitForCI` polls
+  `gh pr checks --json bucket,name` until every check passes or one fails,
+  bounded by `merge.ciMaxWait`; a fail, an unclassifiable bucket, or a timeout
+  returns `Green=false` (never a silent pass). `MergePullRequest` merges with
+  the App token using the config-driven `merge.strategy` (whitelist
+  `squash|rebase|merge`), is idempotent under retry (`§24` probe the PR state
+  before and after a lost response, never double-merge), and binds
+  `--match-head-commit` to the reviewed SHA (§15) so a moved head is refused.
+  `ghTokenRunner` is the package var test seam (like `ghRunner`); do not call
+  `activity.GetLogger` in these activities (panics on non-Temporal ctx). Config
+  is `lifecycle.merge`, defaulting to `defaults.lifecycle.merge` in
+  konoha.yaml (`strategy: squash`, `requireCI: true`, `ciMaxWait: 10m`).
 - `main.go` has several debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
   by default; `PR_NUM` env overrides), `./prbot publish` (runs
@@ -170,8 +182,12 @@ mutating).
   wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
   (suppresses publish on restricted paths/labels) → publish (idempotent PR) →
   REVIEWING → bounded repair loop (§16, `RunRepair(PreviousCommit=<reviewed
-  SHA>)`, cap → BLOCKED / never close) → APPROVED (commit-bound §15) →
-  CLOSED. Every terminal funnels through `recordTerminal` → `RecordCycleMetrics`
+  SHA>)`, cap → BLOCKED / never close) → APPROVED (commit-bound §15) → §49 CI
+  gate (`WaitForCI`) → `MergePullRequest` (idempotent, config-driven strategy;
+  `--match-head-commit` binds the reviewed SHA) → CLOSED. A non-green CI gate or
+  a merge error escalates to `HUMAN_REQUIRED` and NEVER closes — a closed issue
+  always means its PR actually merged. Every terminal funnels through
+  `recordTerminal` → `RecordCycleMetrics`
   (autonomous vs human/blocked, §39). Follow-ups NOT yet wired: completion gate
   (§14/§19), disagreement (§37), diagnosis → HUMAN_REQUIRED (§17/§18), and the
   LARGE path (split/children — currently ends at the deterministic `NOT_WIRED`

@@ -9,7 +9,8 @@ import (
 )
 
 // Scenario 01 — SMALL autonomous happy path (#47): a SMALL issue runs
-// dev → publish → APPROVE → CLOSED, exactly one PR created, issue closed.
+// dev → publish → APPROVE → CI green → MERGE → CLOSED, exactly one PR created,
+// the PR merged, and the issue closed (§49).
 func TestScenario01SmallHappyPath(t *testing.T) {
 	// Pre-existing GitHub state: one open issue #1 (the sweep/Analyst input).
 	seedState(t, `{"issues":[{"number":1,"state":"open","title":"t","body":"b",
@@ -51,7 +52,7 @@ func TestScenario01SmallHappyPath(t *testing.T) {
 	if pr == nil {
 		t.Fatal("expected exactly one PR created")
 	}
-	if pr.State != "open" {
-		t.Fatalf("PR unexpectedly %q", pr.State)
+	if pr.State != "merged" {
+		t.Fatalf("§49: PR must be merged before the issue closes, state=%q", pr.State)
 	}
 }

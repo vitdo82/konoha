@@ -17,24 +17,32 @@ import (
 )
 
 type ghItem struct {
-	Number      int      `json:"number"`
-	State       string   `json:"state"`
-	Title       string   `json:"title"`
-	Body        string   `json:"body"`
-	Labels      []string `json:"labels"`
-	HeadRef     string   `json:"headRef"`
-	IsPR        bool     `json:"isPr"`
-	HeadRefOID  string   `json:"headRefOid"`
-	Diff        string   `json:"diff"`
-	Reviews     []string `json:"reviews"`
-	Comments    []string `json:"comments"`
-	PullRequest bool     `json:"pullRequest"`
+	Number      int       `json:"number"`
+	State       string    `json:"state"`
+	Title       string    `json:"title"`
+	Body        string    `json:"body"`
+	Labels      []string  `json:"labels"`
+	HeadRef     string    `json:"headRef"`
+	IsPR        bool      `json:"isPr"`
+	HeadRefOID  string    `json:"headRefOid"`
+	Diff        string    `json:"diff"`
+	Reviews     []string  `json:"reviews"`
+	Comments    []string  `json:"comments"`
+	PullRequest bool      `json:"pullRequest"`
+	Checks      []ghCheck `json:"checks"`
+}
+
+// ghCheck mirrors the subset of `gh pr checks --json bucket,name` we consume.
+type ghCheck struct {
+	Bucket string `json:"bucket"`
+	Name   string `json:"name"`
 }
 
 type store struct {
-	Issues []ghItem `json:"issues"`
-	Labels []string `json:"labels"`
-	Next   int      `json:"next"`
+	Issues   []ghItem `json:"issues"`
+	Labels   []string `json:"labels"`
+	Next     int      `json:"next"`
+	CiBucket string   `json:"ciBucket"` // §49: bucket new PRs report (pass default)
 }
 
 func statePath() string {
@@ -203,21 +211,47 @@ func handlePR(args []string, s *store) {
 		writeJSON(items)
 	case "view":
 		// gh pr view N -R o/r --json headRefOid --jq .headRefOid
+		// gh pr view N -R o/r --json state            (§49 merge probe)
 		num := atoi(args[1])
-		var head string
-		for _, it := range s.Issues {
-			if it.IsPR && it.Number == num {
-				head = it.HeadRef
-			}
+		idx := findIssue(s, num)
+		if idx < 0 {
+			os.Exit(1)
+		}
+		it := s.Issues[idx]
+		if strings.Contains(flagVal(args, "--json"), "state") {
+			writeJSON(map[string]interface{}{"state": strings.ToUpper(it.State)})
+			return
 		}
 		// Resolve the real pushed commit SHA from the fixture bare remote, so
 		// RunRepair's `git reset --hard <sha>` gets a real object (#47).
-		sha := realHeadSHA(head)
+		sha := realHeadSHA(it.HeadRef)
 		if flagHas(args, "--jq") {
 			fmt.Println(sha) // jq .headRefOid faked: emit the SHA only
 		} else {
 			writeJSON(map[string]interface{}{"headRefOid": sha})
 		}
+	case "checks":
+		// gh pr checks N -R o/r --json bucket,name   (§49 CI gate)
+		num := atoi(args[1])
+		idx := findIssue(s, num)
+		if idx < 0 {
+			os.Exit(1)
+		}
+		checks := s.Issues[idx].Checks
+		if len(checks) == 0 {
+			checks = []ghCheck{{Bucket: "pass", Name: "e2e"}}
+		}
+		writeJSON(checks)
+	case "merge":
+		// gh pr merge N -R o/r [--squash|--rebase|--merge] [--match-head-commit SHA]
+		num := atoi(args[1])
+		idx := findIssue(s, num)
+		if idx < 0 {
+			os.Exit(1)
+		}
+		s.Issues[idx].State = "merged"
+		s.save()
+		fmt.Printf("Merged pull request #%d\n", num)
 	case "diff":
 		num := atoi(args[0])
 		for _, it := range s.Issues {
@@ -263,6 +297,9 @@ func handlePR(args []string, s *store) {
 		it.HeadRef = flagVal(args, "--head")
 		it.HeadRefOID = "headsha"
 		it.Diff = "+e2e change\n"
+		if s.CiBucket != "" {
+			it.Checks = []ghCheck{{Bucket: s.CiBucket, Name: "e2e"}}
+		}
 		s.Next++
 		s.Issues = append(s.Issues, it)
 		s.save()

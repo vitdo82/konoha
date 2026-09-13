@@ -37,15 +37,21 @@ go test -tags=e2e ./e2e/...
 | `scenario_04` | dev writes `infra/**` → §20 gate, publish suppressed | ✅ |
 | `scenario_11` | dual sweep → one workflow, one PR (convergence §32) | ✅ |
 | `scenario_12` | sweep retry → no duplicate PR (§24) | ✅ |
+| `scenario_13` | failing CI → no merge, no close (§49 gate escalates) | ✅ |
+| `scenario_14` | `merge.requireCI:false` → merge despite failing checks | ✅ |
 | `scenario_05..10` | completion/disagreement, human/PO, LARGE children | ⏭ pending wiring |
+
+Scenario 01 now asserts the §49 chain: APPROVE → CI green → merge → close.
 
 ## Fakes
 
 - `fakegh`: minimal `gh` CLI with a JSON store (`FAKE_GH_STATE`). Handles
-  `issue list/create/edit/view`, `pr list/create/edit/view/diff/review`, `api`
-  (get + PATCH issues, comments), `label list/create`. `pr view --jq .headRefOid`
+  `issue list/create/edit/view`, `pr list/create/edit/view/diff/review/checks/merge`,
+  `api` (get + PATCH issues, comments), `label list/create`. `pr view --jq .headRefOid`
   resolves the real pushed SHA from the fixture bare remote so `RunRepair`'s
-  `git reset --hard <sha>` gets a real object.
+  `git reset --hard <sha>` gets a real object. `pr checks --json bucket,name`
+  reports the seeded `ciBucket` (default `pass`); `pr merge` marks the PR
+  `merged` (§49).
 - `fakeopencode`: role-detected from the prompt (Issue Analyst/Estimator/
   Developer/Reviewer/Repair/…). Developer/repair write a real file + `git commit`
   in the worktree (so the "agent must commit" invariant holds); reviewer emits

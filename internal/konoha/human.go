@@ -27,13 +27,16 @@ const (
 	reasonPolicyViolation          = "policy_violation"
 	reasonAgentFailure             = "agent_failure"
 	reasonConflictingRequirements  = "conflicting_requirements"
+	reasonCIFailed                 = "ci_failed"    // §49: CI gate not green before merge
+	reasonMergeFailed              = "merge_failed" // §49: PR merge failed after approval
 )
 
 func validHumanReason(r string) bool {
 	switch r {
 	case reasonRequirementsAmbiguous, reasonSecuritySensitive, reasonArchitectureChange,
 		reasonRepeatedReviewFailure, reasonInsufficientTestCoverage, reasonExternalDependency,
-		reasonPolicyViolation, reasonAgentFailure, reasonConflictingRequirements:
+		reasonPolicyViolation, reasonAgentFailure, reasonConflictingRequirements,
+		reasonCIFailed, reasonMergeFailed:
 		return true
 	}
 	return false

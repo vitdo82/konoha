@@ -33,10 +33,11 @@ type WorkerConfig struct {
 // LifecycleDefaults is the `defaults.lifecycle` block: the fallback per-repo
 // policy when repos.yaml leaves the field unset.
 type LifecycleDefaults struct {
-	DevelopmentMaxComplexity int    `yaml:"developmentMaxComplexity"`
-	MaxDevReviewAttempts     int    `yaml:"maxDevReviewAttempts"`
-	MaxResolutionAttempts    int    `yaml:"maxResolutionAttempts"`
-	POGateTimeout            string `yaml:"poGateTimeout"`
+	DevelopmentMaxComplexity int         `yaml:"developmentMaxComplexity"`
+	MaxDevReviewAttempts     int         `yaml:"maxDevReviewAttempts"`
+	MaxResolutionAttempts    int         `yaml:"maxResolutionAttempts"`
+	POGateTimeout            string      `yaml:"poGateTimeout"`
+	Merge                    MergeConfig `yaml:"merge"`
 }
 
 // AppConfig is the resolved application configuration.
@@ -69,10 +70,18 @@ func defaultAppConfig() AppConfig {
 				MaxDevReviewAttempts:     2,
 				MaxResolutionAttempts:    1,
 				POGateTimeout:            "168h",
+				Merge: MergeConfig{
+					Strategy:  mergeStrategySquash,
+					RequireCI: boolPtr(true),
+					CIMaxWait: "10m",
+				},
 			},
 		},
 	}
 }
+
+// boolPtr is a helper for the optional merge.requireCI bool default.
+func boolPtr(b bool) *bool { return &b }
 
 // startToClose parses the cycle/PR activity window.
 func (w WorkerConfig) startToClose() time.Duration {
@@ -193,6 +202,9 @@ func (c AppConfig) validate() error {
 	}
 	if d.MaxResolutionAttempts < 0 {
 		return fmt.Errorf("defaults.lifecycle.maxResolutionAttempts must be >= 0")
+	}
+	if err := c.Defaults.Lifecycle.Merge.validate("defaults.lifecycle.merge"); err != nil {
+		return err
 	}
 	return nil
 }

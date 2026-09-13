@@ -34,8 +34,22 @@ func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvir
 	return env
 }
 
-// mockSmallPath wires the dev→publish→review activities for a clean APPROVE.
-func mockSmallPath(env *testsuite.TestWorkflowEnvironment) {
+// smallPathHooks counts the side-effecting calls a test cares about.
+type smallPathHooks struct {
+	merges, closes int
+}
+
+// mockSmallPath wires the dev→publish→review activities for a clean APPROVE
+// with CI green and a successful merge.
+func mockSmallPath(env *testsuite.TestWorkflowEnvironment) *smallPathHooks {
+	return mockSmallPathWith(env, CIStatus{Green: true}, nil, MergeResult{Merged: true}, nil)
+}
+
+// mockSmallPathWith wires the SMALL path but lets a test force the §49 CI gate
+// verdict/error and the merge outcome (mergeErr != nil simulates a merge
+// failure).
+func mockSmallPathWith(env *testsuite.TestWorkflowEnvironment, ci CIStatus, ciErr error, merged MergeResult, mergeErr error) *smallPathHooks {
+	h := &smallPathHooks{}
 	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
 	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
 		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"},
@@ -49,7 +63,19 @@ func mockSmallPath(env *testsuite.TestWorkflowEnvironment) {
 	env.OnActivity(RunReviewer, mock.Anything, mock.Anything).Return(ReviewResult{
 		Verdict: "APPROVE", CommitSHA: "headsha", PRNumber: 101,
 	}, nil)
-	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
+	// §49: CI gate verdict, then the merge. A non-green CI must never merge.
+	env.OnActivity(WaitForCI, mock.Anything, mock.Anything).Return(ci, ciErr)
+	env.OnActivity(MergePullRequest, mock.Anything, mock.Anything).Return(func(_ context.Context, in MergeRequest) (MergeResult, error) {
+		h.merges++
+		return merged, mergeErr
+	})
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(func(_ context.Context, s StateRequest) error {
+		if s.State == "closed" {
+			h.closes++
+		}
+		return nil
+	})
+	return h
 }
 
 // runAndAssert executes the workflow and asserts it completed without error.
@@ -78,11 +104,12 @@ func terminalState(t *testing.T, env *testsuite.TestWorkflowEnvironment) string 
 	return s
 }
 
-// §46/§41: SMALL happy path — dev → publish → APPROVE → close, exactly one PR.
+// §46/§41: SMALL happy path — dev → publish → APPROVE → merge → close, exactly
+// one PR and exactly one merge.
 func TestWorkflowSmallAutonomousClose(t *testing.T) {
 	resetMetrics()
 	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
-	mockSmallPath(env)
+	h := mockSmallPath(env)
 	runAndAssert(t, env)
 
 	if got := terminalState(t, env); got != stateClosed {
@@ -90,6 +117,60 @@ func TestWorkflowSmallAutonomousClose(t *testing.T) {
 	}
 	if v := sink.get(mCyclesCompletedAuton); v != 1 {
 		t.Fatalf("autonomous completes = %v, want 1", v)
+	}
+	// §49: the issue closes only after exactly one merge.
+	if h.merges != 1 || h.closes != 1 {
+		t.Fatalf("merge/close counts = %d/%d, want 1/1", h.merges, h.closes)
+	}
+}
+
+// §49/§41: CI not green → PR is NEVER merged and the issue is NOT closed; the
+// workflow escalates to HUMAN_REQUIRED (no silent success).
+func TestWorkflowCIFailureEscalates(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	h := mockSmallPathWith(env, CIStatus{Failed: true, Detail: "1 check failed"}, nil, MergeResult{}, nil)
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateHumanRequired {
+		t.Fatalf("CI-failure terminal = %q, want HUMAN_REQUIRED", got)
+	}
+	if h.merges != 0 || h.closes != 0 {
+		t.Fatalf("CI failure must not merge or close (merges=%d closes=%d)", h.merges, h.closes)
+	}
+	if v := sink.get(mHumanEscalations); v < 1 {
+		t.Fatalf("CI failure must count as a human escalation, got %v", v)
+	}
+}
+
+// §49/§40: an exhausted CI activity (persistent error) also escalates instead of
+// failing the workflow — never a silent success.
+func TestWorkflowCIActivityErrorEscalates(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	h := mockSmallPathWith(env, CIStatus{}, errors.New("gh unavailable"), MergeResult{}, nil)
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateHumanRequired {
+		t.Fatalf("CI activity error terminal = %q, want HUMAN_REQUIRED", got)
+	}
+	if h.merges != 0 || h.closes != 0 {
+		t.Fatalf("CI activity error must not merge or close (merges=%d closes=%d)", h.merges, h.closes)
+	}
+}
+
+// §49/§41: merge error after a green CI → issue stays open, escalates.
+func TestWorkflowMergeFailureEscalates(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	h := mockSmallPathWith(env, CIStatus{Green: true}, nil, MergeResult{}, errors.New("branch protection"))
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateHumanRequired {
+		t.Fatalf("merge-failure terminal = %q, want HUMAN_REQUIRED", got)
+	}
+	if h.closes != 0 {
+		t.Fatalf("failed merge must never close the issue (closes=%d)", h.closes)
 	}
 }
 
@@ -128,6 +209,8 @@ func TestWorkflowSmallRepairLoop(t *testing.T) {
 	env.OnActivity(RunRepair, mock.Anything, mock.Anything).Return(DevelopResult{
 		WorktreeDir: "/tmp/wt2", CommitSHA: "repairsha", ChangedFiles: []string{"pkg/worker.go"}, Summary: "fixed", Validated: true,
 	}, nil)
+	env.OnActivity(WaitForCI, mock.Anything, mock.Anything).Return(CIStatus{Green: true}, nil)
+	env.OnActivity(MergePullRequest, mock.Anything, mock.Anything).Return(MergeResult{Merged: true}, nil)
 	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
 
 	runAndAssert(t, env)
