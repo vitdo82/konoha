@@ -41,6 +41,61 @@ func EffectiveClosePolicy(lc LifecycleConfig) string {
 	return lc.Autonomy.ClosePolicy
 }
 
+// §49 merge strategies (whitelist). The policy engine validates config and
+// resolves per-repo defaults; the merge activity re-validates (fail-closed).
+const (
+	mergeStrategySquash = "squash"
+	mergeStrategyRebase = "rebase"
+	mergeStrategyMerge  = "merge"
+)
+
+// ValidMergeStrategy reports whether s is a supported §49 merge strategy.
+func ValidMergeStrategy(s string) bool {
+	switch s {
+	case mergeStrategySquash, mergeStrategyRebase, mergeStrategyMerge:
+		return true
+	}
+	return false
+}
+
+// MergeStrategy resolves the per-repo merge strategy: the repo's declared
+// strategy, else the configured default, else squash. Config validation
+// guarantees a declared value is in the whitelist; this stays fail-closed for a
+// direct struct.
+func MergeStrategy(lc LifecycleConfig) string {
+	if ValidMergeStrategy(lc.Merge.Strategy) {
+		return lc.Merge.Strategy
+	}
+	if ValidMergeStrategy(appCfg.Defaults.Lifecycle.Merge.Strategy) {
+		return appCfg.Defaults.Lifecycle.Merge.Strategy
+	}
+	return mergeStrategySquash
+}
+
+// RequireCI resolves the §49 CI status gate. An explicit per-repo value wins;
+// otherwise the configured default; otherwise true (fail-closed: gate the merge
+// on green CI unless a repo explicitly opts out).
+func RequireCI(lc LifecycleConfig) bool {
+	if lc.Merge.RequireCI != nil {
+		return *lc.Merge.RequireCI
+	}
+	if d := appCfg.Defaults.Lifecycle.Merge.RequireCI; d != nil {
+		return *d
+	}
+	return true
+}
+
+// CIMaxWait resolves the §49 bounded CI poll window.
+func CIMaxWait(lc LifecycleConfig) time.Duration {
+	if d, err := time.ParseDuration(lc.Merge.CIMaxWait); err == nil && d > 0 {
+		return d
+	}
+	if d, err := time.ParseDuration(appCfg.Defaults.Lifecycle.Merge.CIMaxWait); err == nil && d > 0 {
+		return d
+	}
+	return 10 * time.Minute
+}
+
 // hasLabel reports whether the issue carries any configured escalation label
 // (e.g. "security", §20). Byte-exact against humanRequiredLabels.
 func hasEscalationLabel(labels, wanted []string) bool {

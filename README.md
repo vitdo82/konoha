@@ -28,6 +28,10 @@ repos:
         closePolicy: risk-based        # autonomous | risk-based | human-required
         humanRequiredPaths: [".github/**", "infra/**", "migrations/**"]   # §20
         humanRequiredLabels: ["security", "breaking-change"]              # §20
+      merge:                           # §49 merge + CI gate
+        strategy: squash               # squash | rebase | merge
+        requireCI: true                # gate the merge on green CI (default true)
+        ciMaxWait: 10m                 # bounded CI poll window
       poGateTimeout: 168h              # §18/§33 human-response window
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
@@ -52,6 +56,10 @@ defaults:
     maxDevReviewAttempts: 2
     maxResolutionAttempts: 1      # §37 disagreement-resolution cap
     poGateTimeout: 168h
+    merge:                        # §49 fallback merge policy
+      strategy: squash
+      requireCI: true             # fail-closed: gate on green CI unless opted out
+      ciMaxWait: 10m
 ```
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
@@ -79,7 +87,11 @@ parser contract, §6 workflow state names, and GitHub API base.
   activities `ListUnreviewedPRs` → `FetchDiff` → `ReviewWithOpencode` →
   `SubmitReview`. `IssueAllWorkflow` sweeps unmanaged issues into
   `IssueCycleWorkflow` (`<repo>-issue-<n>`), capped by
-  `maxConcurrentIssueCycles`.
+  `maxConcurrentIssueCycles`. On a commit-bound approval the issue only closes
+  after the §49 pipeline: `WaitForCI` (when `merge.requireCI`) →
+  `MergePullRequest` (idempotent, config-driven strategy) →
+  `EnsureIssueState(CLOSED)`. A failing CI gate or merge error escalates to
+  `HUMAN_REQUIRED` and never closes the issue.
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, and §43

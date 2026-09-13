@@ -18,3 +18,7 @@ defaults:
     maxDevReviewAttempts: 2        # §16 repair-loop cap default
     maxResolutionAttempts: 1       # §37 disagreement-resolution cap
     poGateTimeout: 168h            # §18/§33 human-response window default
+    merge:                         # §49 PR merge + CI gate defaults
+      strategy: squash             # squash | rebase | merge
+      requireCI: true              # gate the merge on green CI (fail-closed)
+      ciMaxWait: 10m               # bounded CI poll window

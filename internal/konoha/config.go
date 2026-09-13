@@ -28,14 +28,24 @@ const (
 // apply.sh (`prbot config`) so workflows and activities carry the policy
 // without re-reading files.
 type LifecycleConfig struct {
-	Mode                          string   `yaml:"mode" json:"mode,omitempty"`
-	DevelopmentMaxComplexity      int      `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
-	MaxDevReviewAttempts          int      `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
-	Autonomy                      Autonomy `yaml:"autonomy" json:"autonomy,omitempty"`
-	POGateTimeout                 string   `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
-	DryRun                        bool     `yaml:"dryRun" json:"dryRun,omitempty"`
-	MaxConcurrentIssueCycles      int      `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
-	MaxConcurrentChildrenPerIssue int      `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+	Mode                          string      `yaml:"mode" json:"mode,omitempty"`
+	DevelopmentMaxComplexity      int         `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
+	MaxDevReviewAttempts          int         `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
+	Autonomy                      Autonomy    `yaml:"autonomy" json:"autonomy,omitempty"`
+	Merge                         MergeConfig `yaml:"merge" json:"merge,omitempty"`
+	POGateTimeout                 string      `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
+	DryRun                        bool        `yaml:"dryRun" json:"dryRun,omitempty"`
+	MaxConcurrentIssueCycles      int         `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
+	MaxConcurrentChildrenPerIssue int         `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+}
+
+// MergeConfig is the per-repo PR-merge + CI-gate policy (§49). RequireCI is a
+// pointer so "unset" is distinguishable from an explicit false: unset falls
+// back to the configured default (true, fail-closed), false opts the repo out.
+type MergeConfig struct {
+	Strategy  string `yaml:"strategy" json:"strategy,omitempty"`   // squash|rebase|merge
+	RequireCI *bool  `yaml:"requireCI" json:"requireCI,omitempty"` // gate the merge on green CI
+	CIMaxWait string `yaml:"ciMaxWait" json:"ciMaxWait,omitempty"` // bounded CI poll window (Go duration)
 }
 
 // Autonomy is the §33 autonomy block.
@@ -141,6 +151,24 @@ func (lc *LifecycleConfig) validate() error {
 	}
 	if lc.MaxConcurrentChildrenPerIssue < 0 {
 		return fmt.Errorf("lifecycle.maxConcurrentChildrenPerIssue: %d must be >= 0", lc.MaxConcurrentChildrenPerIssue)
+	}
+	if err := lc.Merge.validate("lifecycle.merge"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validate gates the §49 merge block: the strategy is a closed whitelist and
+// ciMaxWait (when set) is a positive Go duration.
+func (mc MergeConfig) validate(prefix string) error {
+	if mc.Strategy != "" && !ValidMergeStrategy(mc.Strategy) {
+		return fmt.Errorf("%s.strategy: %q not one of %q, %q, %q",
+			prefix, mc.Strategy, mergeStrategySquash, mergeStrategyRebase, mergeStrategyMerge)
+	}
+	if mc.CIMaxWait != "" {
+		if d, err := time.ParseDuration(mc.CIMaxWait); err != nil || d <= 0 {
+			return fmt.Errorf("%s.ciMaxWait: %q is not a positive duration", prefix, mc.CIMaxWait)
+		}
 	}
 	return nil
 }

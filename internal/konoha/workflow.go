@@ -3,6 +3,7 @@ package konoha
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -102,6 +103,7 @@ const (
 	stateSplitting        = "SPLITTING"         // §17: diagnosis said repartition
 	stateReviewing        = "REVIEWING"         // §22: a review is in flight (transient label)
 	stateChangesRequested = "CHANGES_REQUESTED" // §22: repair loop (transient label)
+	stateMerging          = "MERGING"           // §49: CI gate + PR merge before close
 	stateHumanRequired    = "HUMAN_REQUIRED"    // §18: waiting on a human exception handler
 	stateBlocked          = "BLOCKED"           // §18/§40: blocked; a timeout keeps it here
 	stateCancelled        = "CANCELLED"         // §18: human decision "cancel"
@@ -205,6 +207,23 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 
 	if route == stateLarge {
 		return runLargePath(ctx, devCtx, in, a, est, info, route, transition, projectLabels)
+	}
+
+	// escalateTerminal routes the cycle to HUMAN_REQUIRED with a recorded §18
+	// reason (used by the §49 CI/merge gate: a non-green gate or an exhausted
+	// CI poll is never a silent success). Never closes the issue.
+	escalateTerminal := func(reason string) error {
+		transition(stateHumanRequired)
+		projectLabels(stateHumanRequired, est.Complexity)
+		return recordTerminal(ctx, info, in, CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState:    stateHumanRequired,
+			HumanRequired:    true,
+			EscalationReason: reason,
+			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
+		})
 	}
 
 	// -- §4.4 DEVELOPING --
@@ -356,6 +375,43 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			TerminalState: stateBlocked,
 			Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
 		})
+	}
+
+	// -- §49 CI gate + merge: the issue may close ONLY after the PR actually
+	// merges. A non-green CI gate or a merge failure escalates to
+	// HUMAN_REQUIRED and never closes (no silent success, §40).
+	transition(stateMerging)
+	ciAO := workflow.ActivityOptions{
+		StartToCloseTimeout: CIMaxWait(in.Lifecycle) + time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
+		},
+	}
+	ciCtx := workflow.WithActivityOptions(ctx, ciAO)
+	var ci CIStatus
+	if err := workflow.ExecuteActivity(ciCtx, WaitForCI, CIRequest{
+		Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber,
+		RequireCI: RequireCI(in.Lifecycle) && !in.Lifecycle.DryRun,
+		MaxWait:   in.Lifecycle.Merge.CIMaxWait,
+	}).Get(ciCtx, &ci); err != nil {
+		// Bounded Temporal retries exhausted → permanent failure → escalate.
+		workflow.GetLogger(ctx).Error("CI gate activity failed → HUMAN_REQUIRED", "pr", pub.PRNumber, "err", err)
+		return escalateTerminal(reasonCIFailed)
+	}
+	if !ci.Green {
+		workflow.GetLogger(ctx).Error("CI gate not green → HUMAN_REQUIRED", "pr", pub.PRNumber, "detail", ci.Detail)
+		return escalateTerminal(reasonCIFailed)
+	}
+
+	var merged MergeResult
+	if err := workflow.ExecuteActivity(ctx, MergePullRequest, MergeRequest{
+		Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber,
+		Strategy:    MergeStrategy(in.Lifecycle),
+		ExpectedSHA: reviewedSHA, // §15: refuse if the head moved past the review
+		DryRun:      in.Lifecycle.DryRun,
+	}).Get(ctx, &merged); err != nil || (!merged.Merged && !merged.Skipped) {
+		workflow.GetLogger(ctx).Error("PR merge failed → HUMAN_REQUIRED (issue stays open)", "pr", pub.PRNumber, "err", err)
+		return escalateTerminal(reasonMergeFailed)
 	}
 
 	transition(stateClosed)

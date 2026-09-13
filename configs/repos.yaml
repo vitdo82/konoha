@@ -6,6 +6,7 @@
 #   - maxDevReviewAttempts: bounded review/fix loops
 #   - autonomy.default/closePolicy + humanRequired*: escalation policy
 #   - poGateTimeout: PO-on-fire timeout (Go duration)
+#   - merge: {strategy, requireCI, ciMaxWait}: PR merge + CI gate (§49)
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
 # Unknown keys or out-of-range values make `./apply.sh` fail fast.
@@ -28,6 +29,10 @@ repos:
         humanRequiredLabels:
           - "security"
           - "breaking-change"
+      merge:
+        strategy: squash
+        requireCI: true
+        ciMaxWait: 10m
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 1

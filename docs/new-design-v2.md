@@ -1372,11 +1372,13 @@ Tests
        ↓
 Reviewer verdict
        ↓
-Completion Agent
+ Completion Agent
        ↓
-Temporal Policy
+ Temporal Policy
        ↓
-Close
+ Merge (CI green)
+       ↓
+ Close
 ```
 
  The Completion Agent should explicitly return:
@@ -1392,6 +1394,39 @@ type CompletionResult struct {
 ```
 
  Temporal decides whether the recommendation is permitted.
+
+### Merge stage (extends this section)
+
+Completion is necessary but not sufficient: the code must actually reach `main`.
+After the completion/close gate permits and the commit-bound approval still
+applies, the chain continues:
+
+```
+Temporal Policy (close permitted)
+       ↓
+WaitForCI          # gh pr checks, bounded poll; requireCI per repo
+       ↓
+MergePullRequest   # gh pr merge, idempotent, config-driven strategy
+       ↓
+EnsureIssueState(CLOSED)
+```
+
+ The PR is merged at most once: Konoha probes the current PR state before
+merging and re-reads it after a lost response (`gh pr merge` is retry-safe and
+never double-merges). `--match-head-commit` binds the merge to the reviewed
+commit (§15), so a head that moved past the approval is refused rather than
+merged. A non-green CI gate (a failing/unknown check, or checks still pending
+past `ciMaxWait`) or a merge error is never a silent success: the issue
+escalates to `HUMAN_REQUIRED` and is **not** closed — a closed issue always
+means its PR merged.
+
+```yaml
+lifecycle:
+  merge:
+    strategy: squash   # squash | rebase | merge
+    requireCI: true    # gate the merge on green GitHub status checks
+    ciMaxWait: 10m     # bounded CI poll window
+```
 
 ---
 
