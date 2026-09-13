@@ -421,14 +421,39 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return err
 	}
 	projectLabels(stateClosed, est.Complexity)
-	return recordTerminal(ctx, info, in, CycleOutcome{
+	if err := recordTerminal(ctx, info, in, CycleOutcome{
 		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 		Owner: in.Owner, Repo: in.Repo,
 		Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
 		TerminalState:   stateClosed,
 		AutonomousClose: true,
 		Attempts:        lastAttempts, ReviewRounds: lastReviewRounds,
-	})
+	}); err != nil {
+		return err
+	}
+	runPostMerge(ctx, in, pub.PRNumber)
+	return nil
+}
+
+// runPostMerge fires the §50 release after a successful merge, but NEVER lets a
+// release problem change the issue's terminal state: the PR already merged and
+// the issue closed, so the child's error is only logged (best-effort). The child
+// is awaited (the test environment executes awaited children), and its ID is
+// deterministic per repo+PR so duplicate starts converge (§24).
+func runPostMerge(ctx workflow.Context, in IssueInput, prNum int) {
+	if !ReleaseEnabled(in.Lifecycle) {
+		return
+	}
+	cwo := workflow.ChildWorkflowOptions{
+		WorkflowID: fmt.Sprintf("%s-postmerge-%d", in.Repo, prNum),
+	}
+	cctx := workflow.WithChildOptions(ctx, cwo)
+	if err := workflow.ExecuteChildWorkflow(cctx, PostMergeWorkflow, PostMergeInput{
+		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, PrNum: prNum,
+		Lifecycle: in.Lifecycle,
+	}).Get(cctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("post-merge release failed (non-fatal)", "pr", prNum, "err", err)
+	}
 }
 
 // runLargePath implements the §8/§19 large flow: SPLITTING → RunSplit

@@ -32,6 +32,10 @@ repos:
         strategy: squash               # squash | rebase | merge
         requireCI: true                # gate the merge on green CI (default true)
         ciMaxWait: 10m                 # bounded CI poll window
+      release:                         # §50 post-merge release + changelog
+        enabled: false                 # opt-in; false/unset = no-op
+        changelogPath: CHANGELOG.md    # repo-relative changelog file
+        versionPrefix: v               # tag prefix (default v)
       poGateTimeout: 168h              # §18/§33 human-response window
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
@@ -91,7 +95,13 @@ parser contract, §6 workflow state names, and GitHub API base.
   after the §49 pipeline: `WaitForCI` (when `merge.requireCI`) →
   `MergePullRequest` (idempotent, config-driven strategy) →
   `EnsureIssueState(CLOSED)`. A failing CI gate or merge error escalates to
-  `HUMAN_REQUIRED` and never closes the issue.
+  `HUMAN_REQUIRED` and never closes the issue. When `release.enabled`, the close
+  fires `PostMergeWorkflow` (`<repo>-postmerge-<pr>`): `RunRelease` derives a
+  semver bump from conventional-commit messages since the last tag
+  (`feat`→minor, `fix`/`perf`→patch, `BREAKING CHANGE`/`feat!`→major, no
+  match→patch), prepends `CHANGELOG.md`, and creates the tag + GitHub Release
+  (existing tag → no-op, idempotent; a release problem never changes the
+  issue's terminal state).
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, and §43
@@ -139,7 +149,9 @@ The binary also has CLI entrypoints used with `make build`:
 `/tmp/prbot token`, `/tmp/prbot config [configs/repos.yaml]` (prints schedule
 inputs for `apply.sh`), `/tmp/prbot start` (runs a `PrReviewWorkflow` for PR 6
 of `vitdo82/ducklambda`; `PR_NUM` overrides), and `/tmp/prbot publish`
-(`DRY_RUN=1` to shadow-run).
+(`DRY_RUN=1` to shadow-run), and `/tmp/prbot release` (runs the §50 release
+activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
+`VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override).
 
 ## Add a repo
 

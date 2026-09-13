@@ -41,6 +41,10 @@ repos:
         strategy: rebase
         requireCI: false
         ciMaxWait: 5m
+      release:
+        enabled: true
+        changelogPath: CHANGELOG.md
+        versionPrefix: v
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 4
@@ -68,6 +72,11 @@ repos:
 			MergeStrategy(lc), RequireCI(lc), CIMaxWait(lc))
 	}
 
+	// §50 release block is parsed; enabled gates the activity.
+	if !ReleaseEnabled(lc) || lc.Release.changelogPath() != "CHANGELOG.md" || lc.Release.versionPrefix() != "v" {
+		t.Fatalf("unexpected release policy: %+v", lc.Release)
+	}
+
 	// The schedule input serializes the same schema the workflows decode.
 	lines, err := scheduleInputs(p)
 	if err != nil || len(lines) != 1 {
@@ -76,7 +85,8 @@ repos:
 	if !strings.Contains(lines[0], `"maxConcurrentIssueCycles":4`) ||
 		!strings.Contains(lines[0], `"closePolicy":"risk-based"`) ||
 		!strings.Contains(lines[0], `"strategy":"rebase"`) ||
-		!strings.Contains(lines[0], `"requireCI":false`) {
+		!strings.Contains(lines[0], `"requireCI":false`) ||
+		!strings.Contains(lines[0], `"release":{"enabled":true`) {
 		t.Fatalf("schedule input missing lifecycle fields: %s", lines[0])
 	}
 }
@@ -128,6 +138,9 @@ func TestLoadReposConfigRejectsOutOfRange(t *testing.T) {
 		`{merge: {strategy: "fast-forward"}}`,
 		`{merge: {ciMaxWait: "notaduration"}}`,
 		`{merge: {ciMaxWait: "-1s"}}`,
+		`{release: {changelogPath: "/etc/passwd"}}`,
+		`{release: {changelogPath: "../escape.md"}}`,
+		`{release: {versionPrefix: "bad prefix"}}`,
 	}
 	for _, lc := range bad {
 		p := writeRepos(t, `repos: [{repo: r, owner: o, repoPath: /x, lifecycle:`+lc+`}]`)

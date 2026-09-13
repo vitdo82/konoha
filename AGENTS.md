@@ -143,6 +143,20 @@ without restarting a completed workflow. Deliveries with an invalid
   `activity.GetLogger` in these activities (panics on non-Temporal ctx). Config
   is `lifecycle.merge`, defaulting to `defaults.lifecycle.merge` in
   konoha.yaml (`strategy: squash`, `requireCI: true`, `ciMaxWait: 10m`).
+- `release.go` owns the §50 post-merge release + changelog: after a successful
+  merge, `IssueCycleWorkflow` starts `PostMergeWorkflow`
+  (`<repo>-postmerge-<pr>`, deterministic §24) whose only I/O is the `RunRelease`
+  activity. `RunRelease` parses the conventional-commit messages since the last
+  tag (`feat`→minor, `fix`/`perf`→patch, `BREAKING CHANGE`/`feat!`→major, no
+  match→patch — `DetermineBump`/`NextVersion` are pure and unit-matrixed),
+  prepends `CHANGELOG.md` via the Contents API, then creates the tag + GitHub
+  Release (`gh release create`). It is idempotent: an existing next tag or no
+  commits since the last tag is a no-op, so retries/overlaps never double-release
+  (§24). Opt-in per repo via `lifecycle.release.{enabled,changelogPath,
+  versionPrefix}`; disabled/absent is a no-op and honors `DryRun` (§42). A
+  release failure is logged but never changes the issue's terminal state (the PR
+  already merged). `ghTokenRunner` is the shared test seam; never call
+  `activity.GetLogger` in these activities (panics on non-Temporal ctx).
 - `main.go` has several debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
   by default; `PR_NUM` env overrides), `./prbot publish` (runs
@@ -175,16 +189,20 @@ Diagnosis agents and prints the validated `DiagnosisResult` JSON; same env
 overrides plus `DIAG_REASON`/`ATTEMPTS`/`ATTEMPT_SUMMARIES`), and
 `./prbot labels` (ensures the full §21 `konoha:*` label set exists in the
 repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode),
-and `./prbot children` (runs the Analyst + Estimator + Splitter + child
+ and `./prbot children` (runs the Analyst + Estimator + Splitter + child
 creation; `DRY_RUN=1` prints the validated `ChildIssue` identities without
-mutating).
+mutating), and `./prbot release` (runs the §50 `RunRelease` activity directly
+and prints the `ReleaseResult`; `OWNER`/`REPO`/`BASE_BRANCH`/`CHANGELOG_PATH`/
+`VERSION_PREFIX`/`RELEASE_ENABLED`/`DRY_RUN` env overrides; no Temporal).
 - `workflow.go` owns the lifecycle state machine: `IssueCycleWorkflow` now
   wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
   (suppresses publish on restricted paths/labels) → publish (idempotent PR) →
   REVIEWING → bounded repair loop (§16, `RunRepair(PreviousCommit=<reviewed
   SHA>)`, cap → BLOCKED / never close) → APPROVED (commit-bound §15) → §49 CI
   gate (`WaitForCI`) → `MergePullRequest` (idempotent, config-driven strategy;
-  `--match-head-commit` binds the reviewed SHA) → CLOSED. A non-green CI gate or
+  `--match-head-commit` binds the reviewed SHA) → CLOSED → §50
+  `PostMergeWorkflow` (release when `release.enabled`; a release failure is
+  logged, never changes the terminal state). A non-green CI gate or
   a merge error escalates to `HUMAN_REQUIRED` and NEVER closes — a closed issue
   always means its PR actually merged. Every terminal funnels through
   `recordTerminal` → `RecordCycleMetrics`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -28,15 +29,16 @@ const (
 // apply.sh (`prbot config`) so workflows and activities carry the policy
 // without re-reading files.
 type LifecycleConfig struct {
-	Mode                          string      `yaml:"mode" json:"mode,omitempty"`
-	DevelopmentMaxComplexity      int         `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
-	MaxDevReviewAttempts          int         `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
-	Autonomy                      Autonomy    `yaml:"autonomy" json:"autonomy,omitempty"`
-	Merge                         MergeConfig `yaml:"merge" json:"merge,omitempty"`
-	POGateTimeout                 string      `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
-	DryRun                        bool        `yaml:"dryRun" json:"dryRun,omitempty"`
-	MaxConcurrentIssueCycles      int         `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
-	MaxConcurrentChildrenPerIssue int         `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+	Mode                          string        `yaml:"mode" json:"mode,omitempty"`
+	DevelopmentMaxComplexity      int           `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
+	MaxDevReviewAttempts          int           `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
+	Autonomy                      Autonomy      `yaml:"autonomy" json:"autonomy,omitempty"`
+	Merge                         MergeConfig   `yaml:"merge" json:"merge,omitempty"`
+	Release                       ReleaseConfig `yaml:"release" json:"release,omitempty"`
+	POGateTimeout                 string        `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
+	DryRun                        bool          `yaml:"dryRun" json:"dryRun,omitempty"`
+	MaxConcurrentIssueCycles      int           `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
+	MaxConcurrentChildrenPerIssue int           `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
 }
 
 // MergeConfig is the per-repo PR-merge + CI-gate policy (§49). RequireCI is a
@@ -154,6 +156,23 @@ func (lc *LifecycleConfig) validate() error {
 	}
 	if err := lc.Merge.validate("lifecycle.merge"); err != nil {
 		return err
+	}
+	if err := lc.Release.validate("lifecycle.release"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validate gates the §50 release block: the changelog path must be repo-relative
+// and the version prefix must be a safe tag fragment.
+func (rc ReleaseConfig) validate(prefix string) error {
+	if p := strings.TrimSpace(rc.ChangelogPath); p != "" {
+		if strings.HasPrefix(p, "/") || strings.Contains(p, "..") {
+			return fmt.Errorf("%s.changelogPath: %q must be a repo-relative path", prefix, p)
+		}
+	}
+	if strings.ContainsAny(rc.VersionPrefix, " \t\n/") || strings.Contains(rc.VersionPrefix, "..") {
+		return fmt.Errorf("%s.versionPrefix: %q contains invalid characters", prefix, rc.VersionPrefix)
 	}
 	return nil
 }

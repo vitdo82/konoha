@@ -87,6 +87,11 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "release":
+			if err := runRelease(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -124,6 +129,7 @@ func Main() {
 	w.RegisterWorkflowWithOptions(ReviewAllWorkflow, workflow.RegisterOptions{Name: "ReviewAllWorkflow"})
 	w.RegisterWorkflowWithOptions(IssueCycleWorkflow, workflow.RegisterOptions{Name: "IssueCycleWorkflow"})
 	w.RegisterWorkflowWithOptions(IssueAllWorkflow, workflow.RegisterOptions{Name: "IssueAllWorkflow"})
+	w.RegisterWorkflowWithOptions(PostMergeWorkflow, workflow.RegisterOptions{Name: "PostMergeWorkflow"})
 	w.RegisterActivity(FetchDiff)
 	w.RegisterActivity(FetchPRHead)
 	w.RegisterActivity(FetchPRDiff)
@@ -152,6 +158,7 @@ func Main() {
 	w.RegisterActivity(EnsureIssueLabels)
 	w.RegisterActivity(WaitForCI)
 	w.RegisterActivity(MergePullRequest)
+	w.RegisterActivity(RunRelease)
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
@@ -673,6 +680,35 @@ func runChildren() error {
 		return err
 	}
 	b, err := json.MarshalIndent(children, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runRelease() error {
+	// debug: run the §50 release activity directly (no Temporal), printing the
+	// ReleaseResult JSON. Env: OWNER/REPO (REPO_PATH is not needed — the
+	// changelog is committed via the GitHub Contents API), BASE_BRANCH,
+	// CHANGELOG_PATH, VERSION_PREFIX, DRY_RUN, RELEASE_ENABLED (default on for
+	// this entrypoint).
+	cfg := ReleaseConfig{
+		Enabled:       os.Getenv("RELEASE_ENABLED") != "0",
+		ChangelogPath: os.Getenv("CHANGELOG_PATH"),
+		VersionPrefix: os.Getenv("VERSION_PREFIX"),
+	}
+	res, err := RunRelease(context.Background(), ReleaseRequest{
+		Owner:      getenv("OWNER", "vitdo82"),
+		Repo:       getenv("REPO", "ducklambda"),
+		BaseBranch: os.Getenv("BASE_BRANCH"),
+		Config:     cfg,
+		DryRun:     os.Getenv("DRY_RUN") == "1",
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return err
 	}

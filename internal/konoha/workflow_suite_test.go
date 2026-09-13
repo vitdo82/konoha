@@ -24,6 +24,7 @@ func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvir
 	t.Helper()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
 	env.RegisterActivity(RecordCycleMetrics)
+	env.RegisterWorkflow(PostMergeWorkflow) // §50: registered for release-enabled tests
 
 	analysis := IssueAnalysis{
 		Title: "t", Body: "b", Summary: "s", Spec: specFallback,
@@ -365,5 +366,35 @@ func TestWorkflowLargeChildFailureBlocksParent(t *testing.T) {
 	runAndAssert(t, env)
 	if got := terminalState(t, env); got != stateBlocked {
 		t.Fatalf("child failure must block parent, got %q", got)
+	}
+}
+
+// §50/§49: after a successful merge+close, an enabled repo fires PostMergeWorkflow
+// exactly once (and the release failure can never change the terminal state).
+func TestWorkflowSmallPostMergeRelease(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	releases := 0
+	env.OnActivity(RunRelease, mock.Anything, mock.Anything).Return(
+		func(context.Context, ReleaseRequest) (ReleaseResult, error) {
+			releases++
+			return ReleaseResult{Tag: "v1.0.1", Bump: bumpPatch}, nil
+		})
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4,
+			Release: ReleaseConfig{Enabled: true}}}
+	env.ExecuteWorkflow(IssueCycleWorkflow, in)
+	if env.IsWorkflowCompleted() {
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("workflow error: %v", err)
+		}
+	}
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("release path terminal = %q, want CLOSED", got)
+	}
+	if releases != 1 {
+		t.Fatalf("release activity ran %d times, want 1", releases)
 	}
 }

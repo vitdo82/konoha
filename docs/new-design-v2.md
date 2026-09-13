@@ -1428,6 +1428,38 @@ lifecycle:
     ciMaxWait: 10m     # bounded CI poll window
 ```
 
+### Release stage (extends this section)
+
+A merge is not a release. After the issue closes, Konoha can publish a
+semantic-versioned tag + GitHub Release derived from the merged history:
+
+```
+MergePullRequest
+       ↓
+PostMergeWorkflow            # <repo>-postmerge-<pr>, deterministic; started on
+       ↓                      # merge completion, safe to re-run
+RunRelease                   # (activity) all GitHub I/O
+       ├─ conventional-commit bump   feat→minor | fix/perf→patch
+       │                             | BREAKING CHANGE/feat!→major | no match→patch
+       ├─ prepend CHANGELOG.md       # Contents API; merged PRs since last tag
+       └─ gh release create <tag>    # tag + Release, idempotent
+```
+
+`RunRelease` is idempotent (§24): the next tag is computed from the existing
+tags and an existing next tag — or no commits since the last tag — is a no-op,
+so a retry/overlap never creates a second release. It is opt-in per repo and
+honors `DryRun` (§42); a release failure is logged but never changes the issue's
+terminal state (the PR already merged). The release tag maps 1:1 to a milestone
+(`vX.Y-<theme>`, see AGENTS.md).
+
+```yaml
+lifecycle:
+  release:
+    enabled: false         # opt-in; false/unset = no-op
+    changelogPath: CHANGELOG.md
+    versionPrefix: v
+```
+
 ---
 
  # 31\. External GitHub changes
