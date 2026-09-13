@@ -7,6 +7,7 @@
 #   - autonomy.default/closePolicy + humanRequired*: escalation policy
 #   - poGateTimeout: PO-on-fire timeout (Go duration)
 #   - merge: {strategy, requireCI, ciMaxWait}: PR merge + CI gate (§49)
+#   - release: {enabled, changelogPath, versionPrefix}: post-merge release (§50)
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
 # Unknown keys or out-of-range values make `./apply.sh` fail fast.
@@ -33,6 +34,10 @@ repos:
         strategy: squash
         requireCI: true
         ciMaxWait: 10m
+      release:                  # §50 post-merge release + changelog
+        enabled: false          # opt-in; false/unset = no-op
+        changelogPath: CHANGELOG.md
+        versionPrefix: v
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 1
