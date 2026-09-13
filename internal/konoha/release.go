@@ -307,6 +307,7 @@ type PostMergeInput struct {
 	RepoPath   string          `json:"repoPath"`
 	PrNum      int             `json:"pr,omitempty"`
 	IssueNum   int             `json:"issue,omitempty"`
+	Sha        string          `json:"sha,omitempty"` // merged/reviewed commit (§15), for §54 propagation
 	BaseBranch string          `json:"baseBranch,omitempty"`
 	Lifecycle  LifecycleConfig `json:"lifecycle,omitempty"`
 }
@@ -319,7 +320,7 @@ type PostMergeInput struct {
 // rollback signal and escalates the issue to HUMAN_REQUIRED. Deterministic: all
 // I/O lives in the release/deploy/verify activities.
 func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
-	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) {
+	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) && !PropagationEnabled(in.Lifecycle) {
 		return nil
 	}
 	ao := workflow.ActivityOptions{
@@ -329,6 +330,12 @@ func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
+
+	// §54: propagate the merged change to configured downstream repos first so a
+	// later release/deploy problem never blocks it. Disabled config is a no-op.
+	if err := runPropagation(ctx, in); err != nil {
+		return err
+	}
 
 	tag := ""
 	if ReleaseEnabled(in.Lifecycle) {

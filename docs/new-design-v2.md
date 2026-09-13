@@ -1922,6 +1922,57 @@ An enabled block needs at least one threshold (otherwise it is a silent no-op);
 unknown metric names, a non-http(s) `notify`, or a bad schedule fail fast at
 `apply.sh`. `DryRun` (§42) logs alerts but never POSTs and files no bug issues.
 
+### Cross-repo propagation stage (§54, extends this section)
+
+A merge in repo A can invalidate or require work in a downstream repo B. A
+per-repo dependency map names those downstreams and the file globs that make a
+merged change affect them; after a merge Konoha files one issue per affected
+downstream:
+
+```
+MergePullRequest → IssueCycleWorkflow closes
+       ↓
+PostMergeWorkflow                     # <repo>-postmerge-<pr>; started on merge
+       ↓                              # completion, safe to re-run
+DetectAffectedDownstreams             # activity: read-only
+       │   gh pr diff <n> --name-only # the merged change's touched files
+       │   match each downstream's `trigger` glob against them
+       │   fan-out capped by `maxPerMerge` (§43-style)
+       ↓
+EnsureCrossRepoIssue (per affected)   # activity: idempotent, marker-keyed
+       │   <!-- konoha-cross: <owner>/<repo>#<sha> -->   (search-before-create, §24)
+       │   label: konoha:cross-repo (required); NO konoha:managed
+       ↓
+downstream repo's own sweep / webhook  # drives repo B's lifecycle, with B's
+                                       # phase/autonomy/§20 gates unchanged
+```
+
+Filing is idempotent by the deterministic marker (keyed by the upstream repo +
+commit), so Temporal retries and a duplicated post-merge run converge on one
+issue per affected downstream; a different commit is a different marker. The
+filed issue carries no `konoha:managed` label, so it is a normal issue in repo
+B: repo B's existing sweep (and `opened` webhook) starts `IssueCycleWorkflow`
+with repo B's OWN `RepoScope`/lifecycle — Konoha never starts that cycle here,
+so it can never escalate above what repo B's config allows and there is no
+double-start (§32/§52). A malformed/missing config fails at load (an enabled map
+needs at least one downstream; every entry needs a `trigger` and a `type`). The
+stage is independent of §50/§51 (a release/deploy failure never blocks it), and
+`DryRun` (§42) keeps the read-only analysis but files nothing. A downstream repo
+must itself be a `repos.yaml` entry (and have the App installed) for its sweep to
+drive the filed issue — the dependency map names the repo, it does not create
+the downstream's policy.
+
+```yaml
+lifecycle:
+  propagation:
+    enabled: false           # opt-in; false/unset = no downstream issues
+    maxPerMerge: 3           # fan-out cap per merge (default 3)
+    downstream:              # downstream repo → what triggers it
+      downstream-repo:
+        trigger: "pkg/api/**" # changed-file glob (globMatch syntax)
+        type: breaking        # change-kind tag put on the filed issue
+```
+
 ---
 
  # 40\. Failure handling

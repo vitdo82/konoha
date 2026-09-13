@@ -171,6 +171,8 @@ func Main() {
 	w.RegisterActivity(VerifyDeployment)
 	w.RegisterActivity(ScanDependencies)
 	w.RegisterActivity(EnsureDependencyIssue)
+	w.RegisterActivity(DetectAffectedDownstreams)
+	w.RegisterActivity(EnsureCrossRepoIssue)
 	w.RegisterActivity(EvaluateAlerts)
 	w.RegisterActivity(EnsureFailureIssue)
 

@@ -431,17 +431,19 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}); err != nil {
 		return err
 	}
-	runPostMerge(ctx, in, pub.PRNumber)
+	runPostMerge(ctx, in, pub.PRNumber, reviewedSHA)
 	return nil
 }
 
-// runPostMerge fires the §50 release after a successful merge, but NEVER lets a
-// release problem change the issue's terminal state: the PR already merged and
-// the issue closed, so the child's error is only logged (best-effort). The child
-// is awaited (the test environment executes awaited children), and its ID is
-// deterministic per repo+PR so duplicate starts converge (§24).
-func runPostMerge(ctx workflow.Context, in IssueInput, prNum int) {
-	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) {
+// runPostMerge fires the §50 release / §51 deploy / §54 propagation after a
+// successful merge, but NEVER lets a release problem change the issue's terminal
+// state: the PR already merged and the issue closed, so the child's error is only
+// logged (best-effort). The child is awaited (the test environment executes
+// awaited children), and its ID is deterministic per repo+PR so duplicate starts
+// converge (§24). sha is the reviewed/merged commit (§15) used as the §54
+// propagation marker key.
+func runPostMerge(ctx workflow.Context, in IssueInput, prNum int, sha string) {
+	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) && !PropagationEnabled(in.Lifecycle) {
 		return
 	}
 	cwo := workflow.ChildWorkflowOptions{
@@ -451,9 +453,10 @@ func runPostMerge(ctx workflow.Context, in IssueInput, prNum int) {
 	if err := workflow.ExecuteChildWorkflow(cctx, PostMergeWorkflow, PostMergeInput{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, PrNum: prNum,
 		IssueNum:  in.IssueNum,
+		Sha:       sha,
 		Lifecycle: in.Lifecycle,
 	}).Get(cctx, nil); err != nil {
-		workflow.GetLogger(ctx).Error("post-merge release/deploy failed (non-fatal)", "pr", prNum, "err", err)
+		workflow.GetLogger(ctx).Error("post-merge release/deploy/propagation failed (non-fatal)", "pr", prNum, "err", err)
 	}
 }
 

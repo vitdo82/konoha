@@ -29,19 +29,20 @@ const (
 // apply.sh (`prbot config`) so workflows and activities carry the policy
 // without re-reading files.
 type LifecycleConfig struct {
-	Mode                          string           `yaml:"mode" json:"mode,omitempty"`
-	DevelopmentMaxComplexity      int              `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
-	MaxDevReviewAttempts          int              `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
-	Autonomy                      Autonomy         `yaml:"autonomy" json:"autonomy,omitempty"`
-	Merge                         MergeConfig      `yaml:"merge" json:"merge,omitempty"`
-	Release                       ReleaseConfig    `yaml:"release" json:"release,omitempty"`
-	Deploy                        DeployConfig     `yaml:"deploy" json:"deploy,omitempty"`
-	Deps                          DependencyConfig `yaml:"deps" json:"deps,omitempty"`
-	Alerting                      AlertingConfig   `yaml:"alerting" json:"alerting,omitempty"`
-	POGateTimeout                 string           `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
-	DryRun                        bool             `yaml:"dryRun" json:"dryRun,omitempty"`
-	MaxConcurrentIssueCycles      int              `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
-	MaxConcurrentChildrenPerIssue int              `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+	Mode                          string            `yaml:"mode" json:"mode,omitempty"`
+	DevelopmentMaxComplexity      int               `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
+	MaxDevReviewAttempts          int               `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
+	Autonomy                      Autonomy          `yaml:"autonomy" json:"autonomy,omitempty"`
+	Merge                         MergeConfig       `yaml:"merge" json:"merge,omitempty"`
+	Release                       ReleaseConfig     `yaml:"release" json:"release,omitempty"`
+	Deploy                        DeployConfig      `yaml:"deploy" json:"deploy,omitempty"`
+	Deps                          DependencyConfig  `yaml:"deps" json:"deps,omitempty"`
+	Alerting                      AlertingConfig    `yaml:"alerting" json:"alerting,omitempty"`
+	Propagation                   PropagationConfig `yaml:"propagation" json:"propagation,omitempty"`
+	POGateTimeout                 string            `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
+	DryRun                        bool              `yaml:"dryRun" json:"dryRun,omitempty"`
+	MaxConcurrentIssueCycles      int               `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
+	MaxConcurrentChildrenPerIssue int               `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
 }
 
 // MergeConfig is the per-repo PR-merge + CI-gate policy (§49). RequireCI is a
@@ -170,6 +171,9 @@ func (lc *LifecycleConfig) validate() error {
 		return err
 	}
 	if err := lc.Alerting.validate("lifecycle.alerting"); err != nil {
+		return err
+	}
+	if err := lc.Propagation.validate("lifecycle.propagation"); err != nil {
 		return err
 	}
 	return nil

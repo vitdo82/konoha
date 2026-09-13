@@ -11,6 +11,9 @@
 #   - deps: {enabled, scanCmd, schedule, label, autoFileIssues}: dependency scan (§52)
 #   - alerting: {enabled, notify, schedule, onRates, thresholds}: §53 rate alerts
 #     + failure feedback (files one bug issue per BLOCKED/FAILED run)
+#   - propagation: {enabled, maxPerMerge, downstream}: §54 cross-repo propagation
+#     (downstream: {<repo>: {trigger: <changed-file glob>, type: <kind>}});
+#     files one konoha:cross-repo issue per affected downstream, capped
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
 # Unknown keys or out-of-range values make `./apply.sh` fail fast.
@@ -55,6 +58,13 @@ repos:
         thresholds:             # autonomous rate alerts below; all others above
           autonomous_completion_rate: 0.7
           human_escalation_rate: 0.3
+      propagation:              # §54 cross-repo change propagation
+        enabled: false          # opt-in; false/unset = no downstream issues
+        maxPerMerge: 3          # fan-out cap per merge (default 3)
+        # downstream:           # map: downstream repo → what triggers it
+        #   other-repo:
+        #     trigger: "pkg/api/**"
+        #     type: breaking
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 1
