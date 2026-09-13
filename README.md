@@ -36,6 +36,13 @@ repos:
         enabled: false                 # opt-in; false/unset = no-op
         changelogPath: CHANGELOG.md    # repo-relative changelog file
         versionPrefix: v               # tag prefix (default v)
+      deploy:                          # §51 deploy + post-deploy verification
+        enabled: false                 # opt-in; false/unset = no-op
+        command: ""                    # deploy hook (sh -c) run in the main checkout
+        env: production                # deployment environment (KONOHA_DEPLOY_ENV)
+        verify: ""                     # smoke/health command; exit 0 = healthy
+        maxWait: 5m                    # bounded verify poll window
+        rollbackOnFail: true           # emit a rollback signal on failure
       poGateTimeout: 168h              # §18/§33 human-response window
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
@@ -64,6 +71,10 @@ defaults:
       strategy: squash
       requireCI: true             # fail-closed: gate on green CI unless opted out
       ciMaxWait: 10m
+    deploy:                       # §51 fallback deploy/verify policy
+      env: production
+      maxWait: 5m
+      rollbackOnFail: true        # fail-closed: emit a rollback signal on failure
 ```
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
@@ -101,7 +112,12 @@ parser contract, §6 workflow state names, and GitHub API base.
   (`feat`→minor, `fix`/`perf`→patch, `BREAKING CHANGE`/`feat!`→major, no
   match→patch), prepends `CHANGELOG.md`, and creates the tag + GitHub Release
   (existing tag → no-op, idempotent; a release problem never changes the
-  issue's terminal state).
+  issue's terminal state). When `deploy.enabled`, the same workflow then runs
+  `DeployRelease` (records a GitHub Deployment for the tag, runs the hook from
+  the main checkout — a tag whose latest deployment succeeded is never
+  re-deployed) and `VerifyDeployment` (bounded smoke/health poll). A permanent
+  verification failure emits a rollback signal, reopens the issue, and projects
+  `konoha:human-required` — never a silent "deployed" (§40).
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, and §43

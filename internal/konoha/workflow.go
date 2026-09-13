@@ -441,7 +441,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 // is awaited (the test environment executes awaited children), and its ID is
 // deterministic per repo+PR so duplicate starts converge (§24).
 func runPostMerge(ctx workflow.Context, in IssueInput, prNum int) {
-	if !ReleaseEnabled(in.Lifecycle) {
+	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) {
 		return
 	}
 	cwo := workflow.ChildWorkflowOptions{
@@ -450,9 +450,10 @@ func runPostMerge(ctx workflow.Context, in IssueInput, prNum int) {
 	cctx := workflow.WithChildOptions(ctx, cwo)
 	if err := workflow.ExecuteChildWorkflow(cctx, PostMergeWorkflow, PostMergeInput{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, PrNum: prNum,
+		IssueNum:  in.IssueNum,
 		Lifecycle: in.Lifecycle,
 	}).Get(cctx, nil); err != nil {
-		workflow.GetLogger(ctx).Error("post-merge release failed (non-fatal)", "pr", prNum, "err", err)
+		workflow.GetLogger(ctx).Error("post-merge release/deploy failed (non-fatal)", "pr", prNum, "err", err)
 	}
 }
 

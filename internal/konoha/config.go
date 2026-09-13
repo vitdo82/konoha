@@ -35,6 +35,7 @@ type LifecycleConfig struct {
 	Autonomy                      Autonomy      `yaml:"autonomy" json:"autonomy,omitempty"`
 	Merge                         MergeConfig   `yaml:"merge" json:"merge,omitempty"`
 	Release                       ReleaseConfig `yaml:"release" json:"release,omitempty"`
+	Deploy                        DeployConfig  `yaml:"deploy" json:"deploy,omitempty"`
 	POGateTimeout                 string        `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
 	DryRun                        bool          `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int           `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
@@ -158,6 +159,9 @@ func (lc *LifecycleConfig) validate() error {
 		return err
 	}
 	if err := lc.Release.validate("lifecycle.release"); err != nil {
+		return err
+	}
+	if err := lc.Deploy.validate("lifecycle.deploy"); err != nil {
 		return err
 	}
 	return nil
