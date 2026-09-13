@@ -24,7 +24,8 @@ func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvir
 	t.Helper()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
 	env.RegisterActivity(RecordCycleMetrics)
-	env.RegisterWorkflow(PostMergeWorkflow) // §50: registered for release-enabled tests
+	env.RegisterWorkflow(PostMergeWorkflow)       // §50: registered for release-enabled tests
+	env.RegisterWorkflow(FailureFeedbackWorkflow) // §53: registered for alerting-enabled tests
 
 	analysis := IssueAnalysis{
 		Title: "t", Body: "b", Summary: "s", Spec: specFallback,

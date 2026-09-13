@@ -59,3 +59,21 @@ while IFS=$'\t' read -r repo deps_interval input; do
     --task-queue "$queue" \
     --input "$input"
 done < <(/tmp/prbot config --deps)
+
+# §53 alert schedules. Only repos with lifecycle.alerting.enabled emit a line
+# here, so a disabled repo is never evaluated. The per-repo cadence is
+# lifecycle.alerting.schedule (default 24h).
+while IFS=$'\t' read -r repo alert_interval input; do
+  [ -z "$repo" ] && continue
+
+  id="${repo}-alerts"
+  echo "==> $id ($repo, every $alert_interval)"
+  temporal schedule delete --schedule-id "$id" >/dev/null 2>&1 || true
+  temporal schedule create \
+    --schedule-id "$id" \
+    --workflow-id "$id" \
+    --interval "$alert_interval" \
+    --type AlertWorkflow \
+    --task-queue "$queue" \
+    --input "$input"
+done < <(/tmp/prbot config --alerts)

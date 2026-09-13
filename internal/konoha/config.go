@@ -37,6 +37,7 @@ type LifecycleConfig struct {
 	Release                       ReleaseConfig    `yaml:"release" json:"release,omitempty"`
 	Deploy                        DeployConfig     `yaml:"deploy" json:"deploy,omitempty"`
 	Deps                          DependencyConfig `yaml:"deps" json:"deps,omitempty"`
+	Alerting                      AlertingConfig   `yaml:"alerting" json:"alerting,omitempty"`
 	POGateTimeout                 string           `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
 	DryRun                        bool             `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int              `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
@@ -168,6 +169,9 @@ func (lc *LifecycleConfig) validate() error {
 	if err := lc.Deps.validate("lifecycle.deps"); err != nil {
 		return err
 	}
+	if err := lc.Alerting.validate("lifecycle.alerting"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -248,6 +252,29 @@ func depsScheduleInputs(path string) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, r.Repo+"\t"+DependencySchedule(*r.Lifecycle)+"\t"+string(b))
+	}
+	return out, nil
+}
+
+// alertsScheduleInputs renders the §53 alert schedules: only repos with
+// alerting.enabled emit a line, as "<repo>\t<interval>\t<scope json>". apply.sh
+// creates one <repo>-alerts AlertWorkflow schedule per line, so a disabled repo
+// has no evaluation.
+func alertsScheduleInputs(path string) ([]string, error) {
+	repos, err := LoadReposConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range repos {
+		if r.Lifecycle == nil || !AlertingEnabled(*r.Lifecycle) {
+			continue
+		}
+		b, err := json.Marshal(repoScope(r))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r.Repo+"\t"+AlertingSchedule(*r.Lifecycle)+"\t"+string(b))
 	}
 	return out, nil
 }

@@ -54,7 +54,9 @@ make test   # go vet ./... + go build ./... + go test ./... (§41 test suite)
 
 `go test ./...` runs the full §41 matrix: activity/reconcile idempotency
 (`reconcile_test.go`), every agent validator (§36), the derived §39 metric
-gauges, the §44 invariant assertions (`invariants_test.go`), and
+gauges, the §53 alert threshold math + per-window dedupe and failure-feedback
+idempotency (`alerting_test.go`), the §44 invariant assertions
+(`invariants_test.go`), and
 Temporal-testsuite workflow runs (`workflow_suite_test.go`) — the agent
 activities are mocked with testify `Anything` matchers (one per activity
 argument) and `RecordCycleMetrics` runs for real, so the terminal §6 state is
@@ -75,6 +77,7 @@ App credentials (never commit these):
 ```bash
 GH_APP_ID=<id> GH_APP_INSTALL_ID=<id> GH_APP_PEM=<path> make run
 ./scripts/apply.sh    # (re)create one <repo>-review-all Temporal schedule per repos.yaml entry
+                      # (+ <repo>-deps / <repo>-alerts when those are enabled)
 make token            # smoke-test app auth: prints a masked installation token
 ```
 
@@ -110,7 +113,7 @@ without restarting a completed workflow. Deliveries with an invalid
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
   fail fast at apply time. The schema lives in `config.go`
-  (`RepoConfig`/`LifecycleConfig`/`MergeConfig`/`DependencyConfig`, §§33/43/49/52) —
+  (`RepoConfig`/`LifecycleConfig`/`MergeConfig`/`DependencyConfig`/`AlertingConfig`, §§33/43/49/52/53) —
   adding keys to `repos.yaml` requires updating those structs, not grep/awk in
   `apply.sh`.
 - **Runtime config is `konoha.yaml`** (`configs/`), resolved once at bootstrap
@@ -188,6 +191,27 @@ without restarting a completed workflow. Deliveries with an invalid
   (no double-start). A malformed scan or entry fails closed (§36/§40), never
   "0 findings". `lifecycle.deps.{enabled,scanCmd,schedule,label,autoFileIssues}`;
   disabled/absent ⇒ no scan, no issues; `DryRun` files nothing (§42).
+- `alerting.go` owns the §53 operations/alerting layer on top of the §39 sink:
+  a per-repo `<repo>-alerts` Temporal schedule (created by `apply.sh` via
+  `prbot config --alerts`, only for `lifecycle.alerting.enabled`) runs
+  `AlertWorkflow` → `EvaluateAlerts`, which snapshots the derived §39 rate
+  gauges and emits one alert per violated metric per window. Direction is
+  intrinsic to the metric (`autonomous_completion_rate` alerts below; the other
+  rates and `cycle_duration_seconds_last` alert above), so config is just
+  `thresholds: {<metric>: <number>}` + an optional `onRates` subset — the
+  alertable set is closed and a typo fails `apply.sh`. Emission is idempotent
+  per `(repo, metric, window)` via a process-local `(repo, metric, window)` key
+  (single-worker deployment model); a webhook (`notify`) failure is fail-closed
+  and the key is not recorded, so the retry re-attempts. Alerting NEVER resolves
+  a stuck run (§40/§44 #1). The same flag gates failure feedback: a terminal
+  `BLOCKED`/`FAILED` cycle runs `FailureFeedbackWorkflow` (`<runId>-failure`)
+  whose only I/O is `EnsureFailureIssue` — idempotent by the byte-exact
+  `<!-- konoha-failure: <runId> -->` marker (search-before-create, §24), filing
+  at most one bug issue per run with the structured `CycleOutcome` +
+  `DevelopmentFailure`. The issue carries NO `konoha:managed` label, so it stays
+  a normal issue and the existing sweep/webhook drives it back through the
+  lifecycle (self-healing stream, no double-start, §32). `DryRun` logs alerts
+  but never POSTs and files nothing (§42).
 - **Built-in security gate** (`policy.go`): `hasEscalationLabel` always treats
   `konoha:security`/`konoha:dependency` as `humanRequiredLabels`, so
   `DetectHumanEscalation` (pre-publish) and `EvaluateClosePolicy` escalate them
@@ -247,7 +271,8 @@ required; no Temporal).
   a merge error escalates to `HUMAN_REQUIRED` and NEVER closes — a closed issue
   always means its PR actually merged. Every terminal funnels through
   `recordTerminal` → `RecordCycleMetrics`
-  (autonomous vs human/blocked, §39). Follow-ups NOT yet wired: completion gate
+  (autonomous vs human/blocked, §39); a terminal `BLOCKED`/`FAILED` also starts
+  the §53 `FailureFeedbackWorkflow` when `alerting.enabled`. Follow-ups NOT yet wired: completion gate
   (§14/§19), disagreement (§37), diagnosis → HUMAN_REQUIRED (§17/§18), and the
   LARGE path (split/children — currently ends at the deterministic `NOT_WIRED`
   terminal, never a silent drop). All I/O stays in activities (replay-safe).

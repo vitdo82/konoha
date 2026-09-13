@@ -1858,6 +1858,70 @@ autonomous completion rate
 
  rather than merely number of tickets processed.
 
+### Alerting + failure feedback (§53, extends this section)
+
+Metrics are only useful if someone is paged on them. A schedule-driven
+`AlertWorkflow` reads the derived §39 gauges and reports drift; a terminal
+failure files its own bug issue so the pipeline debugs itself in issue form.
+
+```
+<repo>-alerts (Temporal Schedule, lifecycle.alerting.schedule)
+       ↓
+AlertWorkflow                          # repo-scoped; disabled → no-op
+       ↓
+EvaluateAlerts                         # activity: threshold math + emit
+       │   autonomous_completion_rate < threshold   (higher is better)
+       │   human_escalation_rate     > threshold   (lower is better)
+       │   split_rate / review_disagreement_rate / cycle_duration  >
+       ↓
+log + optional `notify` webhook        # exactly once per (repo, metric, window)
+```
+
+Emission is idempotent per `(repo, metric, window)`: the workflow buckets the
+schedule interval into a deterministic window and the activity skips an
+already-emitted key, so a Temporal retry or a duplicate schedule run never
+double-alerts. A webhook failure is returned (fail-closed) and the key is not
+recorded, so the retry re-attempts rather than silently dropping the alert.
+Alerting **never resolves a stuck run**: the alerts report drift and the
+underlying run keeps its authoritative Temporal state (§40/§44 #1).
+
+A terminal `BLOCKED`/`FAILED` cycle (never `CLOSED`/`HUMAN_REQUIRED`) starts a
+`FailureFeedbackWorkflow` (`<runId>-failure`, deterministic §24) whose only I/O
+is `EnsureFailureIssue`:
+
+```
+IssueCycleWorkflow ── terminal BLOCKED/FAILED ──▶ FailureFeedbackWorkflow
+                                                        ↓
+                                                   EnsureFailureIssue
+        <!-- konoha-failure: <runId> -->                # search-before-create, §24
+        no konoha:managed label                         # a NORMAL issue
+                                                        ↓
+                              existing issue sweep / webhook drives it back
+                              through the lifecycle (self-healing stream)
+```
+
+Filing is idempotent by the deterministic marker, so retries/overlaps converge
+on one bug issue per run, carrying the structured `CycleOutcome` +
+`DevelopmentFailure`. The filed issue carries no `konoha:managed` label, so the
+normal issue sweep picks it up — no Konoha-started cycle, no double-start. A
+feedback problem never changes the run's terminal state.
+
+```yaml
+lifecycle:
+  alerting:
+    enabled: false           # opt-in; false/unset = no <repo>-alerts schedule, no bug issues
+    notify: ""               # webhook URL (slack-compatible); empty = log only
+    schedule: 24h            # evaluation cadence
+    onRates: []              # optional subset; empty = every configured threshold
+    thresholds:              # autonomous rate alerts below; all others above
+      autonomous_completion_rate: 0.7
+      human_escalation_rate: 0.3
+```
+
+An enabled block needs at least one threshold (otherwise it is a silent no-op);
+unknown metric names, a non-http(s) `notify`, or a bad schedule fail fast at
+`apply.sh`. `DryRun` (§42) logs alerts but never POSTs and files no bug issues.
+
 ---
 
  # 40\. Failure handling
