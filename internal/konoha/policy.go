@@ -96,14 +96,29 @@ func CIMaxWait(lc LifecycleConfig) time.Duration {
 	return 10 * time.Minute
 }
 
-// hasLabel reports whether the issue carries any configured escalation label
-// (e.g. "security", §20). Byte-exact against humanRequiredLabels.
+// builtinHumanRequiredLabels are §20 risk labels Konoha always escalates on,
+// independent of repo config: a §52 security/dependency finding must never
+// auto-merge, even under closePolicy: autonomous. They extend (never replace)
+// the configured humanRequiredLabels.
+func builtinHumanRequiredLabels() []string {
+	return []string{labelSecurity, labelDependency}
+}
+
+// hasEscalationLabel reports whether the issue carries any escalation label —
+// the repo's configured humanRequiredLabels plus the built-in §52 security/
+// dependency labels. Byte-exact, so a non-konoha "security" label is not
+// conflated with `konoha:security`.
 func hasEscalationLabel(labels, wanted []string) bool {
 	have := make(map[string]bool, len(labels))
 	for _, l := range labels {
 		have[l] = true
 	}
 	for _, w := range wanted {
+		if have[w] {
+			return true
+		}
+	}
+	for _, w := range builtinHumanRequiredLabels() {
 		if have[w] {
 			return true
 		}
@@ -313,6 +328,11 @@ func EvaluateClosePolicy(lc LifecycleConfig, c CompletionCheck, paths, labels []
 	permitted, reasons := EvaluateCompletion(c)
 	if !permitted {
 		return CloseDecision{Reasons: reasons}
+	}
+	// §52: the built-in security/dependency labels always require a human, even
+	// under closePolicy: autonomous — a known-CVE change is never auto-closed.
+	if hasEscalationLabel(labels, nil) {
+		return CloseDecision{Escalation: true, Reasons: []string{"built-in security/dependency label"}}
 	}
 	switch EffectiveClosePolicy(lc) {
 	case closePolicyHumanRequired:

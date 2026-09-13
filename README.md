@@ -43,6 +43,12 @@ repos:
         verify: ""                     # smoke/health command; exit 0 = healthy
         maxWait: 5m                    # bounded verify poll window
         rollbackOnFail: true           # emit a rollback signal on failure
+      deps:                            # §52 dependency + security automation
+        enabled: false                 # opt-in; false/unset = no scan, no issues
+        scanCmd: ""                    # required when enabled; prints the JSON finding array
+        schedule: 24h                  # per-repo scan cadence (<repo>-deps schedule)
+        label: konoha:dependency       # base label; vulnerabilities also get konoha:security
+        autoFileIssues: true           # false = scan/report only
       poGateTimeout: 168h              # §18/§33 human-response window
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
@@ -117,17 +123,26 @@ parser contract, §6 workflow state names, and GitHub API base.
   the main checkout — a tag whose latest deployment succeeded is never
   re-deployed) and `VerifyDeployment` (bounded smoke/health poll). A permanent
   verification failure emits a rollback signal, reopens the issue, and projects
-  `konoha:human-required` — never a silent "deployed" (§40).
+  `konoha:human-required` — never a silent "deployed" (§40). `DependencyWorkflow`
+  (per-repo `<repo>-deps` schedule when `deps.enabled`) runs `ScanDependencies`
+  (config `scanCmd`) and files one idempotent issue per finding
+  (`EnsureDependencyIssue`, marker `<!-- konoha-dep: … -->`); those issues then
+  flow through the normal lifecycle via the existing sweep/webhook. A filed issue
+  carries `konoha:dependency`, plus `konoha:security` for a known vulnerability —
+  both are built-in §20 escalation labels, so a dependency/CVE update always
+  routes to `HUMAN_REQUIRED` before a PR is published, even under
+  `closePolicy: autonomous`.
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
-  review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, and §43
-  concurrency caps.
+  review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, §43
+  concurrency caps, and §52 `deps`.
 - **Runtime config**: `konoha.yaml` — worker/runtime values + code-level
   `defaults.lifecycle` fallbacks (see Configuration below).
 - **Apply**: `scripts/apply.sh` builds the worker and asks `prbot config` (the
   shared Go loader) for each repo's schedule input JSON — unknown keys / bad
   values in `repos.yaml` fail fast. It then (re)creates `<repo>-review-all` and
-  `<repo>-issue-all` schedules per repo.
+  `<repo>-issue-all` schedules per repo, plus a `<repo>-deps` schedule for each
+  `deps.enabled` repo (`prbot config --deps`).
 
 ## Layout
 
@@ -167,7 +182,10 @@ inputs for `apply.sh`), `/tmp/prbot start` (runs a `PrReviewWorkflow` for PR 6
 of `vitdo82/ducklambda`; `PR_NUM` overrides), and `/tmp/prbot publish`
 (`DRY_RUN=1` to shadow-run), and `/tmp/prbot release` (runs the §50 release
 activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
-`VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override).
+`VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override), and `/tmp/prbot deps`
+(runs the §52 dependency scan for `OWNER`/`REPO`/`REPO_PATH` and prints the
+validated `DependencyReport`; `SCAN_CMD` required). `prbot config --deps`
+prints the §52 dependency schedule inputs for `apply.sh`.
 
 ## Add a repo
 

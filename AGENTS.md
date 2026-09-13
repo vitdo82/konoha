@@ -110,8 +110,9 @@ without restarting a completed workflow. Deliveries with an invalid
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
   fail fast at apply time. The schema lives in `config.go`
-  (`RepoConfig`/`LifecycleConfig`/`MergeConfig`, §§33/43/49) — adding keys to
-  `repos.yaml` requires updating those structs, not grep/awk in `apply.sh`.
+  (`RepoConfig`/`LifecycleConfig`/`MergeConfig`/`DependencyConfig`, §§33/43/49/52) —
+  adding keys to `repos.yaml` requires updating those structs, not grep/awk in
+  `apply.sh`.
 - **Runtime config is `konoha.yaml`** (`configs/`), resolved once at bootstrap
   as `env > file > bundled default` (`appconfig.go` → `appCfg`, fixed for the
   process lifetime so workflow replay is deterministic). `worker.*` holds the
@@ -172,6 +173,28 @@ without restarting a completed workflow. Deliveries with an invalid
   as deployed. Disabled/absent and `DryRun` (§42) are no-ops (no remote calls).
   `ghTokenRunner` is the shared test seam; never call `activity.GetLogger` in
   these activities (panics on non-Temporal ctx).
+- `deps.go` owns the §52 dependency + security automation: a per-repo
+  `<repo>-deps` Temporal schedule runs `DependencyWorkflow` (created by
+  `apply.sh` via `prbot config --deps`, only for `lifecycle.deps.enabled`),
+  which calls `ScanDependencies` (runs config `scanCmd` via `sh -c`; its output
+  must be a JSON array/object of `{package,version,id,severity,summary}` —
+  empty `id` = outdated bump, non-empty = vulnerability) then
+  `EnsureDependencyIssue` per finding. Filing is idempotent (§24) by the
+  byte-exact `<!-- konoha-dep: <pkg>@<id|version> -->` marker (search-before-
+  create, like the child markers); a vulnerability issue also carries the
+  built-in `konoha:security` label, everything else `konoha:dependency`. The
+  workflow NEVER starts `IssueCycleWorkflow` — the issue has no `konoha:managed`
+  label, so the existing sweep/webhook drives it through the normal lifecycle
+  (no double-start). A malformed scan or entry fails closed (§36/§40), never
+  "0 findings". `lifecycle.deps.{enabled,scanCmd,schedule,label,autoFileIssues}`;
+  disabled/absent ⇒ no scan, no issues; `DryRun` files nothing (§42).
+- **Built-in security gate** (`policy.go`): `hasEscalationLabel` always treats
+  `konoha:security`/`konoha:dependency` as `humanRequiredLabels`, so
+  `DetectHumanEscalation` (pre-publish) and `EvaluateClosePolicy` escalate them
+  even under `closePolicy: autonomous`. This is what guarantees a §52 CVE/dep
+  bump is never auto-merged; a bare (non-konoha) `security` label still only
+  escalates when configured. `sourceLabels()` in `labels.go` are created by
+  `EnsureRepoLabels` but are NOT projectable (never stripped as stale).
 - `main.go` has several debug entrypoints run as CLI args: `./prbot token`,
   `./prbot start` (starts a `PrReviewWorkflow` for PR 6 of `vitdo82/ducklambda`
   by default; `PR_NUM` env overrides), `./prbot publish` (runs
@@ -208,7 +231,10 @@ repo and prints it; `OWNER`/`REPO` override, `DRY_RUN=1` for shadow mode),
 creation; `DRY_RUN=1` prints the validated `ChildIssue` identities without
 mutating), and `./prbot release` (runs the §50 `RunRelease` activity directly
 and prints the `ReleaseResult`; `OWNER`/`REPO`/`BASE_BRANCH`/`CHANGELOG_PATH`/
-`VERSION_PREFIX`/`RELEASE_ENABLED`/`DRY_RUN` env overrides; no Temporal).
+`VERSION_PREFIX`/`RELEASE_ENABLED`/`DRY_RUN` env overrides; no Temporal), and
+`./prbot deps` (runs the §52 `ScanDependencies` activity directly and prints the
+validated `DependencyReport`; `OWNER`/`REPO`/`REPO_PATH` plus `SCAN_CMD`
+required; no Temporal).
 - `workflow.go` owns the lifecycle state machine: `IssueCycleWorkflow` now
   wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
   (suppresses publish on restricted paths/labels) → publish (idempotent PR) →

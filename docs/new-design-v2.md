@@ -1501,6 +1501,56 @@ lifecycle:
     rollbackOnFail: true    # emit a rollback signal on failure
 ```
 
+### Dependency + security stage (§52, extends this section)
+
+Dependencies drift and CVEs land without anyone filing a ticket. A schedule-
+driven workflow closes that gap by turning scan findings into ordinary issues:
+
+```
+<repo>-deps (Temporal Schedule, lifecycle.deps.schedule)
+       ↓
+DependencyWorkflow                     # repo-scoped; disabled → no-op
+       ↓
+ScanDependencies                       # activity: runs deps.scanCmd via sh -c
+       │   stdout = JSON array of {package,version,id,severity,summary}
+       │   empty id → outdated bump; non-empty id → vulnerability
+       ↓
+EnsureDependencyIssue (per finding)    # activity: idempotent, marker-keyed
+       │   <!-- konoha-dep: <pkg>@<id|version> -->   (search-before-create, §24)
+       │   label: konoha:dependency  (+ konoha:security for a vulnerability)
+       ↓
+IssueCycleWorkflow                     # driven by the existing sweep/webhook,
+                                       # never started by DependencyWorkflow
+```
+
+Filing is idempotent by the deterministic marker, so overlapping schedule runs
+and Temporal retries converge on one issue per finding. `DependencyWorkflow`
+never starts the issue cycle itself: the filed issue carries no `konoha:managed`
+label, so the normal issue sweep (and the `opened` webhook fast-path) picks it
+up — the same path as any other issue. A malformed scan or entry fails closed
+(§36/§40) rather than reporting "0 findings". `deps.autoFileIssues: false` keeps
+the scan report-only; `DryRun` (§42) files nothing.
+
+```yaml
+lifecycle:
+  deps:
+    enabled: false          # opt-in; false/unset = no scan and no issues
+    scanCmd: ""             # required when enabled; prints the JSON finding array
+    schedule: 24h           # per-repo cadence (<repo>-deps schedule)
+    label: konoha:dependency # base label; vulnerabilities also get konoha:security
+    autoFileIssues: true    # false = scan/report only
+```
+
+#### Security merge gate (§52, built-in)
+
+`konoha:security` and `konoha:dependency` are **built-in** `humanRequiredLabels`:
+the §20 predicate escalates them even when repo config lists no such label and
+even under `closePolicy: autonomous`. A dependency/CVE issue therefore hits
+`HUMAN_REQUIRED` at the risk gate **before any PR is published**, so it can
+never be auto-merged or auto-closed — the gate is enforced by the deterministic
+policy, not by agent judgement. (A bare, non-`konoha:` `security` label keeps
+its existing behavior: escalation only when the repo configures it.)
+
 ---
 
  # 31\. External GitHub changes

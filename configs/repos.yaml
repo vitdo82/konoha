@@ -8,6 +8,7 @@
 #   - poGateTimeout: PO-on-fire timeout (Go duration)
 #   - merge: {strategy, requireCI, ciMaxWait}: PR merge + CI gate (§49)
 #   - release: {enabled, changelogPath, versionPrefix}: post-merge release (§50)
+#   - deps: {enabled, scanCmd, schedule, label, autoFileIssues}: dependency scan (§52)
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
 # Unknown keys or out-of-range values make `./apply.sh` fail fast.
@@ -38,6 +39,12 @@ repos:
         enabled: false          # opt-in; false/unset = no-op
         changelogPath: CHANGELOG.md
         versionPrefix: v
+      deps:                     # §52 dependency + security automation
+        enabled: false          # opt-in; false/unset = no scan and no issues
+        scanCmd: ""             # required when enabled; must print the JSON finding array
+        schedule: 24h           # per-repo scan cadence (<repo>-deps Temporal schedule)
+        label: konoha:dependency # base label; vulnerabilities also get konoha:security
+        autoFileIssues: true    # false = scan/report only
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 1
