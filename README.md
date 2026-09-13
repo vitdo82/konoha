@@ -57,6 +57,13 @@ repos:
         thresholds:                    # autonomous rate alerts below; all others above
           autonomous_completion_rate: 0.7
           human_escalation_rate: 0.3
+      propagation:                     # §54 cross-repo change propagation
+        enabled: false                 # opt-in; false/unset = no downstream issues
+        maxPerMerge: 3                 # fan-out cap per merge (default 3, §43-style)
+        downstream:                    # downstream repo → {trigger, type}
+          downstream-repo:
+            trigger: "pkg/api/**"      # changed-file glob that makes a merge affect it
+            type: breaking             # change-kind tag on the filed issue
       poGateTimeout: 168h              # §18/§33 human-response window
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
@@ -147,11 +154,20 @@ parser contract, §6 workflow state names, and GitHub API base.
   run (`EnsureFailureIssue`, marker `<!-- konoha-failure: … -->`) carrying the
   structured failure; the filed issue is a normal issue (no `konoha:managed`
   label) so the sweep drives it back through the lifecycle. Alerting never
-  resolves a stuck run — Temporal state stays authoritative.
+  resolves a stuck run — Temporal state stays authoritative. When
+  `propagation.enabled`, a successful merge also runs the §54 stage:
+  `DetectAffectedDownstreams` (reads the PR's changed files via `gh pr diff
+  --name-only`) matches them against the configured `downstream` map, and
+  `EnsureCrossRepoIssue` files one issue per affected repo (marker
+  `<!-- konoha-cross: <owner>/<repo>#<sha> -->`, label `konoha:cross-repo`,
+  fan-out capped by `maxPerMerge`). The filed issue carries no `konoha:managed`
+  label, so the downstream repo's own sweep/webhook drives it through the
+  downstream lifecycle — the downstream phase/autonomy/§20 gates apply
+  unchanged and no cycle is double-started.
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, §43
-  concurrency caps, §52 `deps`, and §53 `alerting`.
+  concurrency caps, §52 `deps`, §53 `alerting`, and §54 `propagation`.
 - **Runtime config**: `konoha.yaml` — worker/runtime values + code-level
   `defaults.lifecycle` fallbacks (see Configuration below).
 - **Apply**: `scripts/apply.sh` builds the worker and asks `prbot config` (the

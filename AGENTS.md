@@ -212,6 +212,26 @@ without restarting a completed workflow. Deliveries with an invalid
   a normal issue and the existing sweep/webhook drives it back through the
   lifecycle (self-healing stream, no double-start, §32). `DryRun` logs alerts
   but never POSTs and files nothing (§42).
+- `propagation.go` owns the §54 cross-repo change propagation: `PostMergeWorkflow`
+  runs `runPropagation` after a merge (independent of §50/§51, so a release/deploy
+  failure never blocks it). `DetectAffectedDownstreams` is a **read-only** activity
+  — it reads the merged PR's touched files (`gh pr diff --name-only` via the
+  `ghRunner` seam) and matches them against `lifecycle.propagation.downstream`
+  with the shared `globMatch` (each entry is `{trigger: <changed-file glob>,
+  type: <kind>}`). `MatchAffectedDownstreams` is the PURE, deterministic matcher
+  (sorted repo-key order, fan-out capped by `maxPerMerge`, default 3, §43-style).
+  `EnsureCrossRepoIssue` is the idempotent mutation (§24): search-before-create by
+  the byte-exact `<!-- konoha-cross: <owner>/<repo>#<sha> -->` marker (upstream
+  repo + commit), labels the issue `konoha:cross-repo` (a source label — never
+  projectable, so `ApplyIssueLabels` cannot strip it; defined in `labels.go`) and
+  deliberately does NOT add `konoha:managed`. Because the issue is unmanaged, the
+  downstream repo's OWN sweep/`opened` webhook starts its `IssueCycleWorkflow`
+  with the downstream `RepoScope`/lifecycle — Konoha never starts that cycle here,
+  so B's phase/autonomy/§20 gates apply unchanged and nothing double-starts
+  (§32/§52). A missing `Sha` fails closed (an un-dedupable create is never made);
+  disabled/absent config is a no-op and `DryRun` (§42) keeps the analysis but
+  files nothing. An enabled map needs ≥1 downstream; every entry needs `trigger`
+  and `type`; a negative `maxPerMerge` fails at `apply.sh` (`config.go` validate).
 - **Built-in security gate** (`policy.go`): `hasEscalationLabel` always treats
   `konoha:security`/`konoha:dependency` as `humanRequiredLabels`, so
   `DetectHumanEscalation` (pre-publish) and `EvaluateClosePolicy` escalate them
