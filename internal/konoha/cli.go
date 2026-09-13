@@ -92,6 +92,11 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "deps":
+			if err := runDeps(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -130,6 +135,7 @@ func Main() {
 	w.RegisterWorkflowWithOptions(IssueCycleWorkflow, workflow.RegisterOptions{Name: "IssueCycleWorkflow"})
 	w.RegisterWorkflowWithOptions(IssueAllWorkflow, workflow.RegisterOptions{Name: "IssueAllWorkflow"})
 	w.RegisterWorkflowWithOptions(PostMergeWorkflow, workflow.RegisterOptions{Name: "PostMergeWorkflow"})
+	w.RegisterWorkflowWithOptions(DependencyWorkflow, workflow.RegisterOptions{Name: "DependencyWorkflow"})
 	w.RegisterActivity(FetchDiff)
 	w.RegisterActivity(FetchPRHead)
 	w.RegisterActivity(FetchPRDiff)
@@ -161,6 +167,8 @@ func Main() {
 	w.RegisterActivity(RunRelease)
 	w.RegisterActivity(DeployRelease)
 	w.RegisterActivity(VerifyDeployment)
+	w.RegisterActivity(ScanDependencies)
+	w.RegisterActivity(EnsureDependencyIssue)
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
@@ -194,15 +202,27 @@ func defaultReposPath() string {
 	return "configs/repos.yaml"
 }
 
-// config prints repos.yaml-derived schedule inputs ("<repo>\t<json>" per line)
-// for apply.sh, which feeds each line to `temporal schedule create`. Path is arg
-// 0 or $KONOHA_CONFIG_DIR/repos.yaml (default ./configs/repos.yaml).
+// config prints repos.yaml-derived schedule inputs for apply.sh, which feeds
+// each line to `temporal schedule create`. Path is the first non-flag arg or
+// $KONOHA_CONFIG_DIR/repos.yaml (default ./configs/repos.yaml). `--deps` emits
+// the §52 dependency schedules instead ("<repo>\t<interval>\t<json>").
 func runConfig(args []string) error {
 	path := defaultReposPath()
-	if len(args) > 0 {
-		path = args[0]
+	deps := false
+	for _, a := range args {
+		if a == "--deps" {
+			deps = true
+			continue
+		}
+		path = a
 	}
-	lines, err := scheduleInputs(path)
+	var lines []string
+	var err error
+	if deps {
+		lines, err = depsScheduleInputs(path)
+	} else {
+		lines, err = scheduleInputs(path)
+	}
 	if err != nil {
 		return err
 	}
@@ -643,12 +663,13 @@ func runLabels() error {
 	owner := getenv("OWNER", "vitdo82")
 	repo := getenv("REPO", "ducklambda")
 	dry := os.Getenv("DRY_RUN") == "1"
+	labels := append(projectableLabels(), sourceLabels()...)
 	if err := EnsureRepoLabels(context.Background(), LabelsTheirsRequest{
-		Owner: owner, Repo: repo, Labels: projectableLabels(), DryRun: dry,
+		Owner: owner, Repo: repo, Labels: labels, DryRun: dry,
 	}); err != nil {
 		return err
 	}
-	fmt.Println(strings.Join(projectableLabels(), "\n"))
+	fmt.Println(strings.Join(labels, "\n"))
 	return nil
 }
 
@@ -711,6 +732,27 @@ func runRelease() error {
 		return err
 	}
 	b, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
+	return nil
+}
+
+func runDeps() error {
+	// debug: run the §52 dependency scan directly (no Temporal), printing the
+	// validated DependencyReport JSON. Env: OWNER/REPO/REPO_PATH, SCAN_CMD
+	// (required; must print the JSON finding array).
+	report, err := ScanDependencies(context.Background(), DependencyScanRequest{
+		Owner:    getenv("OWNER", "vitdo82"),
+		Repo:     getenv("REPO", "ducklambda"),
+		RepoPath: getenv("REPO_PATH", "/Users/vit/projects/ducklambda"),
+		ScanCmd:  os.Getenv("SCAN_CMD"),
+	})
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}

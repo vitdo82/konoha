@@ -45,6 +45,12 @@ repos:
         enabled: true
         changelogPath: CHANGELOG.md
         versionPrefix: v
+      deps:
+        enabled: true
+        scanCmd: "govulncheck ./..."
+        schedule: 24h
+        label: konoha:dependency
+        autoFileIssues: true
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 4
@@ -77,6 +83,12 @@ repos:
 		t.Fatalf("unexpected release policy: %+v", lc.Release)
 	}
 
+	// §52 deps block is parsed; enabled gates the scan.
+	if !DependencyEnabled(lc) || DependencyScanCmd(lc) != "govulncheck ./..." ||
+		DependencySchedule(lc) != "24h" || !AutoFileDependencyIssues(lc) {
+		t.Fatalf("unexpected deps policy: %+v", lc.Deps)
+	}
+
 	// The schedule input serializes the same schema the workflows decode.
 	lines, err := scheduleInputs(p)
 	if err != nil || len(lines) != 1 {
@@ -86,8 +98,52 @@ repos:
 		!strings.Contains(lines[0], `"closePolicy":"risk-based"`) ||
 		!strings.Contains(lines[0], `"strategy":"rebase"`) ||
 		!strings.Contains(lines[0], `"requireCI":false`) ||
-		!strings.Contains(lines[0], `"release":{"enabled":true`) {
+		!strings.Contains(lines[0], `"release":{"enabled":true`) ||
+		!strings.Contains(lines[0], `"deps":{"enabled":true`) {
 		t.Fatalf("schedule input missing lifecycle fields: %s", lines[0])
+	}
+}
+
+// §52: only repos with deps.enabled emit a dependency schedule line, and it
+// carries the resolved interval + the RepoScope input.
+func TestDepsScheduleInputs(t *testing.T) {
+	p := writeRepos(t, `
+repos:
+  - repo: on
+    owner: o
+    repoPath: /x
+    lifecycle:
+      deps:
+        enabled: true
+        scanCmd: scan
+        schedule: 6h
+  - repo: off
+    owner: o
+    repoPath: /x
+`)
+	lines, err := depsScheduleInputs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("got %d deps schedule lines, want 1", len(lines))
+	}
+	parts := strings.SplitN(lines[0], "\t", 3)
+	if len(parts) != 3 || parts[0] != "on" || parts[1] != "6h" {
+		t.Fatalf("unexpected deps schedule line: %q", lines[0])
+	}
+	var scope RepoScope
+	if err := json.Unmarshal([]byte(parts[2]), &scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope.Repo != "on" || !DependencyEnabled(scope.Lifecycle) {
+		t.Fatalf("unexpected scope: %+v", scope)
+	}
+
+	// Disabled → no line at all.
+	off := writeRepos(t, `repos: [{repo: off, owner: o, repoPath: /x}]`)
+	if lines, err := depsScheduleInputs(off); err != nil || len(lines) != 0 {
+		t.Fatalf("disabled repo must emit no deps schedule: %v err=%v", lines, err)
 	}
 }
 
@@ -141,6 +197,9 @@ func TestLoadReposConfigRejectsOutOfRange(t *testing.T) {
 		`{release: {changelogPath: "/etc/passwd"}}`,
 		`{release: {changelogPath: "../escape.md"}}`,
 		`{release: {versionPrefix: "bad prefix"}}`,
+		`{deps: {enabled: true}}`,
+		`{deps: {schedule: "notaduration"}}`,
+		`{deps: {schedule: "-1s"}}`,
 	}
 	for _, lc := range bad {
 		p := writeRepos(t, `repos: [{repo: r, owner: o, repoPath: /x, lifecycle:`+lc+`}]`)

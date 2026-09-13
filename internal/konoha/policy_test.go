@@ -249,6 +249,35 @@ func TestEvaluateClosePolicy(t *testing.T) {
 	}
 }
 
+// §52/§20: the built-in konoha:security / konoha:dependency labels escalate
+// regardless of repo config and even under closePolicy: autonomous, so a
+// dependency/CVE update is never silently auto-merged or auto-closed.
+func TestBuiltinSecurityLabelsEscalate(t *testing.T) {
+	empty := LifecycleConfig{DevelopmentMaxComplexity: 4} // no configured labels
+	for _, label := range []string{labelSecurity, labelDependency} {
+		if d := DetectHumanEscalation(empty, []string{"pkg/a.go"}, []string{label}); !d.Escalate {
+			t.Fatalf("%s must escalate with empty config: %+v", label, d)
+		}
+		if d := EvaluateAutonomy(empty, EstimateResult{Complexity: 2, Confidence: confidenceHigh}, nil, []string{label}); d.Autonomous {
+			t.Fatalf("%s must block autonomy: %+v", label, d)
+		}
+	}
+	// A bare (non-konoha) "security" label stays benign when unconfigured.
+	if d := DetectHumanEscalation(empty, nil, []string{"security"}); d.Escalate {
+		t.Fatalf("non-konoha security label must not escalate: %+v", d)
+	}
+
+	ok := CompletionCheck{
+		ImplementationExists: true, PREnabled: true, LatestCommitReviewed: true,
+		ReviewApproved: true, TestsPass: true, CompletionAgentComplete: true,
+		NoBlockingOpenQuestions: true, NoPolicyRestriction: true, RequiredChildrenComplete: true,
+	}
+	lc := LifecycleConfig{Autonomy: Autonomy{ClosePolicy: closePolicyAutonomous}}
+	if d := EvaluateClosePolicy(lc, ok, nil, []string{labelSecurity}); d.Close || !d.Escalation {
+		t.Fatalf("autonomous policy must still escalate a built-in security label: %+v", d)
+	}
+}
+
 // globMatch: `**` spans whole segments, `*`/`?` stay within a segment.
 func TestGlobMatch(t *testing.T) {
 	cases := []struct {

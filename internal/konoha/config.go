@@ -29,17 +29,18 @@ const (
 // apply.sh (`prbot config`) so workflows and activities carry the policy
 // without re-reading files.
 type LifecycleConfig struct {
-	Mode                          string        `yaml:"mode" json:"mode,omitempty"`
-	DevelopmentMaxComplexity      int           `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
-	MaxDevReviewAttempts          int           `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
-	Autonomy                      Autonomy      `yaml:"autonomy" json:"autonomy,omitempty"`
-	Merge                         MergeConfig   `yaml:"merge" json:"merge,omitempty"`
-	Release                       ReleaseConfig `yaml:"release" json:"release,omitempty"`
-	Deploy                        DeployConfig  `yaml:"deploy" json:"deploy,omitempty"`
-	POGateTimeout                 string        `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
-	DryRun                        bool          `yaml:"dryRun" json:"dryRun,omitempty"`
-	MaxConcurrentIssueCycles      int           `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
-	MaxConcurrentChildrenPerIssue int           `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+	Mode                          string           `yaml:"mode" json:"mode,omitempty"`
+	DevelopmentMaxComplexity      int              `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
+	MaxDevReviewAttempts          int              `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
+	Autonomy                      Autonomy         `yaml:"autonomy" json:"autonomy,omitempty"`
+	Merge                         MergeConfig      `yaml:"merge" json:"merge,omitempty"`
+	Release                       ReleaseConfig    `yaml:"release" json:"release,omitempty"`
+	Deploy                        DeployConfig     `yaml:"deploy" json:"deploy,omitempty"`
+	Deps                          DependencyConfig `yaml:"deps" json:"deps,omitempty"`
+	POGateTimeout                 string           `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
+	DryRun                        bool             `yaml:"dryRun" json:"dryRun,omitempty"`
+	MaxConcurrentIssueCycles      int              `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
+	MaxConcurrentChildrenPerIssue int              `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
 }
 
 // MergeConfig is the per-repo PR-merge + CI-gate policy (§49). RequireCI is a
@@ -164,6 +165,9 @@ func (lc *LifecycleConfig) validate() error {
 	if err := lc.Deploy.validate("lifecycle.deploy"); err != nil {
 		return err
 	}
+	if err := lc.Deps.validate("lifecycle.deps"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -196,6 +200,15 @@ func (mc MergeConfig) validate(prefix string) error {
 	return nil
 }
 
+// repoScope builds the schedule workflow input for one repos.yaml entry.
+func repoScope(r RepoConfig) RepoScope {
+	scope := RepoScope{Owner: r.Owner, Repo: r.Repo, RepoPath: r.RepoPath}
+	if r.Lifecycle != nil {
+		scope.Lifecycle = *r.Lifecycle
+	}
+	return scope
+}
+
 // scheduleInputs renders repos.yaml into the per-repo schedule workflow input
 // (RepoScope JSON, one "<repo>\t<json>" line each). apply.sh feeds these lines
 // to `temporal schedule create`, so parsing/validation lives in Go and never
@@ -207,15 +220,34 @@ func scheduleInputs(path string) ([]string, error) {
 	}
 	var out []string
 	for _, r := range repos {
-		scope := RepoScope{Owner: r.Owner, Repo: r.Repo, RepoPath: r.RepoPath}
-		if r.Lifecycle != nil {
-			scope.Lifecycle = *r.Lifecycle
-		}
-		b, err := json.Marshal(scope)
+		b, err := json.Marshal(repoScope(r))
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, r.Repo+"\t"+string(b))
+	}
+	return out, nil
+}
+
+// depsScheduleInputs renders the §52 dependency schedules: only repos with
+// deps.enabled emit a line, as "<repo>\t<interval>\t<scope json>". apply.sh
+// creates one <repo>-deps DependencyWorkflow schedule per line, so a disabled
+// repo has no scan and no issues.
+func depsScheduleInputs(path string) ([]string, error) {
+	repos, err := LoadReposConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range repos {
+		if r.Lifecycle == nil || !DependencyEnabled(*r.Lifecycle) {
+			continue
+		}
+		b, err := json.Marshal(repoScope(r))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r.Repo+"\t"+DependencySchedule(*r.Lifecycle)+"\t"+string(b))
 	}
 	return out, nil
 }
