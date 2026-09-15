@@ -1,7 +1,10 @@
 package konoha
 
 import (
+	"context"
+	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -159,6 +162,72 @@ func TestPublishDeveloperChangeHonorsDryRun(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("dryRun publish should skip mutation without creds, got: %v", err)
+	}
+}
+
+// runSubmitReview executes SubmitReview through the Temporal activity test env
+// with the gh command seam stubbed, returning the recorded invocations + error.
+func runSubmitReview(t *testing.T, r ReviewResult, runner func(ctx context.Context, tok string, args ...string) ([]byte, error)) ([][]string, error) {
+	t.Helper()
+	useFakeToken(t)
+	var calls [][]string
+	withTokenRunner(t, func(ctx context.Context, tok string, args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return runner(ctx, tok, args...)
+	})
+	env := (&testsuite.WorkflowTestSuite{}).NewTestActivityEnvironment()
+	env.RegisterActivity(SubmitReview)
+	_, err := env.ExecuteActivity(SubmitReview,
+		PrInput{Owner: "o", Repo: "r", PrNum: 7},
+		r)
+	return calls, err
+}
+
+// A self-authored PR: GitHub rejects the formal --request-changes review, so
+// SubmitReview must retry as a non-blocking --comment review and succeed.
+func TestSubmitReviewFallsBackToCommentOnSelfReview(t *testing.T) {
+	calls, err := runSubmitReview(t, ReviewResult{Verdict: "REQUEST_CHANGES", Summary: "## Agent Review: REQUEST_CHANGES"},
+		func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if slices.Contains(args, "--comment") {
+				return nil, nil
+			}
+			return []byte("GraphQL: Review Can not request changes on your own pull request (addPullRequestReview): exit status 1"),
+				errors.New("exit status 1")
+		})
+	if err != nil {
+		t.Fatalf("self-review must fall back to a comment review, got: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("want formal attempt then comment fallback, got %d calls", len(calls))
+	}
+	if !slices.Contains(calls[0], "--request-changes") || !slices.Contains(calls[1], "--comment") {
+		t.Fatalf("unexpected review calls: %v / %v", calls[0], calls[1])
+	}
+}
+
+// A formal review that succeeds is posted unchanged (no comment fallback).
+func TestSubmitReviewPostsFormalReviewWhenNotSelfAuthored(t *testing.T) {
+	calls, err := runSubmitReview(t, ReviewResult{Verdict: "REQUEST_CHANGES", Summary: "s"},
+		func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("formal review should succeed, got: %v", err)
+	}
+	if len(calls) != 1 || !slices.Contains(calls[0], "--request-changes") || slices.Contains(calls[0], "--comment") {
+		t.Fatalf("unexpected calls: %v", calls)
+	}
+}
+
+// Any failure other than the self-review restriction is fail-closed (§40).
+func TestSubmitReviewPropagatesOtherErrors(t *testing.T) {
+	calls, err := runSubmitReview(t, ReviewResult{Verdict: "REQUEST_CHANGES", Summary: "s"},
+		func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			return []byte("HTTP 500: server exploded"), errors.New("exit status 1")
+		})
+	if err == nil {
+		t.Fatal("a non-self-review failure must propagate, never silently succeed")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("no fallback expected on a generic error, got %d calls", len(calls))
 	}
 }
 
