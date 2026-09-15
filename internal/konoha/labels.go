@@ -25,6 +25,7 @@ const (
 	labelEstimateLarge    = "konoha:estimate-large"
 	labelReview           = "konoha:review"
 	labelChangesRequested = "konoha:changes-requested"
+	labelPendingApproval  = "konoha:pending-approval" // §55: pre-execution gate waiting on a human
 	labelNeedsSpec        = "konoha:needs-spec"
 	labelChild            = "konoha:child"
 	labelSecurity         = "konoha:security"   // §52: known-vulnerability origin (built-in §20 escalation)
@@ -54,7 +55,7 @@ func projectableLabels() []string {
 	out := []string{
 		labelManaged, labelBlocked, labelFailed, labelCancelled, labelHumanRequired,
 		labelEstimatePending, labelEstimateLarge, labelReview, labelChangesRequested,
-		labelNeedsSpec, labelChild,
+		labelNeedsSpec, labelChild, labelPendingApproval,
 	}
 	out = append(out, complexityLabels[:]...)
 	return out
@@ -90,6 +91,9 @@ func ProjectLabels(lc LifecycleConfig, state string, complexity int, manage bool
 	case stateChangesRequested:
 		out = append(out, complexityLabel(complexity))
 		out = append(out, labelChangesRequested)
+	case statePendingApproval:
+		out = append(out, complexityLabel(complexity))
+		out = append(out, labelPendingApproval)
 	case stateHumanRequired, stateBlocked:
 		out = append(out, complexityLabel(complexity))
 		out = append(out, labelHumanRequired)

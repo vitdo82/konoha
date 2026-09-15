@@ -55,7 +55,8 @@ make test   # go vet ./... + go build ./... + go test ./... (§41 test suite)
 `go test ./...` runs the full §41 matrix: activity/reconcile idempotency
 (`reconcile_test.go`), every agent validator (§36), the derived §39 metric
 gauges, the §53 alert threshold math + per-window dedupe and failure-feedback
-idempotency (`alerting_test.go`), the §44 invariant assertions
+idempotency (`alerting_test.go`), the §55 approval-gate policy + audit-sink
+writes (`approval_test.go`), the §44 invariant assertions
 (`invariants_test.go`), and
 Temporal-testsuite workflow runs (`workflow_suite_test.go`) — the agent
 activities are mocked with testify `Anything` matchers (one per activity
@@ -232,6 +233,26 @@ without restarting a completed workflow. Deliveries with an invalid
   disabled/absent config is a no-op and `DryRun` (§42) keeps the analysis but
   files nothing. An enabled map needs ≥1 downstream; every entry needs `trigger`
   and `type`; a negative `maxPerMerge` fails at `apply.sh` (`config.go` validate).
+- `approval.go` owns the §55 pre-execution approval gate + audit: `GatedSteps`/
+  `ApprovalRequired` resolve the opt-in `approval.preGate` + `requiredSteps`
+  (closed set `publish|merge|deploy`; empty = all; an unknown step fails
+  `apply.sh`). `AwaitApproval` is the ACTIVITY that polls the §18 decision
+  channel (reusing `ReadHumanDecision` verbatim — same `konoha-decision` marker,
+  same §36 validation) until `approve`/`deny` or the `poGateTimeout`; `approve`
+  (and the legacy `resume`) grants, any other valid decision denies, and a
+  timeout returns `TimedOut` with no error so the workflow **blocks, never
+  proceeds** (§40/§44 #17). `approve`/`deny` were added to the bounded §18 action
+  set. The gate is approve-once (the marker is not step-scoped): `requiredSteps`
+  selects which steps wait, and one sign-off then lets the gated pipeline
+  proceed — per-step sign-off would need an `approve:<step>` marker. `awaitApprovalGate` is the shared workflow-side helper (used before
+  publish/merge in `IssueCycleWorkflow`, before deploy in `PostMergeWorkflow`).
+  `RecordAuditEvent` appends one JSONL line (subject, step, actor, decision) to
+  the append-only `audit.sink`; `audit.enabled` without a sink, or a pre-gate
+  without an enabled audit, fails at load, and a write failure is fail-closed
+  (an un-recorded gate breaks the guarantee — AC "every gated decision is
+  recorded" holds only when the audit is on, which load-time validation forces).
+  `DryRun` (§42) skips the gate (nothing mutates). Labels are only the
+  `konoha:pending-approval` projection (`labels.go`).
 - **Built-in security gate** (`policy.go`): `hasEscalationLabel` always treats
   `konoha:security`/`konoha:dependency` as `humanRequiredLabels`, so
   `DetectHumanEscalation` (pre-publish) and `EvaluateClosePolicy` escalate them
@@ -292,7 +313,10 @@ required; no Temporal).
   always means its PR actually merged. Every terminal funnels through
   `recordTerminal` → `RecordCycleMetrics`
   (autonomous vs human/blocked, §39); a terminal `BLOCKED`/`FAILED` also starts
-  the §53 `FailureFeedbackWorkflow` when `alerting.enabled`. Follow-ups NOT yet wired: completion gate
+  the §53 `FailureFeedbackWorkflow` when `alerting.enabled`. The §55 pre-execution
+  approval gate (`PENDING_APPROVAL`) runs before publish and merge when
+  `approval.preGate` is on; a deny → `HUMAN_REQUIRED`, a timeout → `BLOCKED`
+  (never a silent proceed). Follow-ups NOT yet wired: completion gate
   (§14/§19), disagreement (§37), diagnosis → HUMAN_REQUIRED (§17/§18), and the
   LARGE path (split/children — currently ends at the deterministic `NOT_WIRED`
   terminal, never a silent drop). All I/O stays in activities (replay-safe).

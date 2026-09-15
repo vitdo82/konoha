@@ -64,7 +64,13 @@ repos:
           downstream-repo:
             trigger: "pkg/api/**"      # changed-file glob that makes a merge affect it
             type: breaking             # change-kind tag on the filed issue
-      poGateTimeout: 168h              # §18/§33 human-response window
+      approval:                        # §55 pre-execution approval gate
+        preGate: false                 # opt-in; false/unset = fully autonomous (no change)
+        requiredSteps: [publish, merge, deploy]  # closed set; empty = all steps
+      audit:                           # §55 append-only audit of gated decisions
+        enabled: false                 # required (with sink) when approval.preGate is on
+        sink: /var/log/konoha-audit.jsonl  # required when enabled (JSONL append)
+      poGateTimeout: 168h              # §18/§33 human-response window (also the gate wait)
       dryRun: false                    # §42 shadow mode: true = zero mutations
       maxConcurrentIssueCycles: 1      # §43
       maxConcurrentChildrenPerIssue: 3 # §43
@@ -163,11 +169,18 @@ parser contract, §6 workflow state names, and GitHub API base.
   fan-out capped by `maxPerMerge`). The filed issue carries no `konoha:managed`
   label, so the downstream repo's own sweep/webhook drives it through the
   downstream lifecycle — the downstream phase/autonomy/§20 gates apply
-  unchanged and no cycle is double-started.
+  unchanged and no cycle is double-started. When `approval.preGate` is on, each
+  listed step (`publish`/`merge`/`deploy`) first enters `PENDING_APPROVAL` and
+  the `AwaitApproval` activity polls the §18 decision channel (bounded by
+  `poGateTimeout`): `approve` proceeds, `deny` escalates to `HUMAN_REQUIRED`, and
+  a timeout stays `BLOCKED` — never a silent proceed. Each gated decision is
+  appended by `RecordAuditEvent` to the append-only `audit.sink` JSONL file
+  (subject, step, actor, allow/deny/timeout).
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, §43
-  concurrency caps, §52 `deps`, §53 `alerting`, and §54 `propagation`.
+  concurrency caps, §52 `deps`, §53 `alerting`, §54 `propagation`, and §55
+  `approval`/`audit`.
 - **Runtime config**: `konoha.yaml` — worker/runtime values + code-level
   `defaults.lifecycle` fallbacks (see Configuration below).
 - **Apply**: `scripts/apply.sh` builds the worker and asks `prbot config` (the

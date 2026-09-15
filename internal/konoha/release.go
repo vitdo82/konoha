@@ -355,6 +355,20 @@ func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
 		return nil
 	}
 
+	// §55: the deploy step is gated when configured. A deny/timeout never
+	// deploys; both reopen the (already closed) issue to HUMAN_REQUIRED — the
+	// post-merge surface for a human — so it is never a silent success.
+	if ApprovalRequired(in.Lifecycle, approvalStepDeploy) {
+		res, err := awaitApprovalGate(ctx, in.Owner, in.Repo, in.IssueNum, approvalStepDeploy, in.Lifecycle)
+		if err != nil {
+			return err
+		}
+		if !res.Granted && !res.Skipped {
+			return escalateDeployFailure(ctx, in,
+				fmt.Sprintf("deploy approval %s (%s)", auditDecision(res), res.Detail))
+		}
+	}
+
 	var dep DeployResult
 	if err := workflow.ExecuteActivity(ctx, DeployRelease, DeployRequest{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, Tag: tag,

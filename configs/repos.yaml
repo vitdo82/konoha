@@ -14,6 +14,13 @@
 #   - propagation: {enabled, maxPerMerge, downstream}: §54 cross-repo propagation
 #     (downstream: {<repo>: {trigger: <changed-file glob>, type: <kind>}});
 #     files one konoha:cross-repo issue per affected downstream, capped
+#   - approval: {preGate, requiredSteps}: §55 pre-execution approval gate; when
+#     preGate is on, each listed step (publish|merge|deploy; empty = all) waits
+#     for a `<!-- konoha-decision: approve -->` within poGateTimeout; deny →
+#     HUMAN_REQUIRED, timeout → BLOCKED (never a silent proceed)
+#   - audit: {enabled, sink}: §55 append-only JSONL audit of every gated decision
+#     (sink required when enabled, and required whenever approval.preGate is on);
+#     fail-closed on a write error
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
 # Unknown keys or out-of-range values make `./apply.sh` fail fast.
@@ -65,6 +72,12 @@ repos:
         #   other-repo:
         #     trigger: "pkg/api/**"
         #     type: breaking
+      approval:                 # §55 pre-execution approval gate
+        preGate: false          # opt-in; true = wait for a human before the steps below
+        requiredSteps: [publish, merge, deploy]  # closed set; empty = all steps
+      audit:                    # §55 append-only audit (JSONL) of gated decisions
+        enabled: false          # opt-in; sink is required when true
+        sink: ""                # e.g. /var/log/konoha-audit.jsonl
       poGateTimeout: 168h
       dryRun: false
       maxConcurrentIssueCycles: 1

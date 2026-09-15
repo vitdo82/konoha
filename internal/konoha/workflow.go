@@ -104,6 +104,7 @@ const (
 	stateReviewing        = "REVIEWING"         // §22: a review is in flight (transient label)
 	stateChangesRequested = "CHANGES_REQUESTED" // §22: repair loop (transient label)
 	stateMerging          = "MERGING"           // §49: CI gate + PR merge before close
+	statePendingApproval  = "PENDING_APPROVAL"  // §55: waiting on a pre-execution human sign-off
 	stateHumanRequired    = "HUMAN_REQUIRED"    // §18: waiting on a human exception handler
 	stateBlocked          = "BLOCKED"           // §18/§40: blocked; a timeout keeps it here
 	stateCancelled        = "CANCELLED"         // §18: human decision "cancel"
@@ -226,6 +227,49 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		})
 	}
 
+	// gateStep enforces the §55 pre-execution approval gate before a mutating
+	// step. proceed=false with err=nil means the gate already recorded a terminal
+	// (deny → HUMAN_REQUIRED, timeout → BLOCKED) and the workflow must stop; a
+	// non-nil err is a genuine failure. With approval.preGate off it is a no-op,
+	// so the default pipeline is unchanged (AC #3).
+	gateStep := func(step string) (bool, error) {
+		if !ApprovalRequired(in.Lifecycle, step) {
+			return true, nil
+		}
+		transition(statePendingApproval)
+		projectLabels(statePendingApproval, est.Complexity)
+		res, err := awaitApprovalGate(ctx, in.Owner, in.Repo, in.IssueNum, step, in.Lifecycle)
+		if err != nil {
+			return false, err
+		}
+		if res.Granted || res.Skipped {
+			return true, nil
+		}
+		if res.Denied {
+			transition(stateHumanRequired)
+			projectLabels(stateHumanRequired, est.Complexity)
+			return false, recordTerminal(ctx, info, in, CycleOutcome{
+				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+				Owner: in.Owner, Repo: in.Repo,
+				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+				TerminalState:    stateHumanRequired,
+				HumanRequired:    true,
+				EscalationReason: reasonApprovalDenied,
+				Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
+			})
+		}
+		// Timed out: stay BLOCKED and never proceed (§40, no silent success).
+		transition(stateBlocked)
+		projectLabels(stateBlocked, est.Complexity)
+		return false, recordTerminal(ctx, info, in, CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateBlocked,
+			Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
 	// -- §4.4 DEVELOPING --
 	transition(stateDeveloping)
 	var dev DevelopResult
@@ -261,6 +305,13 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			HumanRequired:    true,
 			EscalationReason: reasonPolicyViolation,
 		})
+	}
+
+	// §55: publish is gated before any GitHub mutation when configured.
+	if ok, err := gateStep(approvalStepPublish); err != nil {
+		return err
+	} else if !ok {
+		return nil
 	}
 
 	// -- publish (idempotent PR, §25) — from the MAIN repo path + the dev commit
@@ -402,6 +453,14 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		workflow.GetLogger(ctx).Error("CI gate not green → HUMAN_REQUIRED", "pr", pub.PRNumber, "detail", ci.Detail)
 		return escalateTerminal(reasonCIFailed)
 	}
+
+	// §55: merge is gated before the merge mutation when configured.
+	if ok, err := gateStep(approvalStepMerge); err != nil {
+		return err
+	} else if !ok {
+		return nil
+	}
+	transition(stateMerging)
 
 	var merged MergeResult
 	if err := workflow.ExecuteActivity(ctx, MergePullRequest, MergeRequest{
@@ -561,6 +620,60 @@ func ensureChildrenActivity(ctx workflow.Context, in IssueInput, split SplitResu
 		return nil, err
 	}
 	return children, nil
+}
+
+// awaitApprovalGate runs the §55 pre-execution approval gate for one step: it
+// polls the §18 decision channel (via the AwaitApproval activity, bounded by the
+// poGateTimeout) and appends the decision to the audit sink. It only does I/O;
+// the caller maps the verdict to a deterministic transition. Reused by
+// IssueCycleWorkflow (publish/merge) and PostMergeWorkflow (deploy).
+func awaitApprovalGate(ctx workflow.Context, owner, repo string, num int, step string, lc LifecycleConfig) (ApprovalResult, error) {
+	gateCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: POGateTimeout(lc) + time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
+		},
+	})
+	var res ApprovalResult
+	if err := workflow.ExecuteActivity(gateCtx, AwaitApproval, ApprovalRequest{
+		Owner: owner, Repo: repo, Num: num, Step: step,
+		Timeout: POGateTimeout(lc).String(), DryRun: lc.DryRun,
+	}).Get(gateCtx, &res); err != nil {
+		return ApprovalResult{}, err
+	}
+	if err := recordAudit(ctx, lc.Audit, AuditEvent{
+		Owner: owner, Repo: repo, Issue: num, Step: step,
+		Actor: auditActor(res), Decision: auditDecision(res), Detail: res.Detail,
+	}); err != nil {
+		return ApprovalResult{}, err
+	}
+	return res, nil
+}
+
+// recordAudit emits one §55 audit event (activity; all I/O outside the workflow).
+func recordAudit(ctx workflow.Context, cfg AuditConfig, ev AuditEvent) error {
+	return workflow.ExecuteActivity(ctx, RecordAuditEvent, AuditRequest{Event: ev, Config: cfg}).Get(ctx, nil)
+}
+
+// auditDecision maps a gate verdict to the audit record's decision field.
+func auditDecision(res ApprovalResult) string {
+	switch {
+	case res.Granted || res.Skipped:
+		return "allow"
+	case res.Denied:
+		return "deny"
+	default:
+		return "timeout"
+	}
+}
+
+// auditActor names who caused the decision: a human for an explicit approval/
+// denial, the deterministic policy for a timeout (or a shadow-mode skip).
+func auditActor(res ApprovalResult) string {
+	if res.Granted || res.Denied {
+		return "human"
+	}
+	return "policy"
 }
 
 // recordTerminal records the §39 terminal metrics for a finished cycle and

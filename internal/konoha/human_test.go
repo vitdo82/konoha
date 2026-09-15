@@ -11,12 +11,12 @@ import (
 // §18/§36: the human decision channel is a bounded set; anything else (or an
 // empty signal) is rejected and can never drive a transition.
 func TestValidateHumanDecision(t *testing.T) {
-	for _, a := range []string{"resume", "reestimate", "repartition", "retry", "block", "cancel", "close"} {
+	for _, a := range []string{"resume", "reestimate", "repartition", "retry", "block", "cancel", "close", "approve", "deny"} {
 		if err := ValidateHumanDecision(a); err != nil {
 			t.Fatalf("bounded decision %q rejected: %v", a, err)
 		}
 	}
-	for _, a := range []string{"", "approve", "merge", "SHIP IT", "resume "} {
+	for _, a := range []string{"", "ship", "merge", "SHIP IT", "resume "} {
 		if err := ValidateHumanDecision(a); err == nil {
 			t.Fatalf("decision %q must be rejected, got nil", a)
 		}
@@ -88,6 +88,8 @@ func TestApplyHumanDecision(t *testing.T) {
 		{"reestimate", "", true},
 		{"repartition", "", true},
 		{"retry", "", true},
+		{"approve", "", true},               // §55: pre-execution gate approval continues
+		{"deny", stateHumanRequired, false}, // §55: gate denial escalates to a human
 	} {
 		tv, err := ApplyHumanDecision(HumanDecision{Action: tc.action, Present: true})
 		if err != nil {

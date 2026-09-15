@@ -39,6 +39,8 @@ type LifecycleConfig struct {
 	Deps                          DependencyConfig  `yaml:"deps" json:"deps,omitempty"`
 	Alerting                      AlertingConfig    `yaml:"alerting" json:"alerting,omitempty"`
 	Propagation                   PropagationConfig `yaml:"propagation" json:"propagation,omitempty"`
+	Approval                      ApprovalConfig    `yaml:"approval" json:"approval,omitempty"`
+	Audit                         AuditConfig       `yaml:"audit" json:"audit,omitempty"`
 	POGateTimeout                 string            `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
 	DryRun                        bool              `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int               `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
@@ -175,6 +177,18 @@ func (lc *LifecycleConfig) validate() error {
 	}
 	if err := lc.Propagation.validate("lifecycle.propagation"); err != nil {
 		return err
+	}
+	if err := lc.Approval.validate("lifecycle.approval"); err != nil {
+		return err
+	}
+	if err := lc.Audit.validate("lifecycle.audit"); err != nil {
+		return err
+	}
+	// §55 AC: every gated decision must be recorded. An enabled pre-gate with no
+	// audit sink would gate silently, so it fails at load (never a config that
+	// gates but records nothing).
+	if lc.Approval.PreGate && !lc.Audit.Enabled {
+		return fmt.Errorf("lifecycle.audit.enabled: required when lifecycle.approval.preGate is on (every gated decision must be recorded)")
 	}
 	return nil
 }
