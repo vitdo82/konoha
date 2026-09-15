@@ -4,47 +4,24 @@ Cross-repo PR review orchestrator. A Temporal worker (single `package main`) swe
 repos for PRs lacking a bot review, reviews each via a local `opencode` agent, and
 posts the verdict back as a GitHub App review.
 
-## Milestone best practice (versioning)
+## Engineering invariants
 
-Name milestones `<version>-<theme>` so closing a milestone maps 1:1 to a release
-tag and the theme signals its intent. Examples in this repo: `v1.0-wire`,
-`v2.0-ship`, `v3.0-operate`, `v3.1-govern`. Semver `vX.Y` matches the release
-tags from the release-automation workflow; `<theme>` covers one delivery wave.
-The same pattern transfers to Jira fixVersions/versions: one version per
-release, suffixed by theme when a release spans multiple workstreams.
+Agent MUST follow. These are build instructions, not process policy.
 
-## Ticket format best practice (GitHub issues)
+- Idempotency markers + the `VERDICT:`/`BLOCKING:`/`NITS:`/`CONCLUDE:` parser
+  contract are byte-exact — never reword/reorder/config-drive them.
+- Agents never receive `GH_*` credentials (§23); config is bootstrap-only, never
+  read during workflow replay.
+- Temporal registers activities/workflows by **function name, not package path**
+  — never rename exported funcs during refactors (see #57); verify with
+  `make test`.
+- Workflows stay deterministic: all I/O in activities.
 
-Write every ticket so it can be implemented and ACCEPTED without the author's
-memory. A ticket must always carry these sections, in this order:
+## References
 
-1. **Priority** — `[P0|P1|P2|P3]` (P0 = foundation nailed early; P1 = blocks
-   others; P2 = after dependencies; P3 = governance/widen). Keep in the summary
-   line so the board reads it without opening the ticket.
-2. **Summary** — one paragraph: what, why. Reference the design section
-   (`docs/new-design-v2.md §N`) it implements.
-3. **Full description** — the actual plan (workflow/activity/config changes),
-   so implementation never re-invents it. Include the design note when a ticket
-   EXTENDS the design doc beyond the current spec (e.g. adding merge/deploy).
-4. **Acceptance criteria** — checkbox list, each independently verifiable:
-   - every behavior change has a testable outcome (exactly-once/idempotency,
-     fail-closed, terminal state);
-   - every fail-closed path asserts **no silent success** (§40/§44 #17);
-   - always end with `make test` green + `gofmt` clean;
-   - reference the §24 idempotency / §42 dry-run constraints where they apply.
-5. **Documentation updates (this ticket)** — any README/AGENTS.md/design changes
-   required; never a silent side-effect of implementation.
-6. **Estimation** — a task table: `# | Task | CP (1-10 §11 rubric) | Est. time`
-   plus a total (CP + days). Size each task so review is one concern per task.
-
-Cross-cutting rules:
-- **No ticket without AC** (unnavigable → undeliverable).
-- Scope OUT dependencies explicitly ("see #<n>", "separate follow-up") so the
-  milestone graph and execution order fall out of the tickets themselves.
-- Add tickets to a `<version>-<theme>` milestone (see above); the execution
-  order is the milestone's dependency-first list.
-- Keep content plan-only when asked ("plan, do not modify"): capture the plan in
-  the issue, apply changes only after explicit approval.
+Product/process policy — milestones, ticket format, delivery workflow, and the
+non-configurable contract list — lives in `docs/best-practices.md`. That policy
+is **NOT** build instruction; do not enforce it as an engineering gate.
 
 ## Verify
 
@@ -107,6 +84,10 @@ without restarting a completed workflow. Deliveries with an invalid
   executions and must happen in lockstep with the registration. Function names are
   package-path-independent — do NOT rename exported activity/workflow funcs during
   refactors (Temporal type names are the function names).
+- **File moves are rename-free (#57)**: an `internal/` restructure is safe only
+  while exported activity/workflow funcs keep their names (the Temporal type
+  names). Never rename one as part of a move — a rename silently changes the
+  registered type name; verify with `make test`.
 - **Agent output contract** (`reviewer.go` `parseReviewOutput`, reused by `ReviewWithOpencode`):
   the opencode agent must print `VERDICT:APPROVE`/`VERDICT:REQUEST_CHANGES` plus
   `BLOCKING:`/`NITS:`/`CONCLUDE:` sections. Parsing is line matching, fail-closed
