@@ -37,6 +37,7 @@ type LifecycleConfig struct {
 	Release                       ReleaseConfig     `yaml:"release" json:"release,omitempty"`
 	Deploy                        DeployConfig      `yaml:"deploy" json:"deploy,omitempty"`
 	Deps                          DependencyConfig  `yaml:"deps" json:"deps,omitempty"`
+	Grooming                      GroomingConfig    `yaml:"grooming" json:"grooming,omitempty"`
 	Alerting                      AlertingConfig    `yaml:"alerting" json:"alerting,omitempty"`
 	Propagation                   PropagationConfig `yaml:"propagation" json:"propagation,omitempty"`
 	Approval                      ApprovalConfig    `yaml:"approval" json:"approval,omitempty"`
@@ -172,6 +173,9 @@ func (lc *LifecycleConfig) validate() error {
 	if err := lc.Deps.validate("lifecycle.deps"); err != nil {
 		return err
 	}
+	if err := lc.Grooming.validate("lifecycle.grooming"); err != nil {
+		return err
+	}
 	if err := lc.Alerting.validate("lifecycle.alerting"); err != nil {
 		return err
 	}
@@ -293,6 +297,29 @@ func alertsScheduleInputs(path string) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, r.Repo+"\t"+AlertingSchedule(*r.Lifecycle)+"\t"+string(b))
+	}
+	return out, nil
+}
+
+// groomingScheduleInputs renders the §56 backlog-grooming schedules: only repos
+// with grooming.enabled emit a line, as "<repo>\t<interval>\t<scope json>".
+// apply.sh creates one <repo>-groom BacklogGroomWorkflow schedule per line, so a
+// disabled repo never grooms.
+func groomingScheduleInputs(path string) ([]string, error) {
+	repos, err := LoadReposConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range repos {
+		if r.Lifecycle == nil || !GroomingEnabled(*r.Lifecycle) {
+			continue
+		}
+		b, err := json.Marshal(repoScope(r))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r.Repo+"\t"+GroomingSchedule(*r.Lifecycle)+"\t"+string(b))
 	}
 	return out, nil
 }

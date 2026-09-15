@@ -41,6 +41,9 @@ const (
 	mReviewDisagreementRate   = "review_disagreement_rate"
 	mCycleDurationLast        = "cycle_duration_seconds_last"
 	mEstimateComplexityPrefix = "estimate_complexity_"
+	mGroomed                  = "groomed_count"        // §56 ready issues filed
+	mGroomRejected            = "groom_rejected_count" // §56 raw items left unactionable
+	mGroomRejectRate          = "groom_reject_rate"    // §56 rejected / processed
 )
 
 // metricsRegistry is the in-process §39 sink. All mutation happens from
@@ -155,6 +158,27 @@ func RecordCycleMetrics(ctx context.Context, o CycleOutcome) error {
 	}
 
 	recomputeDerived()
+	return nil
+}
+
+// GroomOutcome carries the §56 grooming tally recorded once per groom run.
+type GroomOutcome struct {
+	Groomed  int `json:"groomed"`
+	Rejected int `json:"rejected"`
+}
+
+// RecordGroomMetrics records the §56 groom tally and recomputes the
+// groom_reject_rate gauge from the cumulative counters. Executed once (activity).
+func RecordGroomMetrics(ctx context.Context, o GroomOutcome) error {
+	if o.Groomed > 0 {
+		sink.add(mGroomed, float64(o.Groomed))
+	}
+	if o.Rejected > 0 {
+		sink.add(mGroomRejected, float64(o.Rejected))
+	}
+	if total := sink.get(mGroomed) + sink.get(mGroomRejected); total > 0 {
+		sink.setGauge(mGroomRejectRate, sink.get(mGroomRejected)/total)
+	}
 	return nil
 }
 

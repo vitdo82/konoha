@@ -2031,6 +2031,57 @@ Turning the gate on without an audit sink fails at load: the AC is that **every
 gated decision is recorded**, so a config that gates but records nothing is
 rejected rather than run.
 
+### Backlog grooming pre-stage (§56, extends this section)
+
+The lifecycle normally *reacts* to issues. An opt-in, schedule-driven grooming
+pre-stage makes it *produce* a stream of ready tickets instead: raw backlog
+items (a board label such as `backlog`) are analysed in DRY and promoted into
+fully-specified ready issues that the normal lifecycle consumes.
+
+```
+<repo>-groom (Temporal Schedule, lifecycle.grooming.schedule)
+       ↓
+BacklogGroomWorkflow                    # repo-scoped; disabled → no-op
+       ↓
+ListBacklogItems                        # activity: open issues carrying `selector`
+       ↓
+AnalyzeIssue + EstimateIssue            # §4.1/§4.2, ANALYSIS ONLY (§42 dry)
+       ├─ validated analysis+estimate
+       │     ↓
+       │  EnsureReadyIssue (activity)   # idempotent, marker-keyed:
+       │     │   <!-- konoha-groomed: <sha> -->  (search-before-create, §24)
+       │     │   labels: readyLabel (default konoha:ready) + optional repoLabel
+       │     ↓
+       │  IssueCycleWorkflow            # driven by the existing sweep/webhook,
+       │                                # never started by BacklogGroomWorkflow
+       └─ unactionable / ambiguous
+             ↓
+          RecordGroomNote (activity)    # idempotent comment on the raw item:
+                <!-- konoha-groom-rejected: <sha> -->
+                raw item left OPEN, never closed/edited (§40)
+```
+
+`<sha>` is a deterministic content hash of the raw item (owner/repo/number +
+title + body), so overlapping schedule runs and Temporal retries converge on one
+ready issue per item (§24); editing the raw item changes the hash and re-grooms
+it. The ready issue carries no `konoha:managed` label, so the normal sweep and
+the `opened` webhook pick it up exactly like any other issue — the groom
+workflow never starts an `IssueCycleWorkflow` (§32/§52 pattern). An unactionable
+item is noted, not silently closed: the human keeps ownership of the source
+board, and the source item is never altered beyond that note. `DryRun` (§42) runs
+the analysis with zero mutations. The §39-style gauges `groomed_count`,
+`groom_rejected_count` and `groom_reject_rate` record the run.
+
+```yaml
+lifecycle:
+  grooming:                 # §56 backlog grooming (opt-in; default off)
+    enabled: false          # true = run the <repo>-groom schedule
+    selector: backlog       # label selecting raw backlog items to groom
+    schedule: 24h           # per-repo cadence (<repo>-groom schedule)
+    repoLabel: ""           # optional extra provenance label on the ready issue
+    readyLabel: konoha:ready # label marking a groomed ready issue
+```
+
 ---
 
  # 40\. Failure handling

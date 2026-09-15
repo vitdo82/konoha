@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Applies repos.yaml to Temporal: creates/updates one <repo>-review-all and
 # <repo>-issue-all schedule per repo, plus a <repo>-deps schedule (§52) when
-# lifecycle.deps.enabled. repos.yaml is parsed by the Go loader (`prbot config`),
+# lifecycle.deps.enabled, a <repo>-alerts schedule (§53) when
+# lifecycle.alerting.enabled, and a <repo>-groom schedule (§56) when
+# lifecycle.grooming.enabled. repos.yaml is parsed by the Go loader (`prbot config`),
 # which fails fast on unknown keys / out-of-range values; the emitted JSON
 # becomes the schedule workflow input, so config can't drift between apply.sh and
 # the workflows (§33 lockstep). Idempotent-ish: deletes then recreates each
@@ -77,3 +79,21 @@ while IFS=$'\t' read -r repo alert_interval input; do
     --task-queue "$queue" \
     --input "$input"
 done < <(/tmp/prbot config --alerts)
+
+# §56 backlog-grooming schedules. Only repos with lifecycle.grooming.enabled emit
+# a line here, so a disabled repo never grooms. The per-repo cadence is
+# lifecycle.grooming.schedule (default 24h).
+while IFS=$'\t' read -r repo groom_interval input; do
+  [ -z "$repo" ] && continue
+
+  id="${repo}-groom"
+  echo "==> $id ($repo, every $groom_interval)"
+  temporal schedule delete --schedule-id "$id" >/dev/null 2>&1 || true
+  temporal schedule create \
+    --schedule-id "$id" \
+    --workflow-id "$id" \
+    --interval "$groom_interval" \
+    --type BacklogGroomWorkflow \
+    --task-queue "$queue" \
+    --input "$input"
+done < <(/tmp/prbot config --grooming)

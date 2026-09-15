@@ -136,6 +136,7 @@ func Main() {
 	w.RegisterWorkflowWithOptions(IssueAllWorkflow, workflow.RegisterOptions{Name: "IssueAllWorkflow"})
 	w.RegisterWorkflowWithOptions(PostMergeWorkflow, workflow.RegisterOptions{Name: "PostMergeWorkflow"})
 	w.RegisterWorkflowWithOptions(DependencyWorkflow, workflow.RegisterOptions{Name: "DependencyWorkflow"})
+	w.RegisterWorkflowWithOptions(BacklogGroomWorkflow, workflow.RegisterOptions{Name: "BacklogGroomWorkflow"})
 	w.RegisterWorkflowWithOptions(AlertWorkflow, workflow.RegisterOptions{Name: "AlertWorkflow"})
 	w.RegisterWorkflowWithOptions(FailureFeedbackWorkflow, workflow.RegisterOptions{Name: "FailureFeedbackWorkflow"})
 	w.RegisterActivity(FetchDiff)
@@ -173,6 +174,10 @@ func Main() {
 	w.RegisterActivity(VerifyDeployment)
 	w.RegisterActivity(ScanDependencies)
 	w.RegisterActivity(EnsureDependencyIssue)
+	w.RegisterActivity(ListBacklogItems)
+	w.RegisterActivity(EnsureReadyIssue)
+	w.RegisterActivity(RecordGroomNote)
+	w.RegisterActivity(RecordGroomMetrics)
 	w.RegisterActivity(DetectAffectedDownstreams)
 	w.RegisterActivity(EnsureCrossRepoIssue)
 	w.RegisterActivity(EvaluateAlerts)
@@ -213,11 +218,11 @@ func defaultReposPath() string {
 // config prints repos.yaml-derived schedule inputs for apply.sh, which feeds
 // each line to `temporal schedule create`. Path is the first non-flag arg or
 // $KONOHA_CONFIG_DIR/repos.yaml (default ./configs/repos.yaml). `--deps` emits
-// the §52 dependency schedules and `--alerts` the §53 alert schedules instead
-// ("<repo>\t<interval>\t<json>").
+// the §52 dependency schedules, `--alerts` the §53 alert schedules, and
+// `--grooming` the §56 grooming schedules instead ("<repo>\t<interval>\t<json>").
 func runConfig(args []string) error {
 	path := defaultReposPath()
-	deps, alerts := false, false
+	deps, alerts, grooming := false, false, false
 	for _, a := range args {
 		switch a {
 		case "--deps":
@@ -226,12 +231,17 @@ func runConfig(args []string) error {
 		case "--alerts":
 			alerts = true
 			continue
+		case "--grooming":
+			grooming = true
+			continue
 		}
 		path = a
 	}
 	var lines []string
 	var err error
 	switch {
+	case grooming:
+		lines, err = groomingScheduleInputs(path)
 	case alerts:
 		lines, err = alertsScheduleInputs(path)
 	case deps:
