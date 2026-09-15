@@ -27,6 +27,7 @@ repos:
     schedule: "*/5 * * * *"
     lifecycle:
       mode: supervised-autonomous
+      model: opencode-go/deepseek-v4.1-flash
       developmentMaxComplexity: 4
       maxDevReviewAttempts: 2
       autonomy:
@@ -67,6 +68,9 @@ repos:
 	if lc.Mode != modeSupervisedAutonomous || lc.DryRun || lc.MaxConcurrentIssueCycles != 4 {
 		t.Fatalf("unexpected lifecycle: %+v", lc)
 	}
+	if lc.Model != "opencode-go/deepseek-v4.1-flash" {
+		t.Fatalf("unexpected model: %q", lc.Model)
+	}
 	if len(lc.Autonomy.HumanRequiredPaths) != 2 || lc.Autonomy.HumanRequiredPaths[0] != ".github/**" ||
 		len(lc.Autonomy.HumanRequiredLabels) != 1 || lc.Autonomy.HumanRequiredLabels[0] != "security" {
 		t.Fatalf("unexpected autonomy: %+v", lc.Autonomy)
@@ -94,7 +98,8 @@ repos:
 	if err != nil || len(lines) != 1 {
 		t.Fatalf("scheduleInputs: %v, %v", lines, err)
 	}
-	if !strings.Contains(lines[0], `"maxConcurrentIssueCycles":4`) ||
+	if !strings.Contains(lines[0], `"model":"opencode-go/deepseek-v4.1-flash"`) ||
+		!strings.Contains(lines[0], `"maxConcurrentIssueCycles":4`) ||
 		!strings.Contains(lines[0], `"closePolicy":"risk-based"`) ||
 		!strings.Contains(lines[0], `"strategy":"rebase"`) ||
 		!strings.Contains(lines[0], `"requireCI":false`) ||
@@ -183,6 +188,8 @@ func TestLoadReposConfigUnknownKey(t *testing.T) {
 func TestLoadReposConfigRejectsOutOfRange(t *testing.T) {
 	bad := []string{
 		`{mode: "nope"}`,
+		`{model: "bogus"}`,
+		`{model: "a b/c"}`,
 		`{developmentMaxComplexity: 11}`,
 		`{developmentMaxComplexity: -1}`,
 		`{maxDevReviewAttempts: -1}`,

@@ -25,6 +25,21 @@ func b64(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
+// defaultAgentModel is the fallback opencode model for a repo that leaves
+// lifecycle.model unset in repos.yaml. A per-repo value always wins.
+const defaultAgentModel = "opencode-go/deepseek-v4.1-flash"
+
+// agentArgs is the shared opencode CLI invocation (run + resolved model) used by
+// every agent entrypoint (§4.1-§4.8). model comes from the repo's
+// lifecycle.model; empty falls back to defaultAgentModel so the run is never
+// left to the host's opencode default.
+func agentArgs(prompt, model string) []string {
+	if strings.TrimSpace(model) == "" {
+		model = defaultAgentModel
+	}
+	return []string{"run", "--model", model, prompt}
+}
+
 // agentEnv returns an env for child opencode processes with every GitHub
 // credential stripped: the App PEM path + any token the shell may carry
 // (GH_TOKEN/GITHUB_TOKEN and friends). §23: agents never receive write creds.
@@ -251,7 +266,7 @@ CONCLUDE: one-line verdict sentence
 DIFF:
 %s`, in.PrNum, in.Owner, in.Repo, diff)
 
-	cmd := exec.Command("opencode", "run", prompt)
+	cmd := exec.Command("opencode", agentArgs(prompt, in.Lifecycle.Model)...)
 	cmd.Dir = in.RepoPath
 	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()

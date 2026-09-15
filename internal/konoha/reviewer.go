@@ -23,7 +23,8 @@ type ReviewRequest struct {
 	Repo               string   `json:"repo"`
 	PRNumber           int      `json:"pr"`
 	RepoPath           string   `json:"repoPath"`
-	CommitSHA          string   `json:"commitSha"` // the exact head commit being reviewed (§15)
+	Model              string   `json:"model,omitempty"` // opencode model for this repo (§4)
+	CommitSHA          string   `json:"commitSha"`       // the exact head commit being reviewed (§15)
 	Diff               string   `json:"diff"`
 	ValidationOutput   string   `json:"validationOutput"` // §26 tests/results
 	Title              string   `json:"title"`
@@ -196,7 +197,7 @@ func ValidateReview(r ReviewResult) error {
 func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	prompt := reviewPrompt(req, req.Diff)
 
-	cmd := exec.Command("opencode", "run", prompt)
+	cmd := exec.Command("opencode", agentArgs(prompt, req.Model)...)
 	cmd.Dir = req.RepoPath
 	cmd.Env = cmdEnv(req.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()

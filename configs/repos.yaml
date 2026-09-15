@@ -2,6 +2,8 @@
 # One entry per repo. `schedule` is the cron interval for review sweeps.
 # `lifecycle` is the per-repo policy (§33/§43 of docs/new-design-v2.md):
 #   - mode: review-only | supervised-autonomous
+#   - model: opencode agent model (provider/model, e.g. opencode-go/deepseek-v4.1-flash);
+#     unset = built-in default
 #   - developmentMaxComplexity: max complexity the developer handles (1-10)
 #   - maxDevReviewAttempts: bounded review/fix loops
 #   - autonomy.default/closePolicy + humanRequired*: escalation policy
@@ -34,7 +36,8 @@ repos:
     repoPath: /Users/vit/projects/ducklambda
     schedule: "*/5 * * * *"
     lifecycle:
-      mode: review-only
+      mode: supervised-autonomous
+      model: opencode-go/deepseek-v4.1-flash  # §4 agent model for this repo
       developmentMaxComplexity: 4
       maxDevReviewAttempts: 2
       autonomy:

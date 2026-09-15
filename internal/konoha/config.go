@@ -30,6 +30,7 @@ const (
 // without re-reading files.
 type LifecycleConfig struct {
 	Mode                          string            `yaml:"mode" json:"mode,omitempty"`
+	Model                         string            `yaml:"model" json:"model,omitempty"` // opencode agent model for this repo; "" = built-in default
 	DevelopmentMaxComplexity      int               `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
 	MaxDevReviewAttempts          int               `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
 	Autonomy                      Autonomy          `yaml:"autonomy" json:"autonomy,omitempty"`
@@ -133,6 +134,11 @@ func (lc *LifecycleConfig) validate() error {
 	case "", modeReviewOnly, modeSupervisedAutonomous:
 	default:
 		return fmt.Errorf("lifecycle.mode: %q not one of %q, %q", lc.Mode, modeReviewOnly, modeSupervisedAutonomous)
+	}
+	if m := lc.Model; m != "" {
+		if strings.TrimSpace(m) != m || !strings.Contains(m, "/") {
+			return fmt.Errorf("lifecycle.model: %q must be a provider/model id", m)
+		}
 	}
 	if lc.DevelopmentMaxComplexity < 0 || lc.DevelopmentMaxComplexity > 10 {
 		return fmt.Errorf("lifecycle.developmentMaxComplexity: %d out of range 0-10", lc.DevelopmentMaxComplexity)

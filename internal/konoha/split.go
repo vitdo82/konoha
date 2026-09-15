@@ -177,7 +177,7 @@ func containsKey(tickets []SplitTicket, key string) bool {
 func RunSplit(ctx context.Context, in IssueInput, a IssueAnalysis, e EstimateResult) (SplitResult, error) {
 	prompt := splitterPrompt(in, a, e)
 
-	cmd := exec.Command("opencode", "run", prompt)
+	cmd := exec.Command("opencode", agentArgs(prompt, in.Lifecycle.Model)...)
 	cmd.Dir = in.RepoPath
 	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()

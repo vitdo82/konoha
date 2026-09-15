@@ -65,6 +65,7 @@ type ResolutionRequest struct {
 	Repo                     string            `json:"repo"`
 	IssueNum                 int               `json:"issue"`
 	RepoPath                 string            `json:"repoPath"`
+	Model                    string            `json:"model,omitempty"` // opencode model for this repo (§4)
 	Title                    string            `json:"title"`
 	Body                     string            `json:"body"`
 	Spec                     string            `json:"spec"`
@@ -248,7 +249,7 @@ func ValidateResolution(r ResolutionResult) error {
 func RunResolution(ctx context.Context, in ResolutionRequest) (ResolutionResult, error) {
 	prompt := resolutionPrompt(in)
 
-	cmd := exec.Command("opencode", "run", prompt)
+	cmd := exec.Command("opencode", agentArgs(prompt, in.Model)...)
 	cmd.Dir = in.RepoPath
 	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()

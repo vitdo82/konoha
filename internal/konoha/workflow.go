@@ -275,6 +275,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	var dev DevelopResult
 	if err := workflow.ExecuteActivity(devCtx, RunDeveloper, DevelopRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+		Model:              in.Lifecycle.Model,
 		WorkflowID:         info.WorkflowExecution.ID,
 		Title:              a.Title,
 		Body:               a.Body,
@@ -350,6 +351,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		var rev ReviewResult
 		if err := workflow.ExecuteActivity(ctx, RunReviewer, ReviewRequest{
 			Owner: in.Owner, Repo: in.Repo, PRNumber: pub.PRNumber, RepoPath: in.RepoPath,
+			Model:              in.Lifecycle.Model,
 			CommitSHA:          headSha,
 			Diff:               diff,
 			ValidationOutput:   dev.ValidationOutput,
@@ -390,6 +392,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if err := workflow.ExecuteActivity(devCtx, RunRepair, RepairRequest{
 			Develop: DevelopRequest{
 				Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+				Model:              in.Lifecycle.Model,
 				WorkflowID:         info.WorkflowExecution.ID,
 				Title:              a.Title,
 				Body:               a.Body,
