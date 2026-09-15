@@ -1973,6 +1973,64 @@ lifecycle:
         type: breaking        # change-kind tag put on the filed issue
 ```
 
+### Pre-execution approval gate + audit stage (§55, extends this section)
+
+Humans handle exceptions, not routine gates (§44 #3) — but a *high-assurance*
+repo may still want a human sign-off **before** the pipeline performs a mutating
+step. This is an opt-in pre-gate, distinct from the post-hoc `HUMAN_REQUIRED`
+exception path: with `approval.preGate` off (the default) nothing changes.
+
+```
+IssueCycleWorkflow
+   §20 risk gate passes
+        ↓
+   PENDING_APPROVAL          # §6 state; label konoha:pending-approval (projection)
+        ↓                    # before each listed step (publish | merge | deploy)
+   AwaitApproval (activity)  # polls the §18 decision channel, bounded by poGateTimeout
+        │   <!-- konoha-decision: approve -->  → proceed (audited)
+        │   <!-- konoha-decision: deny -->     → HUMAN_REQUIRED (no mutation)
+        │   (nothing within poGateTimeout)     → stays BLOCKED, never proceeds (§40)
+        ↓
+   PublishDeveloperChange / MergePullRequest / DeployRelease
+```
+
+The gate reuses the §18 decision channel verbatim — the same
+`<!-- konoha-decision: <action> -->` marker and the same `ReadHumanDecision`
+parser/validator — adding `approve`/`deny` to the bounded action set. Only
+`approve` (and the legacy `resume` synonym) grants; every other decision denies,
+so a valid-but-inapplicable signal routes to a human instead of silently
+proceeding. A **timeout never proceeds**: it leaves the run `BLOCKED`, matching
+§44 #17. The `publish` and `merge` gates run inside `IssueCycleWorkflow`; the
+`deploy` gate runs inside `PostMergeWorkflow` (a denied/timed-out deploy is never
+executed and reopens the issue to `HUMAN_REQUIRED`).
+
+The gate is **approve-once**: the decision marker is not step-scoped, so a
+single `approve` on the issue satisfies every configured step for that run
+(`requiredSteps` selects which steps *wait*; the first sign-off then lets the
+gated pipeline proceed). Step-scoped re-approval would need a `approve:<step>`
+marker — a follow-up if a repo needs per-step sign-off.
+
+Every gated decision is appended to the **audit sink** by the `RecordAuditEvent`
+activity: an append-only JSONL file (`audit.sink`) recording subject, step,
+actor (`human`/`policy`) and decision (`allow`/`deny`/`timeout`). Temporal
+history remains the authoritative lifecycle record (§44 #1); the audit file is
+the durable export. `DryRun` (§42) skips the gate (nothing mutates) and the
+audit write failure is fail-closed (an un-recorded gate breaks the guarantee).
+
+```yaml
+lifecycle:
+  approval:                  # §55 pre-execution gate (opt-in; default off)
+    preGate: false           # true = wait for a human before the listed steps
+    requiredSteps: [publish, merge, deploy]  # closed set; empty = all steps
+  audit:                     # §55 append-only audit
+    enabled: false           # required (with sink) whenever approval.preGate is on
+    sink: /var/log/konoha-audit.jsonl  # JSONL append path
+```
+
+Turning the gate on without an audit sink fails at load: the AC is that **every
+gated decision is recorded**, so a config that gates but records nothing is
+rejected rather than run.
+
 ---
 
  # 40\. Failure handling

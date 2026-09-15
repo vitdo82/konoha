@@ -24,6 +24,7 @@ func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvir
 	t.Helper()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
 	env.RegisterActivity(RecordCycleMetrics)
+	env.RegisterActivity(RecordAuditEvent)        // §55: real; no-op when audit disabled
 	env.RegisterWorkflow(PostMergeWorkflow)       // §50: registered for release-enabled tests
 	env.RegisterWorkflow(FailureFeedbackWorkflow) // §53: registered for alerting-enabled tests
 
@@ -397,5 +398,144 @@ func TestWorkflowSmallPostMergeRelease(t *testing.T) {
 	}
 	if releases != 1 {
 		t.Fatalf("release activity ran %d times, want 1", releases)
+	}
+}
+
+// §55/§41: with the publish step gated, the pipeline proceeds only AFTER an
+// approval decision is read; the gate runs and the cycle still closes.
+func TestWorkflowApprovalGateGrants(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	gates := 0
+	env.OnActivity(AwaitApproval, mock.Anything, mock.Anything).Return(
+		func(context.Context, ApprovalRequest) (ApprovalResult, error) {
+			gates++
+			return ApprovalResult{Granted: true, Action: humanDecisionApprove}, nil
+		})
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4,
+			Approval: ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepPublish}}}}
+	env.ExecuteWorkflow(IssueCycleWorkflow, in)
+	if env.IsWorkflowCompleted() {
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("workflow error: %v", err)
+		}
+	}
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("approved gate terminal = %q, want CLOSED", got)
+	}
+	if gates != 1 {
+		t.Fatalf("approval gate ran %d times, want 1", gates)
+	}
+}
+
+// §55/§40: a denied approval NEVER publishes — it escalates to HUMAN_REQUIRED.
+func TestWorkflowApprovalGateDenied(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"}, Validated: true,
+	}, nil)
+	published := 0
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(
+		func(context.Context, PublishInput) (PublishResult, error) {
+			published++
+			return PublishResult{Branch: "b", PRNumber: 101, Validated: true}, nil
+		})
+	env.OnActivity(AwaitApproval, mock.Anything, mock.Anything).Return(
+		ApprovalResult{Denied: true, Action: humanDecisionDeny}, nil)
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4,
+			Approval: ApprovalConfig{PreGate: true}}}
+	env.ExecuteWorkflow(IssueCycleWorkflow, in)
+	if env.IsWorkflowCompleted() {
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("workflow error: %v", err)
+		}
+	}
+	if got := terminalState(t, env); got != stateHumanRequired {
+		t.Fatalf("denied gate terminal = %q, want HUMAN_REQUIRED", got)
+	}
+	if published != 0 {
+		t.Fatalf("denied approval must not publish (published=%d)", published)
+	}
+}
+
+// §55/§40: a gate timeout stays BLOCKED and never publishes (no silent success).
+func TestWorkflowApprovalGateTimeoutBlocks(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"}, Validated: true,
+	}, nil)
+	published := 0
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(
+		func(context.Context, PublishInput) (PublishResult, error) {
+			published++
+			return PublishResult{}, nil
+		})
+	env.OnActivity(AwaitApproval, mock.Anything, mock.Anything).Return(
+		ApprovalResult{TimedOut: true}, nil)
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4,
+			Approval: ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepPublish}}}}
+	env.ExecuteWorkflow(IssueCycleWorkflow, in)
+	if env.IsWorkflowCompleted() {
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("workflow error: %v", err)
+		}
+	}
+	if got := terminalState(t, env); got != stateBlocked {
+		t.Fatalf("timed-out gate terminal = %q, want BLOCKED", got)
+	}
+	if published != 0 {
+		t.Fatalf("timed-out approval must not publish (published=%d)", published)
+	}
+}
+
+// §55/§51: a denied deploy approval never deploys and reopens the issue to
+// HUMAN_REQUIRED (the post-merge human surface); it is never a silent success.
+func TestWorkflowDeployApprovalGateDenied(t *testing.T) {
+	resetMetrics()
+	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(PostMergeWorkflow)
+	env.RegisterActivity(RecordAuditEvent)
+	env.OnActivity(AwaitApproval, mock.Anything, mock.Anything).Return(
+		ApprovalResult{Denied: true, Action: humanDecisionDeny}, nil)
+	deployed := 0
+	env.OnActivity(DeployRelease, mock.Anything, mock.Anything).Return(
+		func(context.Context, DeployRequest) (DeployResult, error) {
+			deployed++
+			return DeployResult{Deployed: true}, nil
+		})
+	reopened := 0
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(
+		func(context.Context, StateRequest) error {
+			reopened++
+			return nil
+		})
+	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(nil)
+
+	in := PostMergeInput{Owner: "o", Repo: "r", PrNum: 101, IssueNum: testIssue, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Deploy: DeployConfig{Enabled: true, Command: "true"},
+			Approval: ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepDeploy}}}}
+	env.ExecuteWorkflow(PostMergeWorkflow, in)
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatal("denied deploy gate must surface an error, never a silent success")
+	}
+	if deployed != 0 {
+		t.Fatalf("denied deploy gate must not deploy (deployed=%d)", deployed)
+	}
+	if reopened == 0 {
+		t.Fatal("denied deploy gate must reopen the issue to HUMAN_REQUIRED")
 	}
 }

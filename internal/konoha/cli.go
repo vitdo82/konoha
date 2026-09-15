@@ -159,6 +159,8 @@ func Main() {
 	w.RegisterActivity(EnsureChildren)
 	w.RegisterActivity(RecordCycleMetrics)
 	w.RegisterActivity(ReadHumanDecision)
+	w.RegisterActivity(AwaitApproval)
+	w.RegisterActivity(RecordAuditEvent)
 	w.RegisterActivity(FetchIssueLabels)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)

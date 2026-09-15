@@ -455,8 +455,10 @@ type HumanDecisionTransition struct {
 
 // ApplyHumanDecision maps each bounded §18 human decision to its workflow
 // response: block/cancel/close are terminal (→ BLOCKED/CANCELLED/CLOSED);
-// resume/reestimate/repartition/retry re-enter the normal lifecycle. Malformed
-// decisions fail closed (error, §36).
+// resume/reestimate/repartition/retry/approve re-enter the normal lifecycle;
+// deny escalates to HUMAN_REQUIRED (§55: the human refused the pre-gate, so a
+// high-assurance repo stops and never silently proceeds). Malformed decisions
+// fail closed (error, §36).
 func ApplyHumanDecision(d HumanDecision) (HumanDecisionTransition, error) {
 	if err := ValidateHumanDecision(d.Action); err != nil {
 		return HumanDecisionTransition{}, err
@@ -468,7 +470,9 @@ func ApplyHumanDecision(d HumanDecision) (HumanDecisionTransition, error) {
 		return HumanDecisionTransition{TargetState: stateCancelled}, nil
 	case humanDecisionClose:
 		return HumanDecisionTransition{TargetState: stateClosed}, nil
-	default: // resume, reestimate, repartition, retry
+	case humanDecisionDeny:
+		return HumanDecisionTransition{TargetState: stateHumanRequired}, nil
+	default: // resume, reestimate, repartition, retry, approve
 		return HumanDecisionTransition{Resume: true}, nil
 	}
 }

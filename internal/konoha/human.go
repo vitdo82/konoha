@@ -27,9 +27,10 @@ const (
 	reasonPolicyViolation          = "policy_violation"
 	reasonAgentFailure             = "agent_failure"
 	reasonConflictingRequirements  = "conflicting_requirements"
-	reasonCIFailed                 = "ci_failed"     // §49: CI gate not green before merge
-	reasonMergeFailed              = "merge_failed"  // §49: PR merge failed after approval
-	reasonDeployFailed             = "deploy_failed" // §51: post-deploy verification failed
+	reasonCIFailed                 = "ci_failed"       // §49: CI gate not green before merge
+	reasonMergeFailed              = "merge_failed"    // §49: PR merge failed after approval
+	reasonDeployFailed             = "deploy_failed"   // §51: post-deploy verification failed
+	reasonApprovalDenied           = "approval_denied" // §55: human denied the pre-execution approval gate
 )
 
 func validHumanReason(r string) bool {
@@ -37,7 +38,7 @@ func validHumanReason(r string) bool {
 	case reasonRequirementsAmbiguous, reasonSecuritySensitive, reasonArchitectureChange,
 		reasonRepeatedReviewFailure, reasonInsufficientTestCoverage, reasonExternalDependency,
 		reasonPolicyViolation, reasonAgentFailure, reasonConflictingRequirements,
-		reasonCIFailed, reasonMergeFailed, reasonDeployFailed:
+		reasonCIFailed, reasonMergeFailed, reasonDeployFailed, reasonApprovalDenied:
 		return true
 	}
 	return false
@@ -54,6 +55,9 @@ func ValidateHumanReason(r string) error {
 
 // §18 human decision actions: the bounded response channel. The deterministic
 // policy (HumanDecisionTransition) maps each; anything else is rejected (§36).
+// `approve`/`deny` are the §55 pre-execution approval-gate signals; they reuse
+// the same decision marker (and therefore the same parser + validation) rather
+// than inventing a new channel.
 const (
 	humanDecisionResume      = "resume"
 	humanDecisionReestimate  = "reestimate"
@@ -62,12 +66,15 @@ const (
 	humanDecisionBlock       = "block"
 	humanDecisionCancel      = "cancel"
 	humanDecisionClose       = "close"
+	humanDecisionApprove     = "approve" // §55: grant the pre-execution approval gate
+	humanDecisionDeny        = "deny"    // §55: refuse the pre-execution approval gate
 )
 
 func validHumanDecision(a string) bool {
 	switch a {
 	case humanDecisionResume, humanDecisionReestimate, humanDecisionRepartition,
-		humanDecisionRetry, humanDecisionBlock, humanDecisionCancel, humanDecisionClose:
+		humanDecisionRetry, humanDecisionBlock, humanDecisionCancel, humanDecisionClose,
+		humanDecisionApprove, humanDecisionDeny:
 		return true
 	}
 	return false
@@ -77,7 +84,7 @@ func validHumanDecision(a string) bool {
 // malformed decision can never drive a transition.
 func ValidateHumanDecision(a string) error {
 	if !validHumanDecision(a) {
-		return fmt.Errorf("decision %q not in the §18 set {resume, reestimate, repartition, retry, block, cancel, close}", a)
+		return fmt.Errorf("decision %q not in the §18 set {resume, reestimate, repartition, retry, block, cancel, close, approve, deny}", a)
 	}
 	return nil
 }

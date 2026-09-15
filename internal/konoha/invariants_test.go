@@ -16,7 +16,8 @@ import (
 func TestInvariantsStateConstantsAndChildCeiling(t *testing.T) {
 	// The authoritative states are the §6 constants; labels are only projections.
 	if stateHumanRequired != "HUMAN_REQUIRED" || stateBlocked != "BLOCKED" ||
-		stateClosed != "CLOSED" || stateFailed != "FAILED" {
+		stateClosed != "CLOSED" || stateFailed != "FAILED" ||
+		statePendingApproval != "PENDING_APPROVAL" {
 		t.Fatal("authoritative §6 states drifted")
 	}
 	// Child ceiling is enforced at the splitter validation gate (§11).
@@ -96,7 +97,7 @@ func TestInvariantsNoSilentSuccess(t *testing.T) {
 		{"review", ValidateReview(ReviewResult{Verdict: "APPROVE", CommitSHA: ""})},
 		{"resolution", ValidateResolution(ResolutionResult{Action: "merge", Rationale: "x"})},
 		{"diagnosis", ValidateDiagnosis(DiagnosisResult{Recommendation: "retry", Rationale: ""})},
-		{"human decision", ValidateHumanDecision("approve")},
+		{"human decision", ValidateHumanDecision("ship")},
 		{"human reason", ValidateHumanReason("typo")},
 	}
 	for _, b := range bad {
