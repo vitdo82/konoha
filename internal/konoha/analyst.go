@@ -346,7 +346,7 @@ func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
 	}
 	prompt := analystPrompt(in, data, findSpecs(in.RepoPath))
 
-	cmd := exec.Command("opencode", "run", prompt)
+	cmd := exec.Command("opencode", agentArgs(prompt, in.Lifecycle.Model)...)
 	cmd.Dir = in.RepoPath
 	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()

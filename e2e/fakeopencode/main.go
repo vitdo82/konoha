@@ -22,12 +22,12 @@ import (
 )
 
 func main() {
-	prompt := ""
+	// opencode is invoked as `opencode run [flags...] <prompt>`; the prompt is
+	// always the final argument (flags like --model sit between run and it).
 	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		if args[i] == "run" && i+1 < len(args) {
-			prompt = args[i+1]
-		}
+	prompt := ""
+	if len(args) > 0 {
+		prompt = args[len(args)-1]
 	}
 	role := roleFor(prompt)
 	dir := os.Getenv("FAKE_OPENCODE_DIR")

@@ -56,6 +56,7 @@ type CompletionRequest struct {
 	IssueNum           int      `json:"issue"`
 	PRNumber           int      `json:"pr"`
 	RepoPath           string   `json:"repoPath"`
+	Model              string   `json:"model,omitempty"` // opencode model for this repo (§4)
 	Title              string   `json:"title"`
 	Body               string   `json:"body"`
 	Spec               string   `json:"spec"`
@@ -203,7 +204,7 @@ func ValidateCompletion(c CompletionResult) error {
 func RunCompletion(ctx context.Context, in CompletionRequest) (CompletionResult, error) {
 	prompt := completionPrompt(in)
 
-	cmd := exec.Command("opencode", "run", prompt)
+	cmd := exec.Command("opencode", agentArgs(prompt, in.Model)...)
 	cmd.Dir = in.RepoPath
 	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()

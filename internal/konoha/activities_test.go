@@ -161,3 +161,14 @@ func TestPublishDeveloperChangeHonorsDryRun(t *testing.T) {
 		t.Fatalf("dryRun publish should skip mutation without creds, got: %v", err)
 	}
 }
+
+// §4: agentArgs uses the per-repo model when set and falls back to the built-in
+// default otherwise, so repos.yaml is the source of truth per repo.
+func TestAgentArgsResolvesModel(t *testing.T) {
+	if got := strings.Join(agentArgs("p", "openrouter/x/y"), " "); got != "run --model openrouter/x/y p" {
+		t.Fatalf("per-repo model not honored: %q", got)
+	}
+	if got := agentArgs("p", "")[2]; got != defaultAgentModel {
+		t.Fatalf("unset model must fall back to %q, got %q", defaultAgentModel, got)
+	}
+}
