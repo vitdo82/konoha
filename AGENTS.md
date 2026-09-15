@@ -464,6 +464,12 @@ required; no Temporal).
   `VERDICT:<value>` line and defaults to `REQUEST_CHANGES`. `ValidateReview`
   gates verdict+commit SHA; `ReviewAppliesTo` is the §15 commit-binding
   predicate (an approval is valid only for the exact SHA it reviewed).
+  `SubmitReview` (activities.go) posts the verdict as a formal `gh pr review`; the
+  §25 publish path authors PRs with the same App, so GitHub refuses a formal
+  `--request-changes`/`--approve` review on a self-authored PR. Only that
+  specific "your own pull request" error (`selfReviewError`) falls back to a
+  non-blocking `--comment` review (which still clears the `ListUnreviewedPRs`
+  filter); any other failure propagates (§40). It runs through `ghTokenRunner`.
 - `repair.go` owns the Repair agent (§4.6/§16/§27): `RunRepair` runs a **fresh**
   opencode execution — same model ok, never the developer's/reviewer's
   transcript — fed the Reviewer's **structured** findings (`ReviewResult`

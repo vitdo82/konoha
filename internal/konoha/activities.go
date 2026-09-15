@@ -281,8 +281,20 @@ DIFF:
 		Blocking: blocking, Nits: nits}, nil
 }
 
+// selfReviewError reports whether gh refused a formal review because the App
+// authored the PR ("Can not request changes/approve on your own pull request").
+// Only this specific restriction triggers the comment fallback; every other
+// error must propagate (§40 fail-closed).
+func selfReviewError(out []byte) bool {
+	return strings.Contains(string(out), "your own pull request")
+}
+
 // SubmitReview posts the verdict as a single formal review (the --body carries
 // the summary). Posts as the kakashi-82 GitHub App so it can approve its own PRs.
+// GitHub refuses a formal REQUEST_CHANGES/APPROVE review on a PR the App itself
+// authored (§25 publish); that specific error falls back to a non-blocking
+// COMMENT review, which GitHub permits and which still records the review so
+// ListUnreviewedPRs stops re-firing. Any other failure is fatal.
 func SubmitReview(ctx context.Context, in PrInput, r ReviewResult) error {
 	if in.Lifecycle.DryRun {
 		activity.GetLogger(ctx).Info("dryRun: review suppressed", "pr", in.PrNum)
@@ -302,11 +314,21 @@ func SubmitReview(ctx context.Context, in PrInput, r ReviewResult) error {
 	if err != nil {
 		return err
 	}
-	c := exec.Command("gh", "pr", "review", fmt.Sprint(in.PrNum), "-R", in.Owner+"/"+in.Repo,
+	repo := in.Owner + "/" + in.Repo
+	out, err := ghTokenRunner(ctx, tok, "pr", "review", fmt.Sprint(in.PrNum), "-R", repo,
 		flag, "--body", body)
-	c.Env = append(os.Environ(), "GH_TOKEN="+tok)
-	if out, err := c.CombinedOutput(); err != nil {
-		return fmt.Errorf("gh pr review: %s: %w", strings.TrimSpace(string(out)), err)
+	if err != nil {
+		if !selfReviewError(out) {
+			return fmt.Errorf("gh pr review: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		note := fmt.Sprintf("%s\n\n> Posted as a comment: a formal `%s` review is refused on a PR the App authored.", body, flag)
+		fout, ferr := ghTokenRunner(ctx, tok, "pr", "review", fmt.Sprint(in.PrNum), "-R", repo,
+			"--comment", "--body", note)
+		if ferr != nil {
+			return fmt.Errorf("gh pr review (self-authored comment fallback): %s: %w", strings.TrimSpace(string(fout)), ferr)
+		}
+		activity.GetLogger(ctx).Info("submitted review as comment (self-authored pr)", "pr", in.PrNum, "verdict", verdict)
+		return nil
 	}
 	activity.GetLogger(ctx).Info("submitted review", "pr", in.PrNum, "verdict", r.Verdict)
 	return nil
