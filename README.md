@@ -49,6 +49,12 @@ repos:
         schedule: 24h                  # per-repo scan cadence (<repo>-deps schedule)
         label: konoha:dependency       # base label; vulnerabilities also get konoha:security
         autoFileIssues: true           # false = scan/report only
+      grooming:                        # §56 backlog grooming pre-stage
+        enabled: false                 # opt-in; false/unset = no groom, no ready issues
+        selector: backlog              # label selecting raw backlog items
+        schedule: 24h                  # per-repo cadence (<repo>-groom schedule)
+        repoLabel: ""                  # optional extra provenance label on the ready issue
+        readyLabel: konoha:ready       # label marking a groomed ready issue
       alerting:                        # §53 rate-drift alerts + failure feedback
         enabled: false                 # opt-in; false/unset = no alerts, no bug issues
         notify: ""                     # webhook URL (slack-compatible); empty = log only
@@ -175,20 +181,29 @@ parser contract, §6 workflow state names, and GitHub API base.
   `poGateTimeout`): `approve` proceeds, `deny` escalates to `HUMAN_REQUIRED`, and
   a timeout stays `BLOCKED` — never a silent proceed. Each gated decision is
   appended by `RecordAuditEvent` to the append-only `audit.sink` JSONL file
-  (subject, step, actor, allow/deny/timeout).
+  (subject, step, actor, allow/deny/timeout). When `grooming.enabled`, a per-repo
+  `<repo>-groom` schedule runs `BacklogGroomWorkflow`: each open issue carrying
+  `selector` is analysed in DRY (`AnalyzeIssue` + `EstimateIssue`), and an
+  actionable item is filed as a fully-specified ready issue
+  (`EnsureReadyIssue`, marker `<!-- konoha-groomed: <sha> -->`, label
+  `readyLabel`) that the normal sweep consumes; an unactionable item is left open
+  with an idempotent note (`RecordGroomNote`, marker
+  `<!-- konoha-groom-rejected: <sha> -->`) and never auto-closed. The run records
+  the §39-style `groomed_count` / `groom_reject_rate` gauges.
 - **Config**: `repos.yaml` — one entry per repo (source of truth); per-repo
   `lifecycle:` policy (§33/§43 of `docs/new-design-v2.md`): mode, complexity,
   review attempts, autonomy/escalation, `poGateTimeout`, `dryRun`, §43
-  concurrency caps, §52 `deps`, §53 `alerting`, §54 `propagation`, and §55
-  `approval`/`audit`.
+  concurrency caps, §52 `deps`, §53 `alerting`, §54 `propagation`, §55
+  `approval`/`audit`, and §56 `grooming`.
 - **Runtime config**: `konoha.yaml` — worker/runtime values + code-level
   `defaults.lifecycle` fallbacks (see Configuration below).
 - **Apply**: `scripts/apply.sh` builds the worker and asks `prbot config` (the
   shared Go loader) for each repo's schedule input JSON — unknown keys / bad
   values in `repos.yaml` fail fast. It then (re)creates `<repo>-review-all` and
   `<repo>-issue-all` schedules per repo, plus a `<repo>-deps` schedule for each
-  `deps.enabled` repo (`prbot config --deps`) and a `<repo>-alerts` schedule for
-  each `alerting.enabled` repo (`prbot config --alerts`).
+  `deps.enabled` repo (`prbot config --deps`), a `<repo>-alerts` schedule for
+  each `alerting.enabled` repo (`prbot config --alerts`), and a `<repo>-groom`
+  schedule for each `grooming.enabled` repo (`prbot config --grooming`).
 
 ## Layout
 
@@ -231,8 +246,9 @@ activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
 `VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override), and `/tmp/prbot deps`
 (runs the §52 dependency scan for `OWNER`/`REPO`/`REPO_PATH` and prints the
 validated `DependencyReport`; `SCAN_CMD` required). `prbot config --deps`
-prints the §52 dependency schedule inputs for `apply.sh`, and
-`prbot config --alerts` prints the §53 alert schedule inputs.
+prints the §52 dependency schedule inputs for `apply.sh`, `prbot config
+--alerts` prints the §53 alert schedule inputs, and `prbot config --grooming`
+prints the §56 grooming schedule inputs.
 
 ## Add a repo
 

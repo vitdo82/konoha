@@ -31,6 +31,7 @@ const (
 	labelSecurity         = "konoha:security"   // §52: known-vulnerability origin (built-in §20 escalation)
 	labelDependency       = "konoha:dependency" // §52: dependency-bump origin (built-in §20 escalation)
 	labelCrossRepo        = "konoha:cross-repo" // §54: cross-repo propagation origin (required marker label)
+	labelReady            = "konoha:ready"      // §56: groomed ready-ticket origin (source label)
 )
 
 // ComplexityLabels is the §21 complexity scale (only one present per issue,
@@ -129,10 +130,10 @@ type LabelsTheirsRequest struct {
 }
 
 // sourceLabels are konoha:* labels tagging an issue's ORIGIN, not its workflow
-// state (§52/§54). They are created by EnsureRepoLabels but are deliberately NOT
-// projectable: ApplyIssueLabels must never strip them as stale transients.
+// state (§52/§54/§56). They are created by EnsureRepoLabels but are deliberately
+// NOT projectable: ApplyIssueLabels must never strip them as stale transients.
 func sourceLabels() []string {
-	return []string{labelSecurity, labelDependency, labelCrossRepo}
+	return []string{labelSecurity, labelDependency, labelCrossRepo, labelReady}
 }
 
 // EnsureRepoLabels idempotently creates the configured labels (full §21 set)

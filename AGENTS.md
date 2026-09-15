@@ -56,7 +56,8 @@ make test   # go vet ./... + go build ./... + go test ./... (§41 test suite)
 (`reconcile_test.go`), every agent validator (§36), the derived §39 metric
 gauges, the §53 alert threshold math + per-window dedupe and failure-feedback
 idempotency (`alerting_test.go`), the §55 approval-gate policy + audit-sink
-writes (`approval_test.go`), the §44 invariant assertions
+writes (`approval_test.go`), the §56 grooming marker idempotency + reject/
+dry-run paths (`grooming_test.go`), the §44 invariant assertions
 (`invariants_test.go`), and
 Temporal-testsuite workflow runs (`workflow_suite_test.go`) — the agent
 activities are mocked with testify `Anything` matchers (one per activity
@@ -190,8 +191,31 @@ without restarting a completed workflow. Deliveries with an invalid
   workflow NEVER starts `IssueCycleWorkflow` — the issue has no `konoha:managed`
   label, so the existing sweep/webhook drives it through the normal lifecycle
   (no double-start). A malformed scan or entry fails closed (§36/§40), never
-  "0 findings". `lifecycle.deps.{enabled,scanCmd,schedule,label,autoFileIssues}`;
+  "0 findings".   `lifecycle.deps.{enabled,scanCmd,schedule,label,autoFileIssues}`;
   disabled/absent ⇒ no scan, no issues; `DryRun` files nothing (§42).
+- `grooming.go` owns the §56 backlog-grooming pre-stage: an opt-in per-repo
+  `<repo>-groom` Temporal schedule (created by `apply.sh` via `prbot config
+  --grooming`, only for `lifecycle.grooming.enabled`) runs
+  `BacklogGroomWorkflow` → `ListBacklogItems` (open issues carrying
+  `grooming.selector`, default `backlog`), then for each item `AnalyzeIssue` +
+  `EstimateIssue` in **DRY** (§42: analysis only). An actionable item is filed as
+  one fully-specified ready issue by `EnsureReadyIssue`, idempotent (§24) by the
+  byte-exact `<!-- konoha-groomed: <sha> -->` marker (search-before-create);
+  `<sha>` is a content hash of the raw item (owner/repo/number + title + body),
+  so overlapping runs/retries converge and an edit re-grooms. The ready issue
+  gets `readyLabel` (default `konoha:ready`, a source label in `labels.go`) plus
+  optional `repoLabel`, and deliberately NO `konoha:managed` label — the existing
+  sweep/`opened` webhook drives it through the normal lifecycle, so
+  `BacklogGroomWorkflow` never starts an `IssueCycleWorkflow` (§32/§52 pattern).
+  An unactionable/ambiguous item gets an idempotent note comment by
+  `RecordGroomNote` (marker `<!-- konoha-groom-rejected: <sha> -->`) and is left
+  OPEN, never closed/edited (§40: no silent drop); a per-item analysis failure is
+  a reject, never a workflow failure. The run records the §39-style
+  `groomed_count`/`groom_rejected_count` counters + `groom_reject_rate` gauge via
+  `RecordGroomMetrics`. `ghRunner` is the shared test seam; never call
+  `activity.GetLogger` in these activities (panics on non-Temporal ctx).
+  `lifecycle.grooming.{enabled,selector,schedule,repoLabel,readyLabel}`;
+  disabled/absent ⇒ no groom, no ready issues.
 - `alerting.go` owns the §53 operations/alerting layer on top of the §39 sink:
   a per-repo `<repo>-alerts` Temporal schedule (created by `apply.sh` via
   `prbot config --alerts`, only for `lifecycle.alerting.enabled`) runs

@@ -9,6 +9,10 @@
 #   - merge: {strategy, requireCI, ciMaxWait}: PR merge + CI gate (§49)
 #   - release: {enabled, changelogPath, versionPrefix}: post-merge release (§50)
 #   - deps: {enabled, scanCmd, schedule, label, autoFileIssues}: dependency scan (§52)
+#   - grooming: {enabled, selector, schedule, repoLabel, readyLabel}: §56 backlog
+#     grooming — raw items carrying `selector` are analysed DRY and filed as ready
+#     issues (label `readyLabel`, idempotent `<!-- konoha-groomed: <sha> -->`); an
+#     unactionable item gets an idempotent note and is never auto-closed
 #   - alerting: {enabled, notify, schedule, onRates, thresholds}: §53 rate alerts
 #     + failure feedback (files one bug issue per BLOCKED/FAILED run)
 #   - propagation: {enabled, maxPerMerge, downstream}: §54 cross-repo propagation
@@ -57,6 +61,12 @@ repos:
         schedule: 24h           # per-repo scan cadence (<repo>-deps Temporal schedule)
         label: konoha:dependency # base label; vulnerabilities also get konoha:security
         autoFileIssues: true    # false = scan/report only
+      grooming:                 # §56 backlog grooming pre-stage
+        enabled: false          # opt-in; false/unset = no <repo>-groom schedule, no ready issues
+        selector: backlog       # label selecting raw backlog items to groom
+        schedule: 24h           # per-repo cadence (<repo>-groom Temporal schedule)
+        repoLabel: ""           # optional extra provenance label on the ready issue
+        readyLabel: konoha:ready # label marking a groomed ready issue
       alerting:                 # §53 rate-drift alerts + failure feedback
         enabled: false          # opt-in; false/unset = no <repo>-alerts schedule, no bug issues
         notify: ""              # webhook URL (slack-compatible); empty = log only
