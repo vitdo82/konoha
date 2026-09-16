@@ -206,6 +206,24 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		projectLabels(route, est.Complexity) // §22: managed + complexity label early
 	}
 
+	// §22: explain the ownership claim (unmanaged → managed) exactly once, deduped
+	// by the deterministic `<!-- konoha-managed: <workflowId> -->` marker. Covers
+	// both routes: an LARGE parent is claimed here, and each split child posts its
+	// own note when its cycle runs. Best-effort like the label projection: Temporal
+	// retries the activity, and an exhausted retry must not abort the cycle.
+	model := in.Lifecycle.Model
+	if strings.TrimSpace(model) == "" {
+		model = defaultAgentModel
+	}
+	if err := workflow.ExecuteActivity(ctx, EnsureManagedNote, ManagedNoteRequest{
+		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum,
+		WorkflowID: info.WorkflowExecution.ID, Trigger: in.Trigger,
+		Route: route, Complexity: est.Complexity, Model: model,
+		DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("managed claim note failed (non-fatal)", "err", err)
+	}
+
 	if route == stateLarge {
 		return runLargePath(ctx, devCtx, in, a, est, info, route, transition, projectLabels)
 	}
@@ -574,7 +592,7 @@ func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, 
 			cctx := workflow.WithChildOptions(devCtx, cwo)
 			childIn := IssueInput{
 				Owner: in.Owner, Repo: in.Repo, IssueNum: num,
-				RepoPath: in.RepoPath, Lifecycle: in.Lifecycle,
+				RepoPath: in.RepoPath, Trigger: "split", Lifecycle: in.Lifecycle,
 			}
 			runs = append(runs, childRun{workflow.ExecuteChildWorkflow(cctx, IssueCycleWorkflow, childIn), num})
 		}

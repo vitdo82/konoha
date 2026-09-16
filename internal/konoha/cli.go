@@ -157,6 +157,7 @@ func Main() {
 	w.RegisterActivity(RunDiagnosis)
 	w.RegisterActivity(EnsureRepoLabels)
 	w.RegisterActivity(ApplyIssueLabels)
+	w.RegisterActivity(EnsureManagedNote)
 	w.RegisterActivity(EnsureChildren)
 	w.RegisterActivity(RecordCycleMetrics)
 	w.RegisterActivity(ReadHumanDecision)

@@ -130,6 +130,39 @@ func TestWorkflowSmallAutonomousClose(t *testing.T) {
 	}
 }
 
+// §22/§41: the ownership transition posts the claim note exactly once, and a
+// label-projection failure never aborts the cycle (§40: no silent success, but
+// also no fail-open on an unrelated best-effort error).
+func TestWorkflowManagedClaimNoteOnceAndLabelFailureNonFatal(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	h := mockSmallPath(env)
+
+	var claimed int
+	var got ManagedNoteRequest
+	env.OnActivity(EnsureManagedNote, mock.Anything, mock.Anything).Return(func(_ context.Context, in ManagedNoteRequest) error {
+		claimed++
+		got = in
+		return nil
+	})
+	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(errors.New("label API down"))
+
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("terminal = %q, want CLOSED despite label failure", got)
+	}
+	if claimed != 1 {
+		t.Fatalf("claim activity invocations = %d, want exactly 1", claimed)
+	}
+	if got.Route != stateSmall || got.Complexity != 3 || got.Model != defaultAgentModel || got.IssueNum != testIssue {
+		t.Fatalf("claim request = %+v, want SMALL/3/%s/issue %d", got, defaultAgentModel, testIssue)
+	}
+	if h.merges != 1 {
+		t.Fatalf("merges = %d, want 1 (label failure must not abort the cycle)", h.merges)
+	}
+}
+
 // §49/§41: CI not green → PR is NEVER merged and the issue is NOT closed; the
 // workflow escalates to HUMAN_REQUIRED (no silent success).
 func TestWorkflowCIFailureEscalates(t *testing.T) {

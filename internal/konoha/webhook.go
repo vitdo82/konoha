@@ -102,7 +102,7 @@ func DefaultStarter(c client.Client) webhookStarter {
 		}
 		_, err := c.ExecuteWorkflow(ctx, opts, "IssueCycleWorkflow", IssueInput{
 			Owner: scope.Owner, Repo: scope.Repo, IssueNum: issue,
-			RepoPath: scope.RepoPath, Lifecycle: scope.Lifecycle,
+			RepoPath: scope.RepoPath, Trigger: "webhook", Lifecycle: scope.Lifecycle,
 		})
 		return err
 	}

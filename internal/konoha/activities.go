@@ -159,6 +159,7 @@ type IssueInput struct {
 	Repo      string          `json:"repo"`
 	IssueNum  int             `json:"issue"`
 	RepoPath  string          `json:"repoPath"`
+	Trigger   string          `json:"trigger,omitempty"` // sweep | webhook | split (claim-comment wording)
 	Lifecycle LifecycleConfig `json:"lifecycle,omitempty"`
 }
 
@@ -215,7 +216,7 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 	for _, num := range strings.Fields(string(list)) {
 		n := 0
 		fmt.Sscan(num, &n)
-		out = append(out, IssueInput{Owner: scope.Owner, Repo: scope.Repo, IssueNum: n, RepoPath: scope.RepoPath, Lifecycle: scope.Lifecycle})
+		out = append(out, IssueInput{Owner: scope.Owner, Repo: scope.Repo, IssueNum: n, RepoPath: scope.RepoPath, Trigger: "sweep", Lifecycle: scope.Lifecycle})
 	}
 	activity.GetLogger(ctx).Info("found unmanaged issues", "repo", ownerRepo, "count", len(out))
 	return out, nil
