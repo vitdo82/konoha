@@ -207,6 +207,158 @@ func TestEnsureRepoLabelsCreatesMissing(t *testing.T) {
 	}
 }
 
+// --- §22/§47: the konoha:managed ownership claim comment --------------------
+
+type managedNoteCalls struct {
+	lines  []string
+	bodies []string
+}
+
+// managedNoteFakeGh simulates the issue-view + issue-comment calls of
+// EnsureManagedNote, with the given existing comment body.
+func managedNoteFakeGh(t *testing.T, comments string) *managedNoteCalls {
+	t.Helper()
+	prev := ghRunner
+	c := &managedNoteCalls{}
+	ghRunner = func(_ context.Context, args ...string) ([]byte, error) {
+		line := strings.Join(args, " ")
+		c.lines = append(c.lines, line)
+		switch {
+		case strings.Contains(line, "issue view"):
+			return json.Marshal(map[string]any{"comments": []map[string]string{{"body": comments}}})
+		case strings.HasPrefix(line, "issue comment"):
+			for i, a := range args {
+				if a == "--body" && i+1 < len(args) {
+					c.bodies = append(c.bodies, args[i+1])
+				}
+			}
+			return []byte("{}"), nil
+		default:
+			return nil, fmt.Errorf("unexpected gh call: %s", line)
+		}
+	}
+	t.Cleanup(func() { ghRunner = prev })
+	return c
+}
+
+func managedNoteReq() ManagedNoteRequest {
+	return ManagedNoteRequest{
+		Owner: "o", Repo: "r", IssueNum: 22,
+		WorkflowID: "ducklambda-issue-22", Trigger: "sweep",
+		Route: stateSmall, Complexity: 2, Model: defaultAgentModel,
+	}
+}
+
+// §22: claiming an unmanaged issue posts one well-structured Markdown comment
+// whose first line is the deterministic marker. Assert on structure, not just
+// substrings.
+func TestEnsureManagedNotePostsStructuredClaim(t *testing.T) {
+	req := managedNoteReq()
+	calls := managedNoteFakeGh(t, "human chatter")
+	if err := EnsureManagedNote(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls.lines) != 2 || len(calls.bodies) != 1 {
+		t.Fatalf("want view+comment, got lines=%v bodies=%v", calls.lines, calls.bodies)
+	}
+	body := calls.bodies[0]
+	lines := strings.Split(body, "\n")
+	if lines[0] != managedMarker(req.WorkflowID) {
+		t.Fatalf("first line = %q, want marker %q", lines[0], managedMarker(req.WorkflowID))
+	}
+	if n := strings.Count(body, "### Konoha took ownership of this issue"); n != 1 {
+		t.Fatalf("heading must appear exactly once, got %d:\n%s", n, body)
+	}
+	for _, want := range []string{
+		"**Repo:**", "**Workflow / run id:**", "**Route / estimated complexity:**",
+		"**Agent model:**", "**How to intervene:**",
+		"`o/r`", "`ducklambda-issue-22`", "`opencode-go/deepseek-v4.1-flash`",
+		"`sweep`", "`SMALL`", "`konoha:complexity-2`", "konoha-decision",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// §22/§47: hostile run-id/model/trigger values are sanitized so they cannot
+// break Markdown or inject content; the marker stays a single well-formed line.
+func TestEnsureManagedNoteHostileInputSafe(t *testing.T) {
+	req := managedNoteReq()
+	req.WorkflowID = "r-issue-22`\n### PWNED <script>"
+	req.Model = "model`\ninject <b>"
+	req.Trigger = "we`bhook\n<x>"
+
+	calls := managedNoteFakeGh(t, "")
+	if err := EnsureManagedNote(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls.bodies) != 1 {
+		t.Fatalf("want exactly one comment, got %v", calls.bodies)
+	}
+	body := calls.bodies[0]
+	if strings.Contains(body, "<script>") || strings.Contains(body, "<b>") || strings.Contains(body, "<x>") {
+		t.Fatalf("hostile angle-bracket payload leaked into the comment:\n%s", body)
+	}
+	if strings.Contains(body, "we`bhook") || strings.Contains(body, "model`") {
+		t.Fatalf("raw backtick survived sanitization:\n%s", body)
+	}
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "### PWNED") {
+			t.Fatalf("injected heading survived (newline must collapse):\n%s", body)
+		}
+	}
+	if strings.Count(body, "### Konoha took ownership of this issue") != 1 {
+		t.Fatalf("injected heading changed structure:\n%s", body)
+	}
+	marker := managedMarker(req.WorkflowID)
+	if strings.Contains(marker, "\n") || strings.TrimSpace(strings.Split(body, "\n")[0]) != marker {
+		t.Fatalf("marker not a single well-formed line: %q", marker)
+	}
+}
+
+// §22/§24: re-projecting labels / re-running the cycle finds the marker and
+// never posts a second claim comment.
+func TestEnsureManagedNoteIdempotent(t *testing.T) {
+	req := managedNoteReq()
+	calls := managedNoteFakeGh(t, managedMarker(req.WorkflowID))
+	if err := EnsureManagedNote(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls.bodies) != 0 {
+		t.Fatalf("existing claim note must not be re-posted: %v", calls.bodies)
+	}
+}
+
+// §42: dry-run performs no gh call and posts nothing.
+func TestEnsureManagedNoteDryRunNoop(t *testing.T) {
+	prev := ghRunner
+	ghRunner = func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("dry-run must not call gh")
+		return nil, nil
+	}
+	t.Cleanup(func() { ghRunner = prev })
+
+	req := managedNoteReq()
+	req.DryRun = true
+	if err := EnsureManagedNote(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// §22: same facts → same body (marker dedupe reliability); an unknown route
+// omits the complexity bullet rather than rendering a dangling value.
+func TestManagedNoteBodyDeterministic(t *testing.T) {
+	if a, b := managedNoteBody(managedNoteReq()), managedNoteBody(managedNoteReq()); a != b {
+		t.Fatalf("body not deterministic:\n%q\n%q", a, b)
+	}
+	unknown := managedNoteReq()
+	unknown.Route, unknown.Complexity = "", 0
+	if strings.Contains(managedNoteBody(unknown), "Route / estimated complexity") {
+		t.Fatalf("unknown route must omit the complexity bullet:\n%s", managedNoteBody(unknown))
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

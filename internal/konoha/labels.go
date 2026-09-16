@@ -224,6 +224,96 @@ func ApplyIssueLabels(ctx context.Context, in LabelsRequest) error {
 	return nil
 }
 
+// ManagedNoteRequest explains one ownership claim (§22): the issue just gained
+// konoha:managed and deserves a human-readable "why" plus an intervention hint.
+type ManagedNoteRequest struct {
+	Owner      string `json:"owner"`
+	Repo       string `json:"repo"`
+	IssueNum   int    `json:"issue"`
+	WorkflowID string `json:"workflowId"`
+	Trigger    string `json:"trigger,omitempty"` // sweep | webhook
+	Route      string `json:"route,omitempty"`
+	Complexity int    `json:"complexity,omitempty"`
+	Model      string `json:"model,omitempty"`
+	DryRun     bool   `json:"dryRun,omitempty"`
+}
+
+// sanitizeInline neutralizes a value interpolated into the claim comment: it
+// strips backticks/angle brackets and collapses newlines so a hostile run id or
+// model can neither break Markdown nor inject content (§22).
+func sanitizeInline(s string) string {
+	return strings.TrimSpace(strings.NewReplacer(
+		"`", "", "\r", " ", "\n", " ", "<", "", ">", "",
+	).Replace(s))
+}
+
+// managedMarker is the deterministic ownership-claim dedupe marker.
+func managedMarker(workflowID string) string {
+	return "<!-- konoha-managed: " + sanitizeInline(workflowID) + " -->"
+}
+
+// managedNoteBody renders the claim comment. Pure: same facts → same body, so
+// the marker dedupe is reliable. Unknown route/complexity omits that bullet.
+func managedNoteBody(in ManagedNoteRequest) string {
+	trigger := in.Trigger
+	if strings.TrimSpace(trigger) == "" {
+		trigger = "sweep"
+	}
+	var b strings.Builder
+	b.WriteString(managedMarker(in.WorkflowID) + "\n\n")
+	b.WriteString("### Konoha took ownership of this issue\n\n")
+	fmt.Fprintf(&b, "The Konoha pipeline picked this issue up (`%s`) and is running the issue lifecycle on it.\n\n",
+		sanitizeInline(trigger))
+	fmt.Fprintf(&b, "- **Repo:** `%s/%s`\n", sanitizeInline(in.Owner), sanitizeInline(in.Repo))
+	fmt.Fprintf(&b, "- **Workflow / run id:** `%s`\n", sanitizeInline(in.WorkflowID))
+	if route := strings.TrimSpace(in.Route); route != "" {
+		fmt.Fprintf(&b, "- **Route / estimated complexity:** `%s`", sanitizeInline(route))
+		if label := complexityLabel(in.Complexity); label != "" {
+			fmt.Fprintf(&b, " / `%s`", label)
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "- **Agent model:** `%s`\n", sanitizeInline(in.Model))
+	b.WriteString("- **How to intervene:** comment a `<!-- konoha-decision: <action> -->` marker, or\n")
+	b.WriteString("  remove the `konoha:managed` label to hand the issue back to humans.\n")
+	return b.String()
+}
+
+// EnsureManagedNote posts one explanatory comment when Konoha claims an issue,
+// idempotent by the byte-exact `<!-- konoha-managed: <workflowId> -->` marker
+// (search-before-create, §24, mirroring RecordGroomNote). DryRun is a no-op
+// (§42). The gh failure is returned so Temporal retries the activity; the
+// calling workflow treats an exhausted retry as non-fatal (§22).
+func EnsureManagedNote(ctx context.Context, in ManagedNoteRequest) error {
+	if in.DryRun {
+		return nil // §42
+	}
+	marker := managedMarker(in.WorkflowID)
+	out, err := ghRunner(ctx, "issue", "view", fmt.Sprint(in.IssueNum),
+		"-R", in.Owner+"/"+in.Repo, "--json", "comments")
+	if err != nil {
+		return fmt.Errorf("gh issue view (managed note): %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	var doc struct {
+		Comments []struct {
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		return fmt.Errorf("parse issue comments: %w", err)
+	}
+	for _, c := range doc.Comments {
+		if strings.Contains(c.Body, marker) {
+			return nil // already claimed
+		}
+	}
+	if out, err := ghRunner(ctx, "issue", "comment", fmt.Sprint(in.IssueNum),
+		"-R", in.Owner+"/"+in.Repo, "--body", managedNoteBody(in)); err != nil {
+		return fmt.Errorf("gh issue comment (managed note): %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 func containsString(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {

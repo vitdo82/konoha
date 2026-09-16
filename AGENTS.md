@@ -112,7 +112,8 @@ without restarting a completed workflow. Deliveries with an invalid
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are
   search-before-create and rely on deterministic HTML-comment markers
-  (`konoha-parent`, `konoha-child`) matched byte-exactly in issue/PR bodies.
+  (`konoha-parent`, `konoha-child`, `konoha-managed`) matched byte-exactly in
+  issue/PR bodies.
   `ghRunner` is a package var so tests simulate GitHub; never call
   `activity.GetLogger` inside these activities (it panics on non-Temporal ctx, which
   the unit tests use).
@@ -435,6 +436,19 @@ required; no Temporal).
   `ApplyIssueLabels` (diff current labels → desired: add missing, drop stale
   projectable transients/old-complexity, leave non-konoha human labels alone;
   §24/§31). Temporal state drives it; labels never drive workflow state (§44 #20).
+  `EnsureManagedNote` backs the ownership claim: when a cycle claims an
+  unmanaged issue (route transition, both SMALL and LARGE — LARGE children post
+  their own note when their cycle runs), it leaves ONE explanatory comment whose
+  first line is the byte-exact `<!-- konoha-managed: <workflowId> -->` marker,
+  idempotent by search-before-create (§24) and a no-op under `DryRun` (§42). The
+  body is deterministic GitHub-flavored Markdown (`### Konoha took ownership of
+  this issue` heading + a lead + a bulleted `Repo` / `Workflow / run id` /
+  `Route / estimated complexity` (omitted when unknown) / `Agent model` /
+  `How to intervene` list); the workflow passes `Trigger` (`sweep|webhook|split`)
+  and the resolved `Model`. Interpolated ids/model/trigger are sanitized
+  (backticks, newlines, `<`/`>` stripped) so they cannot break Markdown or inject
+  content; raw issue text is never embedded. A gh failure is retried by the
+  activity and, once exhausted, logged non-fatal (the cycle never aborts, §22).
 - `completion.go` owns the Completion agent (§4.7/§14/§29/§30): `RunCompletion`
   is a **separate** opencode execution (independent from the developer, §4.7)
   that re-checks the implementation against the machine-checkable acceptance
