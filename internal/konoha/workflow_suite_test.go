@@ -2,7 +2,10 @@ package konoha
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -496,6 +499,187 @@ func TestWorkflowApprovalGateTimeoutBlocks(t *testing.T) {
 	}
 	if published != 0 {
 		t.Fatalf("timed-out approval must not publish (published=%d)", published)
+	}
+}
+
+// --- §40/§44 #1/§53: sweep child-failure escalation --------------------------
+
+// sweepLifecycle returns the per-repo policy for the sweep tests (alerting and
+// dry-run toggled).
+func sweepLifecycle(alerting, dryRun bool) LifecycleConfig {
+	lc := LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4, DryRun: dryRun}
+	if alerting {
+		lc.Alerting = AlertingConfig{Enabled: true, Thresholds: map[string]float64{mAutonomousRate: 0.7}}
+	}
+	return lc
+}
+
+// sweepScope is the schedule input for IssueAllWorkflow.
+func sweepScope(lc LifecycleConfig) RepoScope {
+	return RepoScope{Owner: "o", Repo: "r", RepoPath: "/tmp/repo", Lifecycle: lc}
+}
+
+// newSweepEnv wires an IssueAllWorkflow env whose ListUnmanagedIssues returns
+// the given issue numbers, with the child cycle + failure-feedback workflows
+// registered.
+func newSweepEnv(t *testing.T, lc LifecycleConfig, issues []int) *testsuite.TestWorkflowEnvironment {
+	t.Helper()
+	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(IssueCycleWorkflow)
+	env.RegisterWorkflow(FailureFeedbackWorkflow)
+	env.RegisterActivity(RecordCycleMetrics)
+	var pending []IssueInput
+	for _, n := range issues {
+		pending = append(pending, IssueInput{
+			Owner: "o", Repo: "r", IssueNum: n, RepoPath: t.TempDir(), Lifecycle: lc,
+		})
+	}
+	env.OnActivity(ListUnmanagedIssues, mock.Anything, mock.Anything).Return(pending, nil)
+	return env
+}
+
+const sweepAnalysisTitle = "t"
+
+// §40/§44 #1 + §53/§41: a failing sweep child is surfaced, not silently skipped
+// — the affected issue is projected human-required/blocked (via ApplyIssueLabels)
+// and exactly one failure issue is filed for the run, keyed by the stable child
+// workflow ID. The sweep itself still returns (a child failure is not a sweep
+// failure).
+func TestWorkflowSweepChildFailureEscalates(t *testing.T) {
+	resetMetrics()
+	lc := sweepLifecycle(true, false)
+	env := newSweepEnv(t, lc, []int{testIssue})
+	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(IssueAnalysis{}, errors.New("model returned no JSON"))
+
+	projected := 0
+	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in LabelsRequest) error {
+			projected++
+			if !containsString(in.Labels, labelHumanRequired) || !containsString(in.Labels, labelBlocked) {
+				t.Errorf("failed child projection = %v, want human-required+blocked", in.Labels)
+			}
+			return nil
+		})
+	filed := 0
+	var outcome CycleOutcome
+	env.OnActivity(EnsureFailureIssue, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in FailureFeedbackRequest) (FailureIssueResult, error) {
+			filed++
+			outcome = in.Outcome
+			return FailureIssueResult{Number: 55, Created: true}, nil
+		})
+
+	env.ExecuteWorkflow(IssueAllWorkflow, sweepScope(lc))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("a child failure must not fail the sweep: %v", err)
+	}
+	if projected != 1 {
+		t.Fatalf("human-required/blocked projection issued %d times, want 1", projected)
+	}
+	if filed != 1 || outcome.WorkflowID != "r-issue-7" || outcome.TerminalState != stateBlocked {
+		t.Fatalf("failure feedback = filed %d outcome %+v, want 1/r-issue-7/BLOCKED", filed, outcome)
+	}
+	// §39: the failed run is recorded (parity with the LARGE path's recordTerminal).
+	if v := sink.get(mCyclesBlocked); v != 1 {
+		t.Fatalf("blocked cycles = %v, want 1", v)
+	}
+	if v := sink.get(mHumanEscalations); v != 1 {
+		t.Fatalf("human escalations = %v, want 1", v)
+	}
+}
+
+// §40/§41: one child failing must not abort the batch — a sibling still runs the
+// full small path and closes exactly once, while the failed issue escalates.
+func TestWorkflowSweepChildFailureKeepsBatch(t *testing.T) {
+	resetMetrics()
+	lc := sweepLifecycle(false, false)
+	env := newSweepEnv(t, lc, []int{testIssue, testIssue + 1})
+	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in IssueInput) (IssueAnalysis, error) {
+			if in.IssueNum == testIssue {
+				return IssueAnalysis{}, errors.New("model returned no JSON")
+			}
+			return IssueAnalysis{
+				Title: sweepAnalysisTitle, Body: "b", Summary: "s", Spec: specFallback,
+				Requirements: []string{"r1"}, AcceptanceCriteria: []string{"Given c When d Then e"},
+			}, nil
+		})
+	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(
+		EstimateResult{Complexity: 3, Confidence: "high"}, nil)
+	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(nil)
+	h := mockSmallPathWith(env, CIStatus{Green: true}, nil, MergeResult{Merged: true}, nil)
+
+	env.ExecuteWorkflow(IssueAllWorkflow, sweepScope(lc))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("sweep must complete: %v", err)
+	}
+	if h.merges != 1 || h.closes != 1 {
+		t.Fatalf("sibling must still close (merges=%d closes=%d), want 1/1", h.merges, h.closes)
+	}
+}
+
+// §42/§41: under DryRun a child failure mutates nothing — no label write and no
+// failure issue — but the run still completes (the failure is only logged).
+func TestWorkflowSweepChildFailureDryRun(t *testing.T) {
+	resetMetrics()
+	lc := sweepLifecycle(true, true)
+	env := newSweepEnv(t, lc, []int{testIssue})
+	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(IssueAnalysis{}, errors.New("no JSON"))
+	// Real activities: both must short-circuit on DryRun before touching GitHub.
+	env.RegisterActivity(ApplyIssueLabels)
+	env.RegisterActivity(EnsureFailureIssue)
+	prev := ghRunner
+	ghRunner = func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("DryRun must not mutate GitHub")
+		return nil, nil
+	}
+	t.Cleanup(func() { ghRunner = prev })
+
+	env.ExecuteWorkflow(IssueAllWorkflow, sweepScope(lc))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("dry-run sweep must complete: %v", err)
+	}
+}
+
+// §53/§24/§41: two sweeps over the same failed run file exactly one failure
+// issue — the real idempotent EnsureFailureIssue matches the byte-exact marker
+// on the second pass.
+func TestWorkflowSweepFailureFeedbackIdempotent(t *testing.T) {
+	resetMetrics()
+	prev := ghRunner
+	var calls []string
+	filed := false
+	ghRunner = func(_ context.Context, args ...string) ([]byte, error) {
+		line := strings.Join(args, " ")
+		calls = append(calls, line)
+		switch {
+		case strings.Contains(line, "issues?state=all"):
+			if filed {
+				return json.Marshal([]ghItem{{Number: 42, Body: failureMarker("r-issue-7"), State: "open"}})
+			}
+			return json.Marshal([]ghItem{})
+		case strings.HasPrefix(line, "issue create"):
+			filed = true
+			return []byte("https://github.com/o/r/issues/42"), nil
+		default:
+			return nil, fmt.Errorf("unexpected gh call: %s", line)
+		}
+	}
+	t.Cleanup(func() { ghRunner = prev })
+
+	lc := sweepLifecycle(true, false)
+	for i := 0; i < 2; i++ {
+		env := newSweepEnv(t, lc, []int{testIssue})
+		env.RegisterActivity(EnsureFailureIssue)
+		env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(IssueAnalysis{}, errors.New("no JSON"))
+		env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(nil)
+		env.ExecuteWorkflow(IssueAllWorkflow, sweepScope(lc))
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("sweep %d error: %v", i, err)
+		}
+	}
+	if n := len(createdIssueCalls(calls)); n != 1 {
+		t.Fatalf("two sweeps created %d failure issues, want exactly 1 (§24)", n)
 	}
 }
 

@@ -325,6 +325,18 @@ required; no Temporal).
   (§14/§19), disagreement (§37), diagnosis → HUMAN_REQUIRED (§17/§18), and the
   LARGE path (split/children — currently ends at the deterministic `NOT_WIRED`
   terminal, never a silent drop). All I/O stays in activities (replay-safe).
+- `IssueAllWorkflow` is the issue-sweep analog of `ReviewAllWorkflow` (§32):
+  lists open issues lacking `konoha:managed` and starts a stable
+  `<repo>-issue-<n>` child `IssueCycleWorkflow` per issue, capped by
+  `ConcurrentIssueCycles()` (§43). A failing child is NEVER silently skipped
+  (§40/§44 #1): `escalateFailedChild` projects the affected issue to the
+  human-required/blocked terminal via the idempotent `ApplyIssueLabels`
+  reconcile and starts the §53 `FailureFeedbackWorkflow` for the run (marker key
+  = the child's stable ID, so a retried sweep files at most one bug issue, §24),
+  honoring `DryRun` (§42). Both are best-effort and per-child, so one failing
+  child neither aborts the batch nor fails the sweep — the siblings still run
+  (§40 fail-closed, not fail-fast). `failedChildOutcome` is the pure, invariant-
+  testable projection.
 - `observability.go` owns the §39 metrics sink + structured workflow logging:
   `RecordCycleMetrics` is an ACTIVITY (metrics are incremented once, never in
   replay-prone workflow code) that applies a `CycleOutcome` against a

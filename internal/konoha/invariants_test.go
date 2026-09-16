@@ -130,6 +130,22 @@ func TestInvariantsChildIDsDeterministic(t *testing.T) {
 	}
 }
 
+// §44 #1/#17: a failed sweep child is never dropped without a projection. The
+// escalation carries a non-empty, deterministic run ID (so the §53 failure issue
+// is fileable and dedupable, §24) and a terminal the feedback path accepts, and
+// its label projection always names human-required + blocked — so "silent skip"
+// is structurally impossible.
+func TestInvariantsFailedChildNeverSilentlyDropped(t *testing.T) {
+	out := failedChildOutcome(IssueInput{Owner: "o", Repo: "r", IssueNum: 7})
+	if out.WorkflowID != "r-issue-7" || out.TerminalState != stateBlocked || !out.HumanRequired {
+		t.Fatalf("failed-child outcome lacks a projection: %+v", out)
+	}
+	labels := ProjectLabels(LifecycleConfig{}, stateBlocked, 0, true)
+	if !containsString(labels, labelHumanRequired) || !containsString(labels, labelBlocked) {
+		t.Fatalf("failed-child projection = %v, want human-required+blocked", labels)
+	}
+}
+
 func TestInvariantsLabelsAreProjection(t *testing.T) {
 	// §44 #20: labels never drive workflow state; they are a pure projection.
 	// ProjectLabels with manage=false yields nothing; the state constant remains
