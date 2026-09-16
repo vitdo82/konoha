@@ -773,11 +773,52 @@ func IssueAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 		}
 		for _, x := range batch {
 			if err := x.future.Get(x.cctx, nil); err != nil {
-				workflow.GetLogger(ctx).Error("child cycle failed, skipping", "issue", x.in.IssueNum, "err", err)
+				escalateFailedChild(ctx, x.in, err)
 				continue
 			}
 			workflow.GetLogger(ctx).Info("cycle done", "issue", x.in.IssueNum)
 		}
 	}
 	return nil
+}
+
+// escalateFailedChild surfaces a failed sweep child instead of silently dropping
+// it (§40/§44 #1). A child cycle that errors never reached a terminal, so the
+// parent projects the affected issue to the human-required/blocked terminal via
+// the idempotent ApplyIssueLabels reconcile (re-running the sweep or retrying
+// the child converges, §24/§31; ApplyIssueLabels is a no-op under DryRun §42),
+// and starts the §53 failure-feedback path for the failed run (one deduped bug
+// issue keyed by `<!-- konoha-failure: <repo>-issue-<n> -->`). Best-effort:
+// neither a projection nor a feedback problem is allowed to abort the batch or
+// the sweep — the remaining children still run (§40 fail-closed, not fail-fast).
+func escalateFailedChild(ctx workflow.Context, in IssueInput, cause error) {
+	workflow.GetLogger(ctx).Error("child cycle failed, escalating", "issue", in.IssueNum, "err", cause)
+	if err := workflow.ExecuteActivity(ctx, ApplyIssueLabels, LabelsRequest{
+		Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum,
+		Labels: ProjectLabels(in.Lifecycle, stateBlocked, 0, true),
+		DryRun: in.Lifecycle.DryRun,
+	}).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("child-failure label projection failed (non-fatal)", "issue", in.IssueNum, "err", err)
+	}
+	// §39/§53: record the failed run's terminal (metrics + failure feedback),
+	// exactly like the LARGE path's recordTerminal. Best-effort so a metrics or
+	// feedback problem never aborts the batch or the sweep.
+	if err := recordTerminal(ctx, workflow.GetInfo(ctx), in, failedChildOutcome(in)); err != nil {
+		workflow.GetLogger(ctx).Error("child-failure terminal record failed (non-fatal)", "issue", in.IssueNum, "err", err)
+	}
+}
+
+// failedChildOutcome is the deterministic §40/§53 projection for a failed sweep
+// child. The WorkflowID is the child's stable ID (<repo>-issue-<n>), which is
+// both the §53 failure marker key and the dedupe key, so a retried sweep files
+// at most one bug issue; the terminal is BLOCKED (the state the §53 feedback
+// path accepts) with the human-required flag set. Pure, so the invariant test
+// can assert a failure always has a concrete projection.
+func failedChildOutcome(in IssueInput) CycleOutcome {
+	return CycleOutcome{
+		WorkflowID: fmt.Sprintf("%s-issue-%d", in.Repo, in.IssueNum), Issue: in.IssueNum,
+		Owner: in.Owner, Repo: in.Repo,
+		TerminalState: stateBlocked, HumanRequired: true,
+		EscalationReason: reasonAgentFailure,
+	}
 }
