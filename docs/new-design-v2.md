@@ -1167,6 +1167,32 @@ pull_requests:write
 
  This reduces the blast radius of a compromised or misbehaving agent.
 
+ ### Evidence redaction (§23/§27 extension)
+
+ Agent output is untrusted and may echo a credential (an env var, a URL with an
+ embedded token, a flaky tool printing its config). Before any agent output
+ becomes durable — an evidence record, a log line, or an activity error — it is
+ masked by a single `Redactor` (`redact.go`):
+
+ - Every operator-provisioned credential value registered at worker bootstrap
+   (values only; the App PEM file contents are never read) is masked
+   longest-first, so a longer secret is never partially exposed by a shorter
+   prefix. Values shorter than 4 chars are ignored.
+ - Credential-shaped patterns are always masked regardless of registration:
+   bearer tokens, `Authorization:` headers, `sk-`, `gh[pousr]_`, `xox[baprs]-`,
+   `AKIA`, `AIza`, URL userinfo (`scheme://user:pass@`), and
+   `*_PASSWORD=`/`*_TOKEN=`/`*_SECRET=` assignments.
+ - A resolved secret value injected into a child environment (#CU1) is
+   registered for the duration of that run, so it is masked even when it matches
+   no pattern.
+
+ The replacement marker is the fixed `[REDACTED]` string, alongside the other
+ contract strings; the rules themselves are not configurable. Redaction is
+ best-effort but always runs — a redaction failure never changes a verdict and
+ never lets raw output through. It does not alter the `VERDICT:`/`BLOCKING:`/
+ `NITS:`/`CONCLUDE:` parser contract, and it is a prerequisite for the durable
+ evidence store (#83).
+
 ---
 
  # 24\. Idempotency

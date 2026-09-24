@@ -511,3 +511,17 @@ required; no Temporal).
   treat a REQUEST_CHANGES verdict as silent success (§40). Changing the verdict
   parser or prompt shape touches `parseReviewOutput`/`repairSystem` in one
   place each.
+- `redact.go` owns the §23/§27 secret redaction layer: a concurrency-safe
+  `Redactor` (`Add(secrets...)`/`Redact(string)`) masks registered values
+  (longest-first, ≥4 chars) and credential-shaped patterns (bearer,
+  `Authorization:`, `sk-`, `gh[pousr]_`, `xox[baprs]-`, `AKIA`, `AIza`, URL
+  userinfo, `*_PASSWORD|*_TOKEN|*_SECRET=` assignments) with the byte-exact
+  `[REDACTED]` marker. Operator-provisioned credential env is registered once at
+  worker bootstrap (`registerOperatorSecrets`, values only — the App PEM file
+  contents are never read); `pushBranch` registers the exact installation token
+  and scrubs its git error via the shared redactor. Every place raw agent/child
+  output becomes an error string (`developer.go`/`activities.go` `opencode run`)
+  goes through `Redact`. Best-effort but unconditional; a redaction failure never
+  changes a verdict, and the `VERDICT:`/marker parser contract is untouched.
+  `RegisterSecrets` is also the #CU1 hook: an injected child-env value is
+  registered for the run so it masks even without a pattern match.

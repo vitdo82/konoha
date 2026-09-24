@@ -69,6 +69,7 @@ func gitEnv(tok string) []string {
 // the only writer for it. Output is scrubbed of the token before any error
 // bubbles up.
 func pushBranch(ctx context.Context, tok string, in PublishInput) error {
+	RegisterSecrets(tok)                 // §23: the exact installation token never reaches an error
 	base := os.Getenv("KONOHA_GIT_BASE") // e2e override: local bare remote supports hermetic tier-1
 	url := ""
 	if base == "" {
@@ -86,8 +87,7 @@ func pushBranch(ctx context.Context, tok string, in PublishInput) error {
 	stdout, err := cmdWithEnv(ctx, gitEnv(tok), in.RepoPath,
 		"git", "push", url, src+":refs/heads/"+in.Branch, "--force")
 	if err != nil {
-		scrubbed := strings.ReplaceAll(stdout, tok, "***")
-		return fmt.Errorf("git push %s: %s", in.Branch, strings.TrimSpace(scrubbed))
+		return fmt.Errorf("git push %s: %s", in.Branch, strings.TrimSpace(Redact(stdout)))
 	}
 	activity.GetLogger(ctx).Info("pushed branch", "repo", in.Owner+"/"+in.Repo, "branch", in.Branch)
 	return nil

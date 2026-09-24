@@ -126,7 +126,8 @@ the config directory (default `configs/`).
 
 Deliberately NOT configurable (contract/invariant): `konoha-parent`/`konoha-child`/
 `konoha-decision` markers, the `VERDICT:`/`BLOCKING:`/`NITS:`/`CONCLUDE:` agent
-parser contract, §6 workflow state names, and GitHub API base.
+parser contract, §6 workflow state names, the secret-redaction patterns and the
+`[REDACTED]` marker, and GitHub API base.
 
 ## Architecture
 

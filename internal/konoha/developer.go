@@ -375,7 +375,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	cmd.Env = cmdEnv(dir) // §23: no GitHub write credential reaches the agent
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return DevelopResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
+		return DevelopResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(string(out))), err)
 	}
 
 	rep, err := parseDeveloperReport(out)
