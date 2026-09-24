@@ -73,6 +73,7 @@ type DevelopResult struct {
 	ValidationSkipped bool           `json:"validationSkipped"`
 	ValidationOutput  string         `json:"validationOutput"`
 	Evidence          *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
+	Usage             HarnessUsage   `json:"usage,omitempty"`    // #87 best-effort tokens/cost (zero = not reported)
 }
 
 // developerSystem is the authoritative developer instruction block (§4.4, §26,
@@ -417,6 +418,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		return DevelopResult{
 			Blocked: true, BlockedReason: rep.BlockedReason,
 			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+			Usage:    parseHarnessUsage(combined),
 		}, nil
 	}
 
@@ -437,6 +439,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		Summary:      rep.Summary,
 		Concerns:     rep.Concerns,
 		Evidence:     &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+		Usage:        parseHarnessUsage(combined),
 	}
 	// §26: record validation output unconditionally; the publication gate
 	// decides whether a failing result still ships (never silently ignored).

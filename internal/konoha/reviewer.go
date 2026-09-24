@@ -211,7 +211,8 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	r := ReviewResult{Verdict: verdict, Summary: summary, PRNumber: req.PRNumber,
 		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits,
-		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr}}
+		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+		Usage:    parseHarnessUsage(combined)}
 	if err := ValidateReview(r); err != nil {
 		return ReviewResult{}, fmt.Errorf("agent review invalid: %w", err)
 	}

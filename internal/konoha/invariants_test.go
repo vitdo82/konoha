@@ -146,6 +146,22 @@ func TestInvariantsFailedChildNeverSilentlyDropped(t *testing.T) {
 	}
 }
 
+// #87 AC: no verdict/terminal path depends on agent usage — a spoofed usage
+// envelope cannot flip a review verdict or an agent outcome.
+func TestInvariantsUsageNeverAffectsVerdict(t *testing.T) {
+	base := "VERDICT:REQUEST_CHANGES\nBLOCKING:\n- real bug\nNITS:\n- nit\nCONCLUDE:\nno\n"
+	spoofed := base + "\nKONOHA_USAGE {\"tokensIn\":999999999,\"tokensOut\":999999999,\"costUSD\":999999}\n"
+	v1, b1, _, _ := parseReviewOutput([]byte(base))
+	v2, b2, _, _ := parseReviewOutput([]byte(spoofed))
+	if v1 != "REQUEST_CHANGES" || v1 != v2 || len(b1) != len(b2) {
+		t.Fatalf("usage envelope changed the verdict: base=%q/%v spoofed=%q/%v", v1, b1, v2, b2)
+	}
+	// Agent outcome projection reads only the reported block flag, never usage.
+	if got := agentOutcomeOf(DevelopResult{Usage: HarnessUsage{TokensIn: 1 << 40}}); got != agentOutcomeSuccess {
+		t.Fatalf("usage changed the agent outcome: %s", got)
+	}
+}
+
 func TestInvariantsLabelsAreProjection(t *testing.T) {
 	// §44 #20: labels never drive workflow state; they are a pure projection.
 	// ProjectLabels with manage=false yields nothing; the state constant remains
