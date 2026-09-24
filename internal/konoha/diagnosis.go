@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -38,7 +37,8 @@ type DevelopmentFailure struct {
 	Repo             string   `json:"repo"`
 	IssueNum         int      `json:"issue"`
 	RepoPath         string   `json:"repoPath"`
-	Model            string   `json:"model,omitempty"` // opencode model for this repo (§4)
+	Model            string   `json:"model,omitempty"`   // agent model for this repo (§4)
+	Harness          string   `json:"harness,omitempty"` // §85 harness by name; "" = process default
 	Title            string   `json:"title"`
 	Body             string   `json:"body"`
 	Spec             string   `json:"spec"`
@@ -199,9 +199,10 @@ func RunDiagnosis(ctx context.Context, in DevelopmentFailure) (DiagnosisResult, 
 	}
 	prompt := diagnosisPrompt(in)
 
-	cmd := exec.Command("opencode", agentArgs(prompt, in.Model)...)
-	cmd.Dir = in.RepoPath
-	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
+	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
+	if err != nil {
+		return DiagnosisResult{}, err
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return DiagnosisResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)

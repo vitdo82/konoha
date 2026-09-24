@@ -92,6 +92,20 @@ without restarting a completed workflow. Deliveries with an invalid
   the opencode agent must print `VERDICT:APPROVE`/`VERDICT:REQUEST_CHANGES` plus
   `BLOCKING:`/`NITS:`/`CONCLUDE:` sections. Parsing is line matching, fail-closed
   to `REQUEST_CHANGES`. Changing the prompt/output shape requires changing this parser.
+- `harness.go` owns the §85 name-based agent harness registry: the `Harness`
+  interface (`Name`/`Executable`/`Args`/`Env`/`PromptMode`/`ResolveModel`), a
+  name-keyed `Registry` (sorted `Names()`, `Lookup`, best-effort `Availability`),
+  and the built-ins `opencode` and `generic`. `opencode` is byte-for-byte
+  today's `agentArgs`/`cmdEnv`; `generic` runs an operator-declared bare
+  `executable` with `args`/`modelFlag`/`passEnv`/`promptOnStdin` from the
+  top-level `harness:` block in konoha.yaml (`{{model_args}}`/`{{prompt}}`
+  expand). **A repo names a harness, never a path**: a path-like `executable` is
+  rejected at load, as is an unknown `lifecycle.harness` /
+  `defaults.lifecycle.harness`; `GH_*` is stripped for every harness and
+  `generic` forwards only `passEnv`-listed vars (§23). Every agent exec routes
+  through `agentCommand`, which resolves the harness + an explicit model
+  (malformed → clear error, never adopted silently). The registry is internal,
+  so no exported activity/workflow func is renamed (Temporal type names).
 - **Config source of truth is `repos.yaml`.** `configs/repos.yaml` is loaded by
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values

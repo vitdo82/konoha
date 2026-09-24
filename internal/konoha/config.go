@@ -30,7 +30,8 @@ const (
 // without re-reading files.
 type LifecycleConfig struct {
 	Mode                          string            `yaml:"mode" json:"mode,omitempty"`
-	Model                         string            `yaml:"model" json:"model,omitempty"` // opencode agent model for this repo; "" = built-in default
+	Model                         string            `yaml:"model" json:"model,omitempty"`     // opencode agent model for this repo; "" = built-in default
+	Harness                       string            `yaml:"harness" json:"harness,omitempty"` // §85 agent harness by NAME; "" = defaults.lifecycle.harness
 	DevelopmentMaxComplexity      int               `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
 	MaxDevReviewAttempts          int               `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
 	Autonomy                      Autonomy          `yaml:"autonomy" json:"autonomy,omitempty"`
@@ -139,6 +140,9 @@ func (lc *LifecycleConfig) validate() error {
 		if strings.TrimSpace(m) != m || !strings.Contains(m, "/") {
 			return fmt.Errorf("lifecycle.model: %q must be a provider/model id", m)
 		}
+	}
+	if h := lc.Harness; h != "" && !knownHarnessName(h) {
+		return fmt.Errorf("lifecycle.harness: unknown harness %q (known: %s)", h, strings.Join(builtinHarnessNames, ", "))
 	}
 	if lc.DevelopmentMaxComplexity < 0 || lc.DevelopmentMaxComplexity > 10 {
 		return fmt.Errorf("lifecycle.developmentMaxComplexity: %d out of range 0-10", lc.DevelopmentMaxComplexity)

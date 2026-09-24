@@ -38,15 +38,28 @@ type LifecycleDefaults struct {
 	MaxDevReviewAttempts     int          `yaml:"maxDevReviewAttempts"`
 	MaxResolutionAttempts    int          `yaml:"maxResolutionAttempts"`
 	POGateTimeout            string       `yaml:"poGateTimeout"`
+	Harness                  string       `yaml:"harness"`
 	Merge                    MergeConfig  `yaml:"merge"`
 	Deploy                   DeployConfig `yaml:"deploy"`
 }
 
 // AppConfig is the resolved application configuration.
 type AppConfig struct {
-	Worker   WorkerConfig   `yaml:"worker"`
-	Evidence EvidenceConfig `yaml:"evidence"`
-	Defaults DefaultsConfig `yaml:"defaults"`
+	Worker   WorkerConfig         `yaml:"worker"`
+	Evidence EvidenceConfig       `yaml:"evidence"`
+	Harness  GenericHarnessConfig `yaml:"harness"`
+	Defaults DefaultsConfig       `yaml:"defaults"`
+}
+
+// GenericHarnessConfig is the operator-declared `generic` harness (§85): a bare
+// executable NAME (never a path), fixed argv with {{model_args}}/{{prompt}}
+// placeholders, the model flag, an explicit env allowlist, and prompt transport.
+type GenericHarnessConfig struct {
+	Executable    string   `yaml:"executable"`
+	Args          []string `yaml:"args"`
+	ModelFlag     string   `yaml:"modelFlag"`
+	PassEnv       []string `yaml:"passEnv"`
+	PromptOnStdin bool     `yaml:"promptOnStdin"`
 }
 
 // EvidenceConfig is the `evidence:` block (#83): the durable per-cycle evidence
@@ -84,6 +97,7 @@ func defaultAppConfig() AppConfig {
 				MaxDevReviewAttempts:     2,
 				MaxResolutionAttempts:    1,
 				POGateTimeout:            "168h",
+				Harness:                  defaultHarnessName,
 				Merge: MergeConfig{
 					Strategy:  mergeStrategySquash,
 					RequireCI: boolPtr(true),
@@ -97,6 +111,22 @@ func defaultAppConfig() AppConfig {
 			},
 		},
 	}
+}
+
+// validate gates the §85 generic harness block: the executable is a bare name
+// (name, not path) and the allowlist entries are non-empty.
+func (g GenericHarnessConfig) validate() error {
+	if e := strings.TrimSpace(g.Executable); e != "" {
+		if e != g.Executable || strings.ContainsAny(e, `/\`) || strings.Contains(e, "..") {
+			return fmt.Errorf("harness.generic.executable: %q must be a bare executable name, not a path", g.Executable)
+		}
+	}
+	for _, k := range g.PassEnv {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("harness.generic.passEnv: entries must be non-empty env var names")
+		}
+	}
+	return nil
 }
 
 // boolPtr is a helper for the optional merge.requireCI bool default.
@@ -217,6 +247,12 @@ func (c AppConfig) validate() error {
 	}
 	if _, err := time.ParseDuration(c.Defaults.Lifecycle.POGateTimeout); err != nil {
 		return fmt.Errorf("defaults.lifecycle.poGateTimeout %q invalid: %v", c.Defaults.Lifecycle.POGateTimeout, err)
+	}
+	if h := c.Defaults.Lifecycle.Harness; h != "" && !knownHarnessName(h) {
+		return fmt.Errorf("defaults.lifecycle.harness: unknown harness %q", h)
+	}
+	if err := c.Harness.validate(); err != nil {
+		return err
 	}
 	d := c.Defaults.Lifecycle
 	if d.DevelopmentMaxComplexity < 0 || d.DevelopmentMaxComplexity > 10 {

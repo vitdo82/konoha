@@ -21,6 +21,7 @@ repos:
     schedule: "*/5 * * * *"
     lifecycle:
       mode: supervised-autonomous      # review-only | supervised-autonomous
+      harness: opencode                # §85 agent harness by NAME (never a path)
       developmentMaxComplexity: 4      # §11 executable ceiling
       maxDevReviewAttempts: 2          # §16 repair-loop cap
       autonomy:
@@ -96,8 +97,15 @@ worker:
   sweepRetryMaxAttempts: 2
 evidence:
   dir: .konoha/evidence           # durable per-cycle evidence root (see below)
+harness:                          # §85 generic harness (used when a repo selects `generic`)
+  executable: ""                  # bare executable NAME (no path separators)
+  args: ["run", "{{model_args}}", "{{prompt}}"]  # {{model_args}}/{{prompt}} expand
+  modelFlag: "--model"
+  passEnv: ["PATH", "HOME", "LANG"]  # explicit allowlist; GH_* is always stripped
+  promptOnStdin: false            # true = prompt via stdin, not argv
 defaults:
   lifecycle:
+    harness: opencode             # §85 fallback harness name when a repo leaves it unset
     developmentMaxComplexity: 4   # fallback when repos.yaml leaves it unset
     maxDevReviewAttempts: 2
     maxResolutionAttempts: 1      # §37 disagreement-resolution cap
@@ -113,6 +121,14 @@ defaults:
 ```
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
+
+**Agent harness (§85).** A repo selects an agent harness by **name**
+(`lifecycle.harness`, fallback `defaults.lifecycle.harness`, default
+`opencode`) — config never names an executable path. Built-ins: `opencode`
+(byte-for-byte today's argv/env) and `generic` (the `harness:` block above, whose
+bare `executable` plus `args`/`modelFlag`/`passEnv` are operator-declared). An
+unknown harness name fails at load; `GH_*` is stripped for every harness and
+`generic` forwards only `passEnv`-listed variables.
 
 ### Durable per-cycle evidence (`evidence.dir`)
 
