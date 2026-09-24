@@ -31,6 +31,7 @@ const (
 	reasonMergeFailed              = "merge_failed"    // §49: PR merge failed after approval
 	reasonDeployFailed             = "deploy_failed"   // §51: post-deploy verification failed
 	reasonApprovalDenied           = "approval_denied" // §55: human denied the pre-execution approval gate
+	reasonAgentBlocked             = "agent_blocked"   // #84: agent reported it cannot proceed / needs input
 )
 
 func validHumanReason(r string) bool {
@@ -38,7 +39,8 @@ func validHumanReason(r string) bool {
 	case reasonRequirementsAmbiguous, reasonSecuritySensitive, reasonArchitectureChange,
 		reasonRepeatedReviewFailure, reasonInsufficientTestCoverage, reasonExternalDependency,
 		reasonPolicyViolation, reasonAgentFailure, reasonConflictingRequirements,
-		reasonCIFailed, reasonMergeFailed, reasonDeployFailed, reasonApprovalDenied:
+		reasonCIFailed, reasonMergeFailed, reasonDeployFailed, reasonApprovalDenied,
+		reasonAgentBlocked:
 		return true
 	}
 	return false

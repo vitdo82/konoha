@@ -44,6 +44,10 @@ const (
 	mGroomed                  = "groomed_count"        // §56 ready issues filed
 	mGroomRejected            = "groom_rejected_count" // §56 raw items left unactionable
 	mGroomRejectRate          = "groom_reject_rate"    // §56 rejected / processed
+	// #84 explicit three-outcome mirror counters (per-outcome counts; derived
+	// gauges land in a later increment): agent_outcome_<lower> / verification_outcome_<lower>.
+	mAgentOutcomePrefix        = "agent_outcome_"
+	mVerificationOutcomePrefix = "verification_outcome_"
 )
 
 // metricsRegistry is the in-process §39 sink. All mutation happens from
@@ -90,23 +94,29 @@ func (r *metricsRegistry) get(name string) float64 {
 // CycleOutcome carries the §39 fields a workflow records once it terminates.
 // Recorded as an activity payload so it is replay-safe.
 type CycleOutcome struct {
-	WorkflowID       string  `json:"workflowId"`
-	Issue            int     `json:"issue"`
-	Owner            string  `json:"owner"`
-	Repo             string  `json:"repo"`
-	TerminalState    string  `json:"terminalState,omitempty"` // CLOSED/FAILED/BLOCKED/CANCELLED/HUMAN_REQUIRED/...
-	AutonomousClose  bool    `json:"autonomousClose"`         // true only when policy closed it (no human gate)
-	HumanRequired    bool    `json:"humanRequired"`
-	EscalationReason string  `json:"escalationReason,omitempty"` // §18 trigger, if any
-	Route            string  `json:"route,omitempty"`            // SMALL|LARGE
-	Complexity       int     `json:"complexity,omitempty"`
-	Confidence       string  `json:"confidence,omitempty"`
-	Attempts         int     `json:"attempts,omitempty"`
-	ReviewRounds     int     `json:"reviewRounds,omitempty"`
-	Disagreements    int     `json:"disagreements,omitempty"`
-	POInterventions  int     `json:"poInterventions,omitempty"`
-	DurationSeconds  float64 `json:"durationSeconds,omitempty"`
-	EvidenceError    string  `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
+	WorkflowID      string `json:"workflowId"`
+	Issue           int    `json:"issue"`
+	Owner           string `json:"owner"`
+	Repo            string `json:"repo"`
+	TerminalState   string `json:"terminalState,omitempty"` // CLOSED/FAILED/BLOCKED/CANCELLED/HUMAN_REQUIRED/...
+	AutonomousClose bool   `json:"autonomousClose"`         // true only when policy closed it (no human gate)
+	HumanRequired   bool   `json:"humanRequired"`
+	// #84 explicit three-outcome evidence (descriptive only; the §6 TerminalState
+	// stays authoritative §44 #20). stampOutcome fills defaults + Conditions.
+	AgentOutcome        AgentOutcome        `json:"agentOutcome,omitempty"`
+	AgentMessage        string              `json:"agentMessage,omitempty"` // agent's own blocked/failure explanation
+	VerificationOutcome VerificationOutcome `json:"verificationOutcome,omitempty"`
+	Conditions          []Condition         `json:"conditions,omitempty"`
+	EscalationReason    string              `json:"escalationReason,omitempty"` // §18 trigger, if any
+	Route               string              `json:"route,omitempty"`            // SMALL|LARGE
+	Complexity          int                 `json:"complexity,omitempty"`
+	Confidence          string              `json:"confidence,omitempty"`
+	Attempts            int                 `json:"attempts,omitempty"`
+	ReviewRounds        int                 `json:"reviewRounds,omitempty"`
+	Disagreements       int                 `json:"disagreements,omitempty"`
+	POInterventions     int                 `json:"poInterventions,omitempty"`
+	DurationSeconds     float64             `json:"durationSeconds,omitempty"`
+	EvidenceError       string              `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the
@@ -138,6 +148,14 @@ func RecordCycleMetrics(ctx context.Context, o CycleOutcome) error {
 	}
 	for i := 0; i < o.POInterventions; i++ {
 		sink.inc(mPOInterventions)
+	}
+	// #84: mirror the explicit three-outcome counts so derived gauges can consume
+	// them. Only a populated outcome is counted (never a fabricated SKIPPED).
+	if o.AgentOutcome != "" {
+		sink.inc(mAgentOutcomePrefix + strings.ToLower(string(o.AgentOutcome)))
+	}
+	if o.VerificationOutcome != "" {
+		sink.inc(mVerificationOutcomePrefix + strings.ToLower(string(o.VerificationOutcome)))
 	}
 
 	switch o.TerminalState {
