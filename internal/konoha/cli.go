@@ -116,6 +116,7 @@ func Main() {
 		appCfg = cfg
 	}
 	applyEnvOverrides()
+	registerOperatorSecrets() // §23: mask operator-provisioned credentials in captured output
 
 	addr := os.Getenv("TEMPORAL_ADDRESS")
 	if addr == "" {
