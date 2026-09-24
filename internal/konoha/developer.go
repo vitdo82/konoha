@@ -24,6 +24,11 @@ import (
 type DeveloperReport struct {
 	Summary  string   `json:"summary"`
 	Concerns []string `json:"concerns"`
+	// Blocked is the #84 agent-REPORTED "cannot proceed / needs input" signal,
+	// distinct from a process failure: the workflow routes it to the human path
+	// (§18/§40) instead of guessing or entering the repair loop.
+	Blocked       bool   `json:"blocked,omitempty"`
+	BlockedReason string `json:"blockedReason,omitempty"`
 }
 
 // DevelopRequest carries the structured context for one development attempt.
@@ -60,6 +65,8 @@ type DevelopResult struct {
 	ChangedFiles      []string       `json:"changedFiles"`
 	Summary           string         `json:"summary"`
 	Concerns          []string       `json:"concerns"`
+	Blocked           bool           `json:"blocked,omitempty"`       // #84 agent-reported blocked (no deliverable)
+	BlockedReason     string         `json:"blockedReason,omitempty"` // why the agent cannot proceed
 	Validated         bool           `json:"validated"`
 	ValidationSkipped bool           `json:"validationSkipped"`
 	ValidationOutput  string         `json:"validationOutput"`
@@ -91,7 +98,11 @@ Emit exactly ONE JSON object and nothing else - no prose before or after, no mar
 {"summary":"<concise description of the change>",
  "concerns":["<risk or open item, if any>"]}
 
-summary must be non-empty. concerns may be empty but must never contain blank entries. After emitting that JSON, stop: the worktree state (git commit) is captured by the system, not by your prose.`
+summary must be non-empty. concerns may be empty but must never contain blank entries. After emitting that JSON, stop: the worktree state (git commit) is captured by the system, not by your prose.
+
+If you cannot proceed - the specification is ambiguous, contradicts the repository, or needs input you do not have - do NOT guess and do NOT commit. Emit exactly one JSON object instead, and stop:
+{"blocked":true,"blockedReason":"<why you cannot proceed>"}
+blockedReason must be non-empty. A blocked report sends this issue to a human; it is never treated as a failed attempt.`
 
 // listSection writes a titled bullet-list section, skipping a title when the
 // list is empty.
@@ -152,6 +163,14 @@ func parseDeveloperReport(raw []byte) (DeveloperReport, error) {
 // a non-empty summary and no blank concern entries. Malformed output fails
 // closed and triggers the workflow's bounded retry.
 func ValidateDeveloperReport(r DeveloperReport) error {
+	if r.Blocked {
+		// #84: a blocked agent could not produce a deliverable, so a summary is
+		// not required — but the reason it cannot proceed is (§36 fail-closed).
+		if strings.TrimSpace(r.BlockedReason) == "" {
+			return fmt.Errorf("blocked report requires a non-empty blockedReason")
+		}
+		return nil
+	}
 	if strings.TrimSpace(r.Summary) == "" {
 		return fmt.Errorf("summary is required")
 	}
@@ -386,6 +405,16 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	}
 	if err := ValidateDeveloperReport(rep); err != nil {
 		return DevelopResult{}, fmt.Errorf("agent report invalid: %w", err)
+	}
+
+	// #84: an agent-reported BLOCKED is a successful *process* run with no
+	// deliverable. Return it (rather than an error) so the workflow routes it to
+	// the human path instead of the repair loop; no commit/validation is expected.
+	if rep.Blocked {
+		return DevelopResult{
+			Blocked: true, BlockedReason: rep.BlockedReason,
+			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+		}, nil
 	}
 
 	// The agent must have committed locally (§4.4); a dirty worktree is a

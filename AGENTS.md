@@ -346,7 +346,10 @@ required; no Temporal).
   `human_escalation_rate`, `split_rate`, `review_disagreement_rate`.
   `MetricsText`/`StartMetricsServer` export the registry with STABLE §39 names
   (no prometheus dep in go.mod — stdlib `/metrics` only; METRICS_ADDR env);
-  `logCycleEvent` emits the §39 field set on every workflow transition.
+  `logCycleEvent` emits the §39 field set on every workflow transition. It also
+  mirrors the #84 explicit three-outcome counts (`agent_outcome_<lower>` /
+  `verification_outcome_<lower>`) from `CycleOutcome`; existing derived gauges
+  are unchanged (only a populated outcome is counted).
 - `webhook.go` owns the §32 event-driven fast-path: `StartWebhookServer`
   (needs `GH_WEBHOOK_SECRET` + `WEBHOOK_ADDR`) serves `/webhook` and verifies
   each delivery's `X-Hub-Signature-256` HMAC-SHA256 (constant-time, reject on
@@ -541,3 +544,16 @@ required; no Temporal).
   prompt/stdout/stderr into `AgentEvidence` on their result types for this.
   Never call `activity.GetLogger` in these activities (unit tests use a
   non-Temporal ctx, which panics).
+- `outcome.go` owns the #84 explicit three-outcome evidence record written into
+  `outcome.json`: `AgentOutcome ∈ {SUCCESS,FAILED,TIMED_OUT,SKIPPED,BLOCKED}`
+  and `VerificationOutcome ∈ {SUCCESS,FAILED,SKIPPED,ERROR}` plus the ordered
+  `Condition{Type,Status,Reason,Message,At}` list (agent → verification →
+  terminal). The §6 `terminalState` stays authoritative (§44 #20); outcomes are
+  descriptive. `stampOutcome` (called by `recordTerminal`) defaults an absent
+  agent/verification outcome to `SKIPPED` — never silently absent (§40) — and
+  attaches the conditions with the deterministic `workflow.Now(ctx)` timestamp.
+  A `BLOCKED` agent is agent-reported ("cannot proceed / needs input"), distinct
+  from a process failure: it routes to `HUMAN_REQUIRED` (`reasonAgentBlocked`)
+  and never the repair loop. The Developer/Repair output contract gained a
+  `{"blocked":true,"blockedReason":"..."}` variant (validated fail-closed in
+  `ValidateDeveloperReport`), parsed into `DevelopResult.Blocked`.

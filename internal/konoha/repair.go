@@ -50,7 +50,11 @@ Emit exactly ONE JSON object and nothing else - no prose before or after, no mar
 {"summary":"<concise description of the repair>",
   "concerns":["<risk or open item, if any>"]}
 
-summary must be non-empty. concerns may be empty but must never contain blank entries. After emitting that JSON, stop: the worktree state (git commit) is captured by the system, not by your prose.`
+summary must be non-empty. concerns may be empty but must never contain blank entries. After emitting that JSON, stop: the worktree state (git commit) is captured by the system, not by your prose.
+
+If you cannot proceed - a BLOCKING finding is contradictory, needs input you do not have, or cannot be fixed safely - do NOT guess and do NOT commit. Emit exactly one JSON object instead, and stop:
+{"blocked":true,"blockedReason":"<why you cannot proceed>"}
+blockedReason must be non-empty. A blocked report sends this issue to a human; it is never treated as a failed attempt.`
 
 // repairPrompt assembles the structured context for a fresh Repair execution
 // (§4.6/§35). System instructions are compiled-in; the developer-style issue
@@ -120,6 +124,8 @@ func RunRepair(ctx context.Context, in RepairRequest) (DevelopResult, error) {
 	if err != nil {
 		return DevelopResult{}, err
 	}
-	res.Summary = strings.TrimSpace("repair: " + res.Summary)
+	if !res.Blocked {
+		res.Summary = strings.TrimSpace("repair: " + res.Summary)
+	}
 	return res, nil
 }

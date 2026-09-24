@@ -2404,3 +2404,34 @@ AI → AI → AI → AI → DONE
  In short: **humans define policies and handle exceptions; AI agents perform the actual software lifecycle.**
 
  The key architectural change from the previous version is the removal of the routine human/PO gate. The human-signal mechanism remains in the implementation, reframed as **`HUMAN_REQUIRED` escalation** — the safety valve, without a human clicking "close" on every successful ticket.
+## 57. Explicit three-outcome evidence record
+
+The terminal §6 state (`CLOSED` / `HUMAN_REQUIRED` / `BLOCKED` / `FAILED` / …)
+stays authoritative (§44 #20); it is never derived from the record below.
+Alongside it, every terminal cycle writes `outcome.json` with an explicit,
+queryable separation so "which step failed" is answerable from evidence rather
+than from Temporal history (which ages out):
+
+- `agentOutcome ∈ {SUCCESS, FAILED, TIMED_OUT, SKIPPED, BLOCKED}` — the outcome
+  of the develop/repair execution. `BLOCKED` is **agent-reported** ("cannot
+  proceed / needs input"), distinct from a process failure (non-zero exit). A
+  blocked agent is routed to the human path, never the repair loop.
+- `verificationOutcome ∈ {SUCCESS, FAILED, SKIPPED, ERROR}` — the §26
+  verification run for the attempt. An agent failure (or a blocked agent) records
+  `SKIPPED`, never an absent field (§40).
+- ordered `conditions` — `agent` → `verification` → `terminal`, each
+  `Condition{Type, Status, Reason, Message, At}`.
+
+The record is descriptive evidence only; the workflow's §6 state machine is
+unchanged. The canonical triple the record must never collapse:
+
+| agent_result | verification_result | terminal_state (§6) |
+|---|---|---|
+| `SUCCESS` | `FAILED` | `HUMAN_REQUIRED` (or the state the workflow records) |
+| `SUCCESS` | `SUCCESS` / `SKIPPED` | `CLOSED` on a policy-permitted close |
+| `FAILED` | `SKIPPED` | `BLOCKED` / `FAILED` / `HUMAN_REQUIRED` |
+| `BLOCKED` | `SKIPPED` | `HUMAN_REQUIRED` (§18 channel) |
+
+Per-outcome counts are mirrored into the §39 sink
+(`agent_outcome_<lower>` / `verification_outcome_<lower>`) so derived gauges can
+consume them; the existing derived gauges are unchanged.

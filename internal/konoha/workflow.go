@@ -185,9 +185,19 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			workflow.GetLogger(ctx).Error("evidence write failed (non-fatal)", "err", err)
 		}
 	}
+	// #84: explicit three-outcome evidence tracked across the cycle. Terminals
+	// inherit the latest agent/verification outcome (defaulting to SKIPPED via
+	// recordTerminal's stampOutcome, never silently absent §40).
+	agentOut, verifOut := AgentOutcome(""), VerificationOutcome("")
 	// finish records a terminal outcome through the shared recorder, tagging it
-	// with any prior evidence-write failure.
+	// with the tracked outcomes and any prior evidence-write failure.
 	finish := func(out CycleOutcome) error {
+		if out.AgentOutcome == "" {
+			out.AgentOutcome = agentOut
+		}
+		if out.VerificationOutcome == "" {
+			out.VerificationOutcome = verifOut
+		}
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
 		}
@@ -283,6 +293,26 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		})
 	}
 
+	// blockedTerminal routes an agent-REPORTED BLOCKED outcome to the human path
+	// (#84): the agent could not proceed, so the workflow must never enter the
+	// repair loop or silently fail. reason is the agent's own explanation.
+	blockedTerminal := func(reason string) error {
+		transition(stateHumanRequired)
+		projectLabels(stateHumanRequired, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState:       stateHumanRequired,
+			HumanRequired:       true,
+			EscalationReason:    reasonAgentBlocked,
+			AgentOutcome:        agentOutcomeBlocked,
+			AgentMessage:        reason,
+			VerificationOutcome: verificationSkipped,
+			Attempts:            lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
 	// gateStep enforces the §55 pre-execution approval gate before a mutating
 	// step. proceed=false with err=nil means the gate already recorded a terminal
 	// (deny → HUMAN_REQUIRED, timeout → BLOCKED) and the workflow must stop; a
@@ -345,7 +375,12 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return err
 	}
 	lastAttempts++
+	agentOut, verifOut = agentOutcomeOf(dev), verificationOutcomeOf(dev)
 	writeAgentEvidence(writeEvidence, dev.Evidence, dev, dev.ValidationOutput)
+	if dev.Blocked {
+		// #84: an agent-reported block is not a failed attempt — route to human.
+		return blockedTerminal(dev.BlockedReason)
+	}
 
 	// -- §20 risk gate before any GitHub mutation --
 	var labels []string
@@ -469,6 +504,11 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return err
 		}
 		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
+		agentOut, verifOut = agentOutcomeOf(repaired), verificationOutcomeOf(repaired)
+		if repaired.Blocked {
+			// #84: a blocked repair must not loop — route to the human path.
+			return blockedTerminal(repaired.BlockedReason)
+		}
 		// re-publish the repaired commit onto the same branch (idempotent).
 		pubIn.CommitSHA = repaired.CommitSHA
 		pubIn.RepoPath = in.RepoPath
@@ -745,6 +785,9 @@ func auditActor(res ApprovalResult) string {
 // run's terminal state + autonomous-vs-human outcome (no silent drops). It also
 // lands the #83 outcome.json evidence (best-effort, never changes the state).
 func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, out CycleOutcome) error {
+	// #84: fill the explicit three-outcome evidence (defaults to SKIPPED, never
+	// silently absent §40) and stamp the ordered conditions deterministically.
+	out = stampOutcome(out, workflow.Now(ctx))
 	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
 	// child ID for a sweep-escalated failure), so evidence is stable under retry.
 	cycleID := out.WorkflowID
@@ -895,6 +938,10 @@ func failedChildOutcome(in IssueInput) CycleOutcome {
 		WorkflowID: fmt.Sprintf("%s-issue-%d", in.Repo, in.IssueNum), Issue: in.IssueNum,
 		Owner: in.Owner, Repo: in.Repo,
 		TerminalState: stateBlocked, HumanRequired: true,
-		EscalationReason: reasonAgentFailure,
+		// #84: a failed child/agent never ran verification — record it as SKIPPED
+		// explicitly (never silently absent, §40).
+		AgentOutcome:        agentOutcomeFailed,
+		VerificationOutcome: verificationSkipped,
+		EscalationReason:    reasonAgentFailure,
 	}
 }

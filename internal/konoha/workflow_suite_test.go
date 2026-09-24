@@ -178,6 +178,75 @@ func TestWorkflowEvidenceWriteFailureNonFatal(t *testing.T) {
 	}
 }
 
+// #84/AC4: outcome.json's terminalState byte-equals the authoritative §6 state
+// the workflow records (queried), and the explicit agent/verification outcomes
+// + ordered conditions are present.
+func TestWorkflowOutcomeEvidenceTerminalMatchesState(t *testing.T) {
+	resetMetrics()
+	root := t.TempDir()
+	saved := appCfg
+	appCfg.Evidence.Dir = root
+	t.Cleanup(func() { appCfg = saved })
+
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	env.RegisterActivity(WriteCycleEvidence)
+	runAndAssert(t, env)
+
+	want := terminalState(t, env)
+	matches, err := filepath.Glob(filepath.Join(root, "cycles", "*", evidenceOutcome))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected exactly one outcome.json, got %v (err=%v)", matches, err)
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out CycleOutcome
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("outcome.json must decode: %v", err)
+	}
+	if out.TerminalState != want {
+		t.Fatalf("outcome.json terminalState = %q, want the §6 state %q", out.TerminalState, want)
+	}
+	if out.AgentOutcome != agentOutcomeSuccess || out.VerificationOutcome != verificationSuccess {
+		t.Fatalf("outcome = %+v, want agent SUCCESS / verification SUCCESS", out)
+	}
+	if len(out.Conditions) != 3 || out.Conditions[2].Status != want {
+		t.Fatalf("conditions = %+v, want ordered terminal condition %q", out.Conditions, want)
+	}
+}
+
+// #84/AC3: an agent that reports BLOCKED routes to the human path — it never
+// publishes, never enters the repair loop, and never closes (§40).
+func TestWorkflowBlockedAgentRoutesHumanRequired(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
+		WorktreeDir: "/tmp/wt", Blocked: true, BlockedReason: "spec contradicts repo",
+		Evidence: &AgentEvidence{Prompt: "p", Stdout: "s"},
+	}, nil)
+	published, repaired, closed := 0, 0, 0
+	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(
+		func(context.Context, PublishInput) (PublishResult, error) { published++; return PublishResult{}, nil })
+	env.OnActivity(RunRepair, mock.Anything, mock.Anything).Return(
+		func(context.Context, RepairRequest) (DevelopResult, error) { repaired++; return DevelopResult{}, nil })
+	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(
+		func(context.Context, StateRequest) error { closed++; return nil })
+
+	runAndAssert(t, env)
+	if got := terminalState(t, env); got != stateHumanRequired {
+		t.Fatalf("blocked agent terminal = %q, want HUMAN_REQUIRED", got)
+	}
+	if published != 0 || repaired != 0 || closed != 0 {
+		t.Fatalf("blocked agent must not publish/repair/close (pub=%d repair=%d close=%d)", published, repaired, closed)
+	}
+	if v := sink.get(mAgentOutcomePrefix + "blocked"); v != 1 {
+		t.Fatalf("agent_outcome_blocked = %v, want 1", v)
+	}
+}
+
 // §22/§41: the ownership transition posts the claim note exactly once, and a
 // label-projection failure never aborts the cycle (§40: no silent success, but
 // also no fail-open on an unrelated best-effort error).

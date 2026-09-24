@@ -148,6 +148,60 @@ func TestValidateDeveloperReport(t *testing.T) {
 	}
 }
 
+// #84: the agent may report BLOCKED (cannot proceed / needs input) instead of a
+// deliverable. A blocked report needs a non-empty reason but no summary; a
+// blocked report without a reason fails closed (§36).
+func TestValidateDeveloperReportBlocked(t *testing.T) {
+	if err := ValidateDeveloperReport(DeveloperReport{Blocked: true, BlockedReason: "need input"}); err != nil {
+		t.Fatalf("blocked report with reason rejected: %v", err)
+	}
+	if err := ValidateDeveloperReport(DeveloperReport{Blocked: true, BlockedReason: "  "}); err == nil {
+		t.Fatal("blocked report without a reason must fail closed")
+	}
+	if err := ValidateDeveloperReport(DeveloperReport{Blocked: true}); err == nil {
+		t.Fatal("blocked report without a reason must fail closed")
+	}
+}
+
+// #84: a blocked report parses from the agent's single JSON object.
+func TestParseDeveloperReportBlocked(t *testing.T) {
+	r, err := parseDeveloperReport([]byte(`{"blocked":true,"blockedReason":"spec contradicts repo"}`))
+	if err != nil {
+		t.Fatalf("parse blocked report: %v", err)
+	}
+	if !r.Blocked || r.BlockedReason != "spec contradicts repo" {
+		t.Fatalf("blocked report = %+v", r)
+	}
+}
+
+// #84: a blocked Developer run returns a BLOCKED result (not an error, not a
+// commit) so the workflow can route it to the human path.
+func TestRunDeveloperBlockedReport(t *testing.T) {
+	ctx := context.Background()
+	repoPath, baseSHA := initGitRepo(t)
+	stubDir := t.TempDir()
+	writeTestFile(t, stubDir, "opencode", "#!/bin/sh\necho '{\"blocked\":true,\"blockedReason\":\"need input\"}'\nexit 0\n")
+	if err := os.Chmod(filepath.Join(stubDir, "opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	res, err := RunDeveloper(ctx, DevelopRequest{
+		Owner: "o", Repo: "r", IssueNum: 1, RepoPath: repoPath,
+		WorkflowID: "wf", BaseSHA: baseSHA,
+		Title: "t", Body: "b", Spec: "SPEC.md",
+	})
+	if err != nil {
+		t.Fatalf("blocked run must not error (it is not a process failure): %v", err)
+	}
+	if !res.Blocked || res.BlockedReason != "need input" {
+		t.Fatalf("blocked result = %+v", res)
+	}
+	if res.CommitSHA != "" || res.Validated {
+		t.Fatalf("blocked run must have no commit and no passed verification: %+v", res)
+	}
+}
+
 // §23: no GitHub write credential reaches the developer agent env.
 func TestRunDeveloperEnvHasNoGitHubCredential(t *testing.T) {
 	creds := map[string]string{
