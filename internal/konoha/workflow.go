@@ -189,6 +189,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// inherit the latest agent/verification outcome (defaulting to SKIPPED via
 	// recordTerminal's stampOutcome, never silently absent §40).
 	agentOut, verifOut := AgentOutcome(""), VerificationOutcome("")
+	// #87: best-effort agent usage aggregated across the cycle's agent runs
+	// (develop/repair/review; zero when no harness reported any).
+	var usage HarnessUsage
 	// finish records a terminal outcome through the shared recorder, tagging it
 	// with the tracked outcomes and any prior evidence-write failure.
 	finish := func(out CycleOutcome) error {
@@ -197,6 +200,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		}
 		if out.VerificationOutcome == "" {
 			out.VerificationOutcome = verifOut
+		}
+		if out.Usage.IsZero() {
+			out.Usage = usage
 		}
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
@@ -380,6 +386,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 	lastAttempts++
 	agentOut, verifOut = agentOutcomeOf(dev), verificationOutcomeOf(dev)
+	usage.add(dev.Usage) // #87
 	writeAgentEvidence(writeEvidence, dev.Evidence, dev, dev.ValidationOutput)
 	if dev.Blocked {
 		// #84: an agent-reported block is not a failed attempt — route to human.
@@ -465,6 +472,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return err
 		}
 		lastReviewRounds++
+		usage.add(rev.Usage) // #87
 		e := evidenceOf(rev.Evidence)
 		writeEvidence(EvidenceRequest{Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
 			Result: evidenceResultJSON(rev), Diff: diff})
@@ -515,6 +523,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return err
 		}
 		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
+		usage.add(repaired.Usage) // #87
 		agentOut, verifOut = agentOutcomeOf(repaired), verificationOutcomeOf(repaired)
 		if repaired.Blocked {
 			// #84: a blocked repair must not loop — route to the human path.

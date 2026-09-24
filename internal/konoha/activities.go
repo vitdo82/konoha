@@ -236,6 +236,7 @@ type ReviewResult struct {
 	Blocking  []string       `json:"blocking,omitempty"`
 	Nits      []string       `json:"nits,omitempty"`
 	Evidence  *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
+	Usage     HarnessUsage   `json:"usage,omitempty"`    // #87 best-effort tokens/cost (zero = not reported)
 }
 
 // FetchDiff pulls the PR diff via the gh CLI.
@@ -283,7 +284,8 @@ DIFF:
 	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum,
 		Blocking: blocking, Nits: nits,
-		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr}}, nil
+		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr},
+		Usage:    parseHarnessUsage(combined)}, nil
 }
 
 // selfReviewError reports whether gh refused a formal review because the App

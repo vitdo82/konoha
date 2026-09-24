@@ -376,7 +376,18 @@ required; no Temporal).
   `logCycleEvent` emits the §39 field set on every workflow transition. It also
   mirrors the #84 explicit three-outcome counts (`agent_outcome_<lower>` /
   `verification_outcome_<lower>`) from `CycleOutcome`; existing derived gauges
-  are unchanged (only a populated outcome is counted).
+  are unchanged (only a populated outcome is counted). It also accumulates the
+  #87 `agent_tokens_in_total`/`agent_tokens_out_total`/`agent_cost_usd_total`
+  counters and the derived `cost_per_completed_issue` gauge (total reported cost
+  / total completes) from `CycleOutcome.Usage`.
+- `usage.go` owns #87 agent token/cost accounting: `HarnessUsage`
+  (`TokensIn`/`TokensOut`/`CostUSD`) is the optional usage a harness may report,
+  parsed best-effort by `parseHarnessUsage` from a `KONOHA_USAGE {…}` line on the
+  agent stream. Absence/malformed/negative values contribute ZERO — never
+  estimated or inferred (a fabricated number is worse than a missing one). The
+  developer/repair and reviewer results carry the per-run `Usage`, the workflow
+  aggregates it into `CycleOutcome.Usage` (→ `outcome.json`), and usage is
+  observability only: no verdict, route, or terminal-state path reads it.
 - `webhook.go` owns the §32 event-driven fast-path: `StartWebhookServer`
   (needs `GH_WEBHOOK_SECRET` + `WEBHOOK_ADDR`) serves `/webhook` and verifies
   each delivery's `X-Hub-Signature-256` HMAC-SHA256 (constant-time, reject on

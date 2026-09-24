@@ -91,12 +91,18 @@ func TestMetricsStableNames(t *testing.T) {
 	record(1, stateClosed, true)
 	recordHuman(2)
 	RecordCycleMetrics(bg(), CycleOutcome{WorkflowID: "w-lrg", Issue: 3, Route: stateLarge, Complexity: 7})
+	// #87: usage counters + derived gauge carry stable names too.
+	RecordCycleMetrics(bg(), CycleOutcome{
+		WorkflowID: "w-cost", Issue: 4, TerminalState: stateClosed, AutonomousClose: true,
+		Usage: HarnessUsage{TokensIn: 11, TokensOut: 7, CostUSD: 0.4},
+	})
 
 	text := MetricsText()
 	for _, name := range []string{
 		mCyclesStarted, mCyclesCompleted, mCyclesCompletedAuton, mCyclesCompletedHuman,
 		mHumanEscalations, mAutonomousRate, mDidHumanEscalationRate, mSplitRate,
 		mDevelopmentAttempts, mReviewRounds, mReviewDisagreements, mSplitSmall, mSplitLarge,
+		mAgentTokensIn, mAgentTokensOut, mAgentCostUSD, mCostPerCompletedIssue,
 	} {
 		if !strings.Contains(text, name) {
 			t.Fatalf("stable metric %q missing from export:\n%s", name, text)

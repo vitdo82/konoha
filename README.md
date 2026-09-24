@@ -179,6 +179,18 @@ redacted via the §23 `Redactor` and atomic (temp file + rename, owner-only
 perms). Under `dryRun` (§42) evidence is namespaced under `dryrun/` — it is a
 record, not a mutation.
 
+### Agent token/cost accounting (§39)
+
+A harness may report per-step usage on its output stream as a line starting
+with `KONOHA_USAGE` followed by `{"tokensIn":…,"tokensOut":…,"costUSD":…}`.
+Parsing is **best-effort**: when a harness reports nothing (the default for
+`opencode`) the contribution is zero and no number is ever estimated or
+inferred. Per-agent usage lands in the cycle's `result.json`, the cycle
+aggregate in `outcome.json`, and the §39 sink accumulates
+`agent_tokens_in_total`, `agent_tokens_out_total`, `agent_cost_usd_total` plus a
+derived `cost_per_completed_issue` gauge (total reported cost / total completes).
+Usage is observability only — no verdict or terminal state reads it.
+
 ### Env override matrix
 
 | Setting | Env override | Notes |

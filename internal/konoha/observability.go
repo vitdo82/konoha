@@ -41,9 +41,15 @@ const (
 	mReviewDisagreementRate   = "review_disagreement_rate"
 	mCycleDurationLast        = "cycle_duration_seconds_last"
 	mEstimateComplexityPrefix = "estimate_complexity_"
-	mGroomed                  = "groomed_count"        // §56 ready issues filed
-	mGroomRejected            = "groom_rejected_count" // §56 raw items left unactionable
-	mGroomRejectRate          = "groom_reject_rate"    // §56 rejected / processed
+	// #87 agent token/cost accounting (best-effort; zero = harness reported
+	// nothing, never estimated) + the derived cost_per_completed_issue gauge.
+	mAgentTokensIn         = "agent_tokens_in_total"
+	mAgentTokensOut        = "agent_tokens_out_total"
+	mAgentCostUSD          = "agent_cost_usd_total"
+	mCostPerCompletedIssue = "cost_per_completed_issue"
+	mGroomed               = "groomed_count"        // §56 ready issues filed
+	mGroomRejected         = "groom_rejected_count" // §56 raw items left unactionable
+	mGroomRejectRate       = "groom_reject_rate"    // §56 rejected / processed
 	// #84 explicit three-outcome mirror counters (per-outcome counts; derived
 	// gauges land in a later increment): agent_outcome_<lower> / verification_outcome_<lower>.
 	mAgentOutcomePrefix        = "agent_outcome_"
@@ -116,6 +122,7 @@ type CycleOutcome struct {
 	Disagreements       int                 `json:"disagreements,omitempty"`
 	POInterventions     int                 `json:"poInterventions,omitempty"`
 	DurationSeconds     float64             `json:"durationSeconds,omitempty"`
+	Usage               HarnessUsage        `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
 	EvidenceError       string              `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
 }
 
@@ -175,6 +182,17 @@ func RecordCycleMetrics(ctx context.Context, o CycleOutcome) error {
 	if o.DurationSeconds > 0 {
 		sink.setGauge(mCycleDurationLast, o.DurationSeconds)
 	}
+	// #87: best-effort agent usage. Absent/negative components contribute
+	// nothing (never estimated); a real reported value is accumulated exactly.
+	if o.Usage.TokensIn > 0 {
+		sink.add(mAgentTokensIn, float64(o.Usage.TokensIn))
+	}
+	if o.Usage.TokensOut > 0 {
+		sink.add(mAgentTokensOut, float64(o.Usage.TokensOut))
+	}
+	if o.Usage.CostUSD > 0 {
+		sink.add(mAgentCostUSD, o.Usage.CostUSD)
+	}
 
 	recomputeDerived()
 	return nil
@@ -206,9 +224,11 @@ func RecordGroomMetrics(ctx context.Context, o GroomOutcome) error {
 //   - human_escalation_rate       = human escalations / started
 //   - split_rate                  = large / (small+large)
 //   - review_disagreement_rate    = disagreements / review rounds
+//   - cost_per_completed_issue    = total reported agent cost / total completes
 func recomputeDerived() {
 	if total := sink.get(mCyclesCompleted); total > 0 {
 		sink.setGauge(mAutonomousRate, sink.get(mCyclesCompletedAuton)/total)
+		sink.setGauge(mCostPerCompletedIssue, sink.get(mAgentCostUSD)/total)
 	}
 	if started := sink.get(mCyclesStarted); started > 0 {
 		sink.setGauge(mDidHumanEscalationRate, sink.get(mHumanEscalations)/started)
