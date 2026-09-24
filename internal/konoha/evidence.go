@@ -113,6 +113,25 @@ func (s *EvidenceStore) Write(id, name, content string, dryRun bool) error {
 	return writeFileAtomic(filepath.Join(dir, name), []byte(s.redactor.Redact(content)))
 }
 
+// WriteVerification redacts and writes one §26 gate stream under the cycle's
+// verification/ subdir as <gateID>.<stream> (stream = stdout|stderr). The gate
+// id must be a plain path segment, so a hostile config can never escape the
+// cycle directory (the config loader already enforces this; defense in depth).
+func (s *EvidenceStore) WriteVerification(id, gateID, stream, content string, dryRun bool) error {
+	if content == "" {
+		return nil
+	}
+	if !validCycleID(gateID) {
+		return fmt.Errorf("gate id %q is not a plain path segment", gateID)
+	}
+	dir, err := s.dirFor(id, dryRun)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, "verification", gateID+"."+stream),
+		[]byte(s.redactor.Redact(content)))
+}
+
 // ensureSet creates the full artifact set (empty files where absent) so one
 // cycle always lands the documented layout, without truncating existing data.
 func (s *EvidenceStore) ensureSet(id string, dryRun bool) error {

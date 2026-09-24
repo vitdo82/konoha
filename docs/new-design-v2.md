@@ -1293,6 +1293,31 @@ validation:
 
  The PR may still be created when tests fail if policy explicitly permits it, but the failure must be recorded and cannot be silently ignored.
 
+ #### Structured multi-gate verification (extension, #86)
+
+ The single shell-string command is the legacy fallback. A repo may instead
+ declare an ordered list of structured-argv gates — never a shell string — each
+ with a per-gate `mandatory` flag, `timeout`, and repo-relative `dir`:
+
+```
+validation:
+  - id: unit-tests           # required, unique per profile
+    argv: ["go", "test", "./..."]
+    mandatory: true          # default true
+    timeout: 20m             # default 10m
+    dir: backend             # repo-relative; no ".." / leading "/"
+```
+
+ Every gate runs in order with **no early exit**; the aggregate passes iff every
+ mandatory gate exits 0. An advisory gate's failure is recorded but tolerated; a
+ gate that cannot start records `ERROR` and fails closed (§40). Gates run with
+ the scrubbed agent env (§23: no `GH_*`) and each gate's `stdout`/`stderr` is
+ persisted (redacted) under the cycle's `evidence/verification/<id>.stdout|stderr`
+ so a failure is auditable per gate. Declaring both `validation` and the legacy
+ `validationCmd` is a load-time error (ambiguous); absent profiles fall back to
+ `defaults.lifecycle`. Malformed gates (duplicate `id`, empty `argv`, a `dir`
+ containing `..` or a leading `/`, a non-positive `timeout`) fail at load.
+
 ---
 
  # 27\. Security: untrusted agent input

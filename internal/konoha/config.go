@@ -44,10 +44,73 @@ type LifecycleConfig struct {
 	Propagation                   PropagationConfig `yaml:"propagation" json:"propagation,omitempty"`
 	Approval                      ApprovalConfig    `yaml:"approval" json:"approval,omitempty"`
 	Audit                         AuditConfig       `yaml:"audit" json:"audit,omitempty"`
+	Validation                    []ValidationGate  `yaml:"validation" json:"validation,omitempty"`       // §26 structured argv gates
+	ValidationCmd                 string            `yaml:"validationCmd" json:"validationCmd,omitempty"` // §26 legacy shell-string fallback; mutually exclusive with validation
 	POGateTimeout                 string            `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
 	DryRun                        bool              `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int               `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
 	MaxConcurrentChildrenPerIssue int               `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+}
+
+// ValidationGate is one structured §26 verification gate: a bare argv run in a
+// repo-relative dir with a per-gate timeout. Mandatory gates must exit 0 for the
+// aggregate to pass; an advisory failure is recorded but tolerated. A gate that
+// cannot start records ERROR and fails the aggregate regardless (§40).
+type ValidationGate struct {
+	ID        string   `yaml:"id" json:"id"`
+	Argv      []string `yaml:"argv" json:"argv"`
+	Mandatory *bool    `yaml:"mandatory" json:"mandatory,omitempty"` // default true
+	Timeout   string   `yaml:"timeout" json:"timeout,omitempty"`     // Go duration; default 10m
+	Dir       string   `yaml:"dir" json:"dir,omitempty"`             // repo-relative
+}
+
+// isMandatory reports the effective mandatory flag (unset = true).
+func (g ValidationGate) isMandatory() bool { return g.Mandatory == nil || *g.Mandatory }
+
+// timeout parses the gate window, defaulting to 10m.
+func (g ValidationGate) timeout() time.Duration {
+	if d, err := time.ParseDuration(g.Timeout); err == nil && d > 0 {
+		return d
+	}
+	return 10 * time.Minute
+}
+
+// validateGates gates one profile's §26 validation block: unique non-empty ids,
+// non-empty argv, a repo-relative dir, a positive timeout, and never a
+// shell-string ValidationCmd alongside the structured list (ambiguous).
+func validateGates(prefix string, gates []ValidationGate, cmd string) error {
+	if len(gates) > 0 && strings.TrimSpace(cmd) != "" {
+		return fmt.Errorf("%s: validation and validationCmd are mutually exclusive (ambiguous)", prefix)
+	}
+	seen := map[string]bool{}
+	for i, g := range gates {
+		if strings.TrimSpace(g.ID) == "" {
+			return fmt.Errorf("%s.validation[%d].id: required", prefix, i)
+		}
+		if seen[g.ID] {
+			return fmt.Errorf("%s.validation: duplicate gate id %q", prefix, g.ID)
+		}
+		seen[g.ID] = true
+		if len(g.Argv) == 0 {
+			return fmt.Errorf("%s.validation[%s].argv: required (structured argv, never a shell string)", prefix, g.ID)
+		}
+		for j, a := range g.Argv {
+			if strings.TrimSpace(a) == "" {
+				return fmt.Errorf("%s.validation[%s].argv[%d]: must be non-empty", prefix, g.ID, j)
+			}
+		}
+		if d := strings.TrimSpace(g.Dir); d != "" {
+			if strings.HasPrefix(d, "/") || strings.Contains(d, "..") {
+				return fmt.Errorf("%s.validation[%s].dir: %q must be a repo-relative path (no .. / leading /)", prefix, g.ID, g.Dir)
+			}
+		}
+		if g.Timeout != "" {
+			if d, err := time.ParseDuration(g.Timeout); err != nil || d <= 0 {
+				return fmt.Errorf("%s.validation[%s].timeout: %q is not a positive duration", prefix, g.ID, g.Timeout)
+			}
+		}
+	}
+	return nil
 }
 
 // MergeConfig is the per-repo PR-merge + CI-gate policy (§49). RequireCI is a
@@ -196,6 +259,9 @@ func (lc *LifecycleConfig) validate() error {
 		return err
 	}
 	if err := lc.Audit.validate("lifecycle.audit"); err != nil {
+		return err
+	}
+	if err := validateGates("lifecycle", lc.Validation, lc.ValidationCmd); err != nil {
 		return err
 	}
 	// §55 AC: every gated decision must be recorded. An enabled pre-gate with no

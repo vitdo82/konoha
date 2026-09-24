@@ -96,6 +96,29 @@ func CIMaxWait(lc LifecycleConfig) time.Duration {
 	return 10 * time.Minute
 }
 
+// validationSpec resolves the §26 validation profile: a repo that declares
+// either structured gates or a legacy command wins; otherwise the process
+// default (defaults.lifecycle) applies.
+func validationSpec(lc LifecycleConfig) (gates []ValidationGate, cmd string) {
+	if len(lc.Validation) > 0 || strings.TrimSpace(lc.ValidationCmd) != "" {
+		return lc.Validation, lc.ValidationCmd
+	}
+	d := appCfg.Defaults.Lifecycle
+	return d.Validation, d.ValidationCmd
+}
+
+// ValidationGates resolves the §26 structured gate list (§26).
+func ValidationGates(lc LifecycleConfig) []ValidationGate {
+	g, _ := validationSpec(lc)
+	return g
+}
+
+// ValidationCommand resolves the §26 legacy shell-string fallback.
+func ValidationCommand(lc LifecycleConfig) string {
+	_, c := validationSpec(lc)
+	return c
+}
+
 // builtinHumanRequiredLabels are §20 risk labels Konoha always escalates on,
 // independent of repo config: a §52 security/dependency finding must never
 // auto-merge, even under closePolicy: autonomous. They extend (never replace)

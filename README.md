@@ -44,6 +44,13 @@ repos:
         verify: ""                     # smoke/health command; exit 0 = healthy
         maxWait: 5m                    # bounded verify poll window
         rollbackOnFail: true           # emit a rollback signal on failure
+      validation:                      # §26 structured verification gates (optional)
+        - id: unit-tests               # required, unique per profile
+          argv: ["go", "test", "./..."]  # structured argv, never a shell string
+          mandatory: true              # default true; advisory gate failures don't fail
+          timeout: 20m                 # per-gate window (default 10m)
+          dir: backend                 # repo-relative; no ".." / leading "/"
+      # validationCmd: "make check"   # §26 legacy shell-string form; mutually exclusive
       deps:                            # §52 dependency + security automation
         enabled: false                 # opt-in; false/unset = no scan, no issues
         scanCmd: ""                    # required when enabled; prints the JSON finding array
@@ -118,6 +125,9 @@ defaults:
       env: production
       maxWait: 5m
       rollbackOnFail: true        # fail-closed: emit a rollback signal on failure
+    validation:                   # §26 fallback verification gates
+      - id: test
+        argv: ["make", "test"]
 ```
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
@@ -129,6 +139,18 @@ the config directory (default `configs/`).
 bare `executable` plus `args`/`modelFlag`/`passEnv` are operator-declared). An
 unknown harness name fails at load; `GH_*` is stripped for every harness and
 `generic` forwards only `passEnv`-listed variables.
+
+**Validation (§26).** A repo may declare `lifecycle.validation` as an ordered
+list of structured gates. Each gate runs as a bare argv in `dir` (repo-relative,
+validated at load: no `..` / leading `/`), with a bounded `timeout` and the
+scrubbed agent env (no `GH_*`). All gates run — never early-exit — and the
+aggregate passes iff every **mandatory** gate exits 0; an advisory failure is
+recorded but tolerated, while a gate that cannot start records `ERROR` and fails
+closed. Each gate's `stdout`/`stderr` lands under the cycle's
+`verification/<id>.stdout|stderr` evidence (redacted). The legacy
+`lifecycle.validationCmd` shell string still works; setting both is a load-time
+error (ambiguous). A repo that declares neither inherits
+`defaults.lifecycle.validation`.
 
 ### Durable per-cycle evidence (`evidence.dir`)
 
@@ -144,6 +166,9 @@ cycles/<repo>-issue-<n>/     (and <repo>-review-<n> for PR cycles)
   result.json       # the validated agent result
   diff.patch        # the reviewed PR diff
   validation.txt    # the §26 validation output
+  verification/     # §26 per-gate streams (one pair per configured gate)
+    <id>.stdout     # redacted gate stdout
+    <id>.stderr     # redacted gate stderr
   outcome.json      # the terminal §6 outcome
 ```
 

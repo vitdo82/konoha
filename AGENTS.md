@@ -132,7 +132,20 @@ without restarting a completed workflow. Deliveries with an invalid
   `activity.GetLogger` inside these activities (it panics on non-Temporal ctx, which
   the unit tests use).
 - PR idempotency for the publish path lives in `publish.go` (`EnsurePullRequest`,
-  search by head branch, not by marker).
+  search by head branch, not by marker). `publish.go` also owns the §26
+  verification runner: `validateRepo` runs the repo's structured
+  `lifecycle.validation` gates as bare argv (never a shell string), in order and
+  with no early-exit, and `Passed` is true iff every **mandatory** gate exits 0
+  while any gate that cannot start records `ERROR` and fails closed (§40). Gates
+  run with the scrubbed agent env (§23, no `GH_*`) in a repo-relative `dir`
+  (traversal rejected at load and again at run). Each gate's streams land in the
+  cycle's `verification/<id>.stdout|stderr` evidence (redacted). The legacy
+  `validationCmd` shell string is the fallback; declaring both is a load-time
+  error (`config.go` `validateGates`), and an absent profile behaves exactly as
+  before (skipped). `ValidationGates`/`ValidationCommand` (policy.go) resolve the
+  per-repo list, falling back to `defaults.lifecycle`. The workflow threads the
+  resolved profile into the dev/repair activities only, so `dev.Validated` feeds
+  the §84 `verificationOutcome`; publish keeps its existing policy gate.
 - `merge.go` owns the §49 merge + CI status gate: `WaitForCI` polls
   `gh pr checks --json bucket,name` until every check passes or one fails,
   bounded by `merge.ciMaxWait`; a fail, an unclassifiable bucket, or a timeout
@@ -556,6 +569,9 @@ required; no Temporal).
   absolute rejected); `DryRun` (§42) namespaces under `dryrun/` and still writes
   (evidence is a record, not a mutation). The agent activities capture
   prompt/stdout/stderr into `AgentEvidence` on their result types for this.
+  `WriteVerification` lands each §26 gate's streams under
+  `cycles/<id>/verification/<gate-id>.stdout|stderr` (redacted, plain-segment
+  gate id), written best-effort by the validation runner via `persistGateEvidence`.
   Never call `activity.GetLogger` in these activities (unit tests use a
   non-Temporal ctx, which panics).
 - `outcome.go` owns the #84 explicit three-outcome evidence record written into
