@@ -94,6 +94,8 @@ worker:
   sweepTimeout: 10m               # sweep activity window
   retryMaxAttempts: 3
   sweepRetryMaxAttempts: 2
+evidence:
+  dir: .konoha/evidence           # durable per-cycle evidence root (see below)
 defaults:
   lifecycle:
     developmentMaxComplexity: 4   # fallback when repos.yaml leaves it unset
@@ -111,6 +113,30 @@ defaults:
 ```
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
+
+### Durable per-cycle evidence (`evidence.dir`)
+
+Every cycle writes a redacted, path-validated, append-only record under
+`evidence.dir` (default `.konoha/evidence`), so auditability survives Temporal
+history retention:
+
+```
+cycles/<repo>-issue-<n>/     (and <repo>-review-<n> for PR cycles)
+  prompt.txt        # what the last agent was asked
+  agent.stdout      # its captured stdout (redacted)
+  agent.stderr      # its captured stderr (redacted)
+  result.json       # the validated agent result
+  diff.patch        # the reviewed PR diff
+  validation.txt    # the §26 validation output
+  outcome.json      # the terminal §6 outcome
+```
+
+Evidence is **best-effort**: a write failure is recorded as `evidenceError` on
+the outcome and logged, but never changes the authoritative workflow state
+(§40). Cycle IDs must be plain path segments (traversal rejected); writes are
+redacted via the §23 `Redactor` and atomic (temp file + rename, owner-only
+perms). Under `dryRun` (§42) evidence is namespaced under `dryrun/` — it is a
+record, not a mutation.
 
 ### Env override matrix
 

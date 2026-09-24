@@ -229,12 +229,13 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 // findings (§35) — the raw bullets fed to the repair agent; a renderer derives
 // Summary from them.
 type ReviewResult struct {
-	Verdict   string   `json:"verdict"` // APPROVE or REQUEST_CHANGES
-	Summary   string   `json:"summary"`
-	PRNumber  int      `json:"prNumber,omitempty"`
-	CommitSHA string   `json:"commitSha,omitempty"`
-	Blocking  []string `json:"blocking,omitempty"`
-	Nits      []string `json:"nits,omitempty"`
+	Verdict   string         `json:"verdict"` // APPROVE or REQUEST_CHANGES
+	Summary   string         `json:"summary"`
+	PRNumber  int            `json:"prNumber,omitempty"`
+	CommitSHA string         `json:"commitSha,omitempty"`
+	Blocking  []string       `json:"blocking,omitempty"`
+	Nits      []string       `json:"nits,omitempty"`
+	Evidence  *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
 }
 
 // FetchDiff pulls the PR diff via the gh CLI.
@@ -270,16 +271,18 @@ DIFF:
 	cmd := exec.Command("opencode", agentArgs(prompt, in.Lifecycle.Model)...)
 	cmd.Dir = in.RepoPath
 	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
-	out, err := cmd.CombinedOutput()
+	out, stderr, err := runCapture(cmd)
+	combined := out + stderr
 	if err != nil {
-		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(string(out))), err)
+		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(combined)), err)
 	}
 
 	// Shared fail-closed parser (reviewer.go): VERDICT:/BLOCKING:/NITS:/CONCLUDE:
 	// sections, defaulting to REQUEST_CHANGES on any malformed output.
-	verdict, blocking, nits, summary := parseReviewOutput(out)
+	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum,
-		Blocking: blocking, Nits: nits}, nil
+		Blocking: blocking, Nits: nits,
+		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr}}, nil
 }
 
 // selfReviewError reports whether gh refused a formal review because the App

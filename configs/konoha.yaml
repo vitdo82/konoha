@@ -3,6 +3,9 @@
 # Strict: unknown keys / out-of-range values fail fast at startup.
 # Per-repo policy lives in repos.yaml (this file only sets the FALLBACK defaults).
 
+evidence:
+  dir: .konoha/evidence           # #83: durable per-cycle evidence root (cycles/<id>/)
+
 worker:
   taskQueue: review-queue
   maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES

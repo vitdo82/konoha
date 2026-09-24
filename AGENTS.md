@@ -525,3 +525,19 @@ required; no Temporal).
   changes a verdict, and the `VERDICT:`/marker parser contract is untouched.
   `RegisterSecrets` is also the #CU1 hook: an injected child-env value is
   registered for the run so it masks even without a pattern match.
+- `evidence.go` owns the #83 durable per-cycle evidence store: `EvidenceStore`
+  (rooted at `evidence.dir`, resolved once at bootstrap via `appCfg`) writes a
+  redacted, atomic (temp+rename, `0600`), traversal-validated record under
+  `cycles/<repo>-issue-<n>/` (or `<repo>-review-<n>`) with the byte-exact
+  artifact set `prompt.txt`/`agent.stdout`/`agent.stderr`/`result.json`/
+  `diff.patch`/`validation.txt`/`outcome.json`. `WriteCycleEvidence` is the
+  single evidence I/O activity; the workflow invokes it after
+  develop/repair/review and at the terminal via `recordTerminal`. Evidence is
+  BEST-EFFORT and never authoritative over §6 Temporal state (§40/§44 #20): a
+  write failure is logged and recorded as `CycleOutcome.EvidenceError`, never a
+  terminal change. Cycle IDs must be plain path segments (`..`/separators/
+  absolute rejected); `DryRun` (§42) namespaces under `dryrun/` and still writes
+  (evidence is a record, not a mutation). The agent activities capture
+  prompt/stdout/stderr into `AgentEvidence` on their result types for this.
+  Never call `activity.GetLogger` in these activities (unit tests use a
+  non-Temporal ctx, which panics).

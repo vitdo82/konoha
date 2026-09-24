@@ -55,14 +55,15 @@ type DevelopRequest struct {
 // always recorded (never silently dropped, §26): Validated/Skipped/Output
 // describe the §26 repo-validation run before publication.
 type DevelopResult struct {
-	WorktreeDir       string   `json:"worktreeDir"`
-	CommitSHA         string   `json:"commitSha"`
-	ChangedFiles      []string `json:"changedFiles"`
-	Summary           string   `json:"summary"`
-	Concerns          []string `json:"concerns"`
-	Validated         bool     `json:"validated"`
-	ValidationSkipped bool     `json:"validationSkipped"`
-	ValidationOutput  string   `json:"validationOutput"`
+	WorktreeDir       string         `json:"worktreeDir"`
+	CommitSHA         string         `json:"commitSha"`
+	ChangedFiles      []string       `json:"changedFiles"`
+	Summary           string         `json:"summary"`
+	Concerns          []string       `json:"concerns"`
+	Validated         bool           `json:"validated"`
+	ValidationSkipped bool           `json:"validationSkipped"`
+	ValidationOutput  string         `json:"validationOutput"`
+	Evidence          *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
 }
 
 // developerSystem is the authoritative developer instruction block (§4.4, §26,
@@ -373,12 +374,13 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	cmd := exec.CommandContext(ctx, "opencode", agentArgs(prompt, in.Model)...)
 	cmd.Dir = dir
 	cmd.Env = cmdEnv(dir) // §23: no GitHub write credential reaches the agent
-	out, err := cmd.CombinedOutput()
+	stdout, stderr, err := runCapture(cmd)
+	combined := stdout + stderr
 	if err != nil {
-		return DevelopResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(string(out))), err)
+		return DevelopResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(combined)), err)
 	}
 
-	rep, err := parseDeveloperReport(out)
+	rep, err := parseDeveloperReport([]byte(combined))
 	if err != nil {
 		return DevelopResult{}, err
 	}
@@ -402,6 +404,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		ChangedFiles: changedFiles(ctx, dir, baseSHA),
 		Summary:      rep.Summary,
 		Concerns:     rep.Concerns,
+		Evidence:     &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
 	}
 	// §26: record validation output unconditionally; the publication gate
 	// decides whether a failing result still ships (never silently ignored).
