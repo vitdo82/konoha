@@ -184,6 +184,7 @@ func Main() {
 	w.RegisterActivity(EnsureCrossRepoIssue)
 	w.RegisterActivity(EvaluateAlerts)
 	w.RegisterActivity(EnsureFailureIssue)
+	w.RegisterActivity(WriteCycleEvidence) // #83: durable per-cycle evidence
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
@@ -363,6 +364,7 @@ func runDevelop() error {
 	if err != nil {
 		return err
 	}
+	d.Evidence = nil // debug output keeps its prior shape (#83 evidence is on disk)
 	b, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return err
@@ -414,6 +416,7 @@ func runReview() error {
 	if err != nil {
 		return err
 	}
+	r.Evidence = nil // debug output keeps its prior shape (#83 evidence is on disk)
 	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
@@ -467,6 +470,7 @@ func runRepair() error {
 		return err
 	}
 	repair.WorktreeDir = ""
+	repair.Evidence = nil // debug output keeps its prior shape (#83 evidence is on disk)
 	b, err := json.MarshalIndent(repair, "", "  ")
 	if err != nil {
 		return err

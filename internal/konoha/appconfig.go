@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -44,8 +45,19 @@ type LifecycleDefaults struct {
 // AppConfig is the resolved application configuration.
 type AppConfig struct {
 	Worker   WorkerConfig   `yaml:"worker"`
+	Evidence EvidenceConfig `yaml:"evidence"`
 	Defaults DefaultsConfig `yaml:"defaults"`
 }
+
+// EvidenceConfig is the `evidence:` block (#83): the durable per-cycle evidence
+// store root. Resolved once at bootstrap so workflow replay sees a stable value.
+type EvidenceConfig struct {
+	Dir string `yaml:"dir"`
+}
+
+// defaultEvidenceDir is where per-cycle evidence lands when no konoha.yaml
+// overrides it. Relative to the worker's working directory.
+const defaultEvidenceDir = ".konoha/evidence"
 
 // DefaultsConfig is the `defaults:` block.
 type DefaultsConfig struct {
@@ -65,6 +77,7 @@ func defaultAppConfig() AppConfig {
 			RetryMaxAttempts:        3,
 			SweepRetryMaxAttempts:   2,
 		},
+		Evidence: EvidenceConfig{Dir: defaultEvidenceDir},
 		Defaults: DefaultsConfig{
 			Lifecycle: LifecycleDefaults{
 				DevelopmentMaxComplexity: 4,
@@ -181,6 +194,12 @@ func workerMaxConcurrentActivities() int {
 }
 
 func (c AppConfig) validate() error {
+	if strings.TrimSpace(c.Evidence.Dir) == "" {
+		return fmt.Errorf("evidence.dir must not be empty")
+	}
+	if strings.ContainsRune(c.Evidence.Dir, 0) {
+		return fmt.Errorf("evidence.dir %q contains a NUL byte", c.Evidence.Dir)
+	}
 	if c.Worker.MaxConcurrentActivities < 1 {
 		return fmt.Errorf("worker.maxConcurrentActivities must be >= 1")
 	}

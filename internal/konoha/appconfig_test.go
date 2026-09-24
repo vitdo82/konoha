@@ -61,6 +61,24 @@ defaults:
 	}
 }
 
+// #83: evidence.dir keeps existing deployments working with no config, and an
+// explicit empty value fails fast at load.
+func TestLoadAppConfigEvidenceDir(t *testing.T) {
+	cfg, err := loadAppConfig(filepath.Join(t.TempDir(), "nope.yaml"))
+	if err != nil {
+		t.Fatalf("missing file must not error: %v", err)
+	}
+	if cfg.Evidence.Dir != defaultEvidenceDir {
+		t.Fatalf("default evidence.dir = %q, want %q", cfg.Evidence.Dir, defaultEvidenceDir)
+	}
+	if _, err := loadAppConfig(writeAppConfig(t, "evidence:\n  dir: \"\"\n")); err == nil {
+		t.Fatal("empty evidence.dir must fail fast at load")
+	}
+	if cfg, err := loadAppConfig(writeAppConfig(t, "evidence:\n  dir: /var/lib/konoha/evidence\n")); err != nil || cfg.Evidence.Dir != "/var/lib/konoha/evidence" {
+		t.Fatalf("evidence.dir override not honored: %q err=%v", cfg.Evidence.Dir, err)
+	}
+}
+
 // Out-of-range values fail validation.
 func TestLoadAppConfigOutOfRange(t *testing.T) {
 	for _, body := range []string{

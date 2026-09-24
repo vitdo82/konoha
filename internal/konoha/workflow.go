@@ -38,15 +38,30 @@ func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 	ctx = workflow.WithActivityOptions(ctx, ao)
 	info := workflow.GetInfo(ctx)
 
+	// #83: durable per-cycle evidence (best-effort — never fails the review).
+	writeEvidence := func(req EvidenceRequest) {
+		req.CycleID = info.WorkflowExecution.ID
+		req.DryRun = in.Lifecycle.DryRun
+		if err := workflow.ExecuteActivity(ctx, WriteCycleEvidence, req).Get(ctx, nil); err != nil {
+			workflow.GetLogger(ctx).Error("evidence write failed (non-fatal)", "err", err)
+		}
+	}
+
 	var diff string
 	if err := workflow.ExecuteActivity(ctx, FetchDiff, in).Get(ctx, &diff); err != nil {
 		return err
 	}
+	writeEvidence(EvidenceRequest{Diff: diff})
 
 	var result ReviewResult
 	if err := workflow.ExecuteActivity(ctx, ReviewWithOpencode, in, diff).Get(ctx, &result); err != nil {
 		return err
 	}
+	e := evidenceOf(result.Evidence)
+	writeEvidence(EvidenceRequest{
+		Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
+		Result: evidenceResultJSON(result), Diff: diff,
+	})
 
 	if err := workflow.ExecuteActivity(ctx, SubmitReview, in, result).Get(ctx, nil); err != nil {
 		return err
@@ -156,6 +171,29 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			in.Repo, state, lastComplexity, lastConfidence, lastAttempts, lastReviewRounds)
 	}
 
+	// #83: durable per-cycle evidence. writeEvidence is best-effort I/O: it
+	// accumulates the first failure into evidenceErr, which the terminal outcome
+	// carries, but never changes the §6 terminal state.
+	evidenceErr := ""
+	writeEvidence := func(req EvidenceRequest) {
+		req.CycleID = info.WorkflowExecution.ID
+		req.DryRun = in.Lifecycle.DryRun
+		if err := workflow.ExecuteActivity(ctx, WriteCycleEvidence, req).Get(ctx, nil); err != nil {
+			if evidenceErr == "" {
+				evidenceErr = err.Error()
+			}
+			workflow.GetLogger(ctx).Error("evidence write failed (non-fatal)", "err", err)
+		}
+	}
+	// finish records a terminal outcome through the shared recorder, tagging it
+	// with any prior evidence-write failure.
+	finish := func(out CycleOutcome) error {
+		if out.EvidenceError == "" {
+			out.EvidenceError = evidenceErr
+		}
+		return recordTerminal(ctx, info, in, out)
+	}
+
 	// projectLabels applies the §22 label projection for the current state
 	// (idempotent reconcile; drops stale transients). Best-effort: a label
 	// failure must not abort the workflow.
@@ -225,7 +263,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 
 	if route == stateLarge {
-		return runLargePath(ctx, devCtx, in, a, est, info, route, transition, projectLabels)
+		return runLargePath(ctx, devCtx, in, a, est, info, route, transition, projectLabels, finish)
 	}
 
 	// escalateTerminal routes the cycle to HUMAN_REQUIRED with a recorded §18
@@ -234,7 +272,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	escalateTerminal := func(reason string) error {
 		transition(stateHumanRequired)
 		projectLabels(stateHumanRequired, est.Complexity)
-		return recordTerminal(ctx, info, in, CycleOutcome{
+		return finish(CycleOutcome{
 			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 			Owner: in.Owner, Repo: in.Repo,
 			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -266,7 +304,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if res.Denied {
 			transition(stateHumanRequired)
 			projectLabels(stateHumanRequired, est.Complexity)
-			return false, recordTerminal(ctx, info, in, CycleOutcome{
+			return false, finish(CycleOutcome{
 				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 				Owner: in.Owner, Repo: in.Repo,
 				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -279,7 +317,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// Timed out: stay BLOCKED and never proceed (§40, no silent success).
 		transition(stateBlocked)
 		projectLabels(stateBlocked, est.Complexity)
-		return false, recordTerminal(ctx, info, in, CycleOutcome{
+		return false, finish(CycleOutcome{
 			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 			Owner: in.Owner, Repo: in.Repo,
 			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -307,6 +345,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return err
 	}
 	lastAttempts++
+	writeAgentEvidence(writeEvidence, dev.Evidence, dev, dev.ValidationOutput)
 
 	// -- §20 risk gate before any GitHub mutation --
 	var labels []string
@@ -316,7 +355,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	if rk := DetectHumanEscalation(in.Lifecycle, dev.ChangedFiles, labels); rk.Escalate {
 		transition(stateHumanRequired)
 		projectLabels(stateHumanRequired, est.Complexity)
-		return recordTerminal(ctx, info, in, CycleOutcome{
+		return finish(CycleOutcome{
 			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 			Owner: in.Owner, Repo: in.Repo,
 			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -384,6 +423,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return err
 		}
 		lastReviewRounds++
+		e := evidenceOf(rev.Evidence)
+		writeEvidence(EvidenceRequest{Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
+			Result: evidenceResultJSON(rev), Diff: diff})
 
 		if rev.Verdict == "APPROVE" {
 			approved = rev
@@ -396,7 +438,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if rl := EvaluateRepairLoop(in.Lifecycle, lastAttempts); !rl.Allowed {
 			transition(stateBlocked)
 			projectLabels(stateBlocked, est.Complexity)
-			return recordTerminal(ctx, info, in, CycleOutcome{
+			return finish(CycleOutcome{
 				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 				Owner: in.Owner, Repo: in.Repo,
 				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -426,6 +468,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		}).Get(ctx, &repaired); err != nil {
 			return err
 		}
+		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
 		// re-publish the repaired commit onto the same branch (idempotent).
 		pubIn.CommitSHA = repaired.CommitSHA
 		pubIn.RepoPath = in.RepoPath
@@ -440,7 +483,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// head moved under us: re-review required — this increment escalates
 		// deterministically instead of closing on a stale approval.
 		transition(stateBlocked)
-		return recordTerminal(ctx, info, in, CycleOutcome{
+		return finish(CycleOutcome{
 			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 			Owner: in.Owner, Repo: in.Repo,
 			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -501,7 +544,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return err
 	}
 	projectLabels(stateClosed, est.Complexity)
-	if err := recordTerminal(ctx, info, in, CycleOutcome{
+	if err := finish(CycleOutcome{
 		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 		Owner: in.Owner, Repo: in.Repo,
 		Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -546,7 +589,7 @@ func runPostMerge(ctx workflow.Context, in IssueInput, prNum int, sha string) {
 // → parent CLOSED. A child failure fails the whole parent (§44) and routes to
 // BLOCKED — never a silent skip. Child cycles are started with the deterministic
 // <repo>-issue-<childNumber> ID so sweeps/retries converge (§32/§24).
-func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int)) error {
+func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int), finish func(CycleOutcome) error) error {
 	transition(stateSplitting)
 	var split SplitResult
 	if err := workflow.ExecuteActivity(ctx, RunSplit, in, a, est).Get(ctx, &split); err != nil {
@@ -602,7 +645,7 @@ func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, 
 				// §44 #1/#40: a child failure must NOT be silently skipped.
 				// Aggregate into a parent BLOCKED terminal.
 				transition(stateBlocked)
-				return recordTerminal(ctx, info, in, CycleOutcome{
+				return finish(CycleOutcome{
 					WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 					Owner: in.Owner, Repo: in.Repo,
 					Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -621,7 +664,7 @@ func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, 
 		return err
 	}
 	projectLabels(stateClosed, est.Complexity)
-	return recordTerminal(ctx, info, in, CycleOutcome{
+	return finish(CycleOutcome{
 		WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 		Owner: in.Owner, Repo: in.Repo,
 		Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -699,8 +742,23 @@ func auditActor(res ApprovalResult) string {
 
 // recordTerminal records the §39 terminal metrics for a finished cycle and
 // returns nil. All terminal paths funnel through it so the sink always sees the
-// run's terminal state + autonomous-vs-human outcome (no silent drops).
+// run's terminal state + autonomous-vs-human outcome (no silent drops). It also
+// lands the #83 outcome.json evidence (best-effort, never changes the state).
 func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, out CycleOutcome) error {
+	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
+	// child ID for a sweep-escalated failure), so evidence is stable under retry.
+	cycleID := out.WorkflowID
+	if cycleID == "" {
+		cycleID = info.WorkflowExecution.ID
+	}
+	if err := workflow.ExecuteActivity(ctx, WriteCycleEvidence, EvidenceRequest{
+		CycleID: cycleID, DryRun: in.Lifecycle.DryRun, Outcome: evidenceJSON(out),
+	}).Get(ctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("outcome evidence write failed (non-fatal)", "err", err)
+		if out.EvidenceError == "" {
+			out.EvidenceError = err.Error()
+		}
+	}
 	if err := workflow.ExecuteActivity(ctx, RecordCycleMetrics, out).Get(ctx, nil); err != nil {
 		return err
 	}

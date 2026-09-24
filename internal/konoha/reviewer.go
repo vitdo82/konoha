@@ -200,14 +200,16 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	cmd := exec.Command("opencode", agentArgs(prompt, req.Model)...)
 	cmd.Dir = req.RepoPath
 	cmd.Env = cmdEnv(req.RepoPath) // §23: no GitHub write credential reaches the agent
-	out, err := cmd.CombinedOutput()
+	stdout, stderr, err := runCapture(cmd)
+	combined := stdout + stderr
 	if err != nil {
-		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
+		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(combined)), err)
 	}
 
-	verdict, blocking, nits, summary := parseReviewOutput(out)
+	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	r := ReviewResult{Verdict: verdict, Summary: summary, PRNumber: req.PRNumber,
-		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits}
+		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits,
+		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr}}
 	if err := ValidateReview(r); err != nil {
 		return ReviewResult{}, fmt.Errorf("agent review invalid: %w", err)
 	}

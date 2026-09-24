@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,6 +62,7 @@ func mockSmallPathWith(env *testsuite.TestWorkflowEnvironment, ci CIStatus, ciEr
 	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
 		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"},
 		Summary: "change", Validated: true,
+		Evidence: &AgentEvidence{Prompt: "dev prompt", Stdout: "dev stdout", Stderr: "dev stderr"},
 	}, nil)
 	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(PublishResult{
 		Branch: "konoha/issue-7", PRNumber: 101, PRURL: "https://x/pr/101", Validated: true,
@@ -68,6 +71,7 @@ func mockSmallPathWith(env *testsuite.TestWorkflowEnvironment, ci CIStatus, ciEr
 	env.OnActivity(FetchPRDiff, mock.Anything, mock.Anything).Return("+1 line", nil)
 	env.OnActivity(RunReviewer, mock.Anything, mock.Anything).Return(ReviewResult{
 		Verdict: "APPROVE", CommitSHA: "headsha", PRNumber: 101,
+		Evidence: &AgentEvidence{Prompt: "review prompt", Stdout: "review stdout"},
 	}, nil)
 	// §49: CI gate verdict, then the merge. A non-green CI must never merge.
 	env.OnActivity(WaitForCI, mock.Anything, mock.Anything).Return(ci, ciErr)
@@ -127,6 +131,50 @@ func TestWorkflowSmallAutonomousClose(t *testing.T) {
 	// §49: the issue closes only after exactly one merge.
 	if h.merges != 1 || h.closes != 1 {
 		t.Fatalf("merge/close counts = %d/%d, want 1/1", h.merges, h.closes)
+	}
+}
+
+// #83/§41: one cycle lands the durable artifact set on disk (prompt, stdout,
+// diff, outcome at minimum) for the mocked agent activities.
+func TestWorkflowEvidenceArtifacts(t *testing.T) {
+	resetMetrics()
+	root := t.TempDir()
+	saved := appCfg
+	appCfg.Evidence.Dir = root
+	t.Cleanup(func() { appCfg = saved })
+
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	env.RegisterActivity(WriteCycleEvidence) // real writer
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("terminal = %q, want CLOSED", got)
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "cycles", "*", evidencePrompt))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected exactly one cycle evidence dir, got %v (err=%v)", matches, err)
+	}
+	dir := filepath.Dir(matches[0])
+	for _, name := range []string{evidencePrompt, evidenceStdout, evidenceDiff, evidenceOutcome} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || strings.TrimSpace(string(b)) == "" {
+			t.Fatalf("artifact %s must exist and be non-empty (err=%v)", name, err)
+		}
+	}
+}
+
+// #83/§40/§41: an evidence-write failure never changes the authoritative
+// terminal state — the cycle still closes.
+func TestWorkflowEvidenceWriteFailureNonFatal(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	env.OnActivity(WriteCycleEvidence, mock.Anything, mock.Anything).Return(errors.New("disk full"))
+	runAndAssert(t, env)
+
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("evidence failure changed terminal = %q, want CLOSED", got)
 	}
 }
 
@@ -652,15 +700,22 @@ func TestWorkflowSweepChildFailureKeepsBatch(t *testing.T) {
 }
 
 // §42/§41: under DryRun a child failure mutates nothing — no label write and no
-// failure issue — but the run still completes (the failure is only logged).
+// failure issue — but the run still completes (the failure is only logged), and
+// evidence lands under the dryrun/ namespace.
 func TestWorkflowSweepChildFailureDryRun(t *testing.T) {
 	resetMetrics()
+	root := t.TempDir()
+	saved := appCfg
+	appCfg.Evidence.Dir = root
+	t.Cleanup(func() { appCfg = saved })
+
 	lc := sweepLifecycle(true, true)
 	env := newSweepEnv(t, lc, []int{testIssue})
 	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(IssueAnalysis{}, errors.New("no JSON"))
-	// Real activities: both must short-circuit on DryRun before touching GitHub.
+	// Real activities: all must short-circuit on DryRun before touching GitHub.
 	env.RegisterActivity(ApplyIssueLabels)
 	env.RegisterActivity(EnsureFailureIssue)
+	env.RegisterActivity(WriteCycleEvidence)
 	prev := ghRunner
 	ghRunner = func(context.Context, ...string) ([]byte, error) {
 		t.Fatal("DryRun must not mutate GitHub")
@@ -671,6 +726,9 @@ func TestWorkflowSweepChildFailureDryRun(t *testing.T) {
 	env.ExecuteWorkflow(IssueAllWorkflow, sweepScope(lc))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("dry-run sweep must complete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dryrun", "cycles", "r-issue-7", evidenceOutcome)); err != nil {
+		t.Fatalf("dry-run evidence missing under dryrun/: %v", err)
 	}
 }
 

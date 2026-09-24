@@ -106,6 +106,7 @@ type CycleOutcome struct {
 	Disagreements    int     `json:"disagreements,omitempty"`
 	POInterventions  int     `json:"poInterventions,omitempty"`
 	DurationSeconds  float64 `json:"durationSeconds,omitempty"`
+	EvidenceError    string  `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the
