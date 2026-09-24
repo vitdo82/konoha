@@ -17,6 +17,7 @@ worker:
 
 defaults:
   lifecycle:
+    harness: opencode              # §85 agent harness name (opencode | generic)
     developmentMaxComplexity: 4    # §11 executable-child ceiling default
     maxDevReviewAttempts: 2        # §16 repair-loop cap default
     maxResolutionAttempts: 1       # §37 disagreement-resolution cap

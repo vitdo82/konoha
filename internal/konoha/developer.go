@@ -40,7 +40,8 @@ type DevelopRequest struct {
 	Repo       string `json:"repo"`
 	IssueNum   int    `json:"issue"`
 	RepoPath   string `json:"repoPath"`
-	Model      string `json:"model,omitempty"`      // opencode model for this repo (§4)
+	Model      string `json:"model,omitempty"`      // agent model for this repo (§4)
+	Harness    string `json:"harness,omitempty"`    // §85 harness by name; "" = process default
 	WorkflowID string `json:"workflowId,omitempty"` // worktree ownership key (§4.4)
 	BaseSHA    string `json:"baseSha,omitempty"`    // branch-from commit; "" = repo HEAD
 	Title      string `json:"title"`
@@ -390,9 +391,10 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "opencode", agentArgs(prompt, in.Model)...)
-	cmd.Dir = dir
-	cmd.Env = cmdEnv(dir) // §23: no GitHub write credential reaches the agent
+	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir)
+	if err != nil {
+		return DevelopResult{}, err
+	}
 	stdout, stderr, err := runCapture(cmd)
 	combined := stdout + stderr
 	if err != nil {

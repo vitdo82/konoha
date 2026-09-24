@@ -268,9 +268,10 @@ CONCLUDE: one-line verdict sentence
 DIFF:
 %s`, in.PrNum, in.Owner, in.Repo, diff)
 
-	cmd := exec.Command("opencode", agentArgs(prompt, in.Lifecycle.Model)...)
-	cmd.Dir = in.RepoPath
-	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
+	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	if err != nil {
+		return ReviewResult{}, err
+	}
 	out, stderr, err := runCapture(cmd)
 	combined := out + stderr
 	if err != nil {

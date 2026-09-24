@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -177,9 +176,10 @@ func containsKey(tickets []SplitTicket, key string) bool {
 func RunSplit(ctx context.Context, in IssueInput, a IssueAnalysis, e EstimateResult) (SplitResult, error) {
 	prompt := splitterPrompt(in, a, e)
 
-	cmd := exec.Command("opencode", agentArgs(prompt, in.Lifecycle.Model)...)
-	cmd.Dir = in.RepoPath
-	cmd.Env = cmdEnv(in.RepoPath) // §23: no GitHub write credential reaches the agent
+	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	if err != nil {
+		return SplitResult{}, err
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return SplitResult{}, fmt.Errorf("opencode run: %s: %w", strings.TrimSpace(string(out)), err)
