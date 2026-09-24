@@ -372,6 +372,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		Constraints:        a.Constraints,
 		Assumptions:        a.Assumptions,
 		OpenQuestions:      a.OpenQuestions,
+		// §26: structured gates / legacy command resolved from lifecycle.
+		Validation:    ValidationGates(in.Lifecycle),
+		ValidationCmd: ValidationCommand(in.Lifecycle),
 	}).Get(ctx, &dev); err != nil {
 		return err
 	}
@@ -413,12 +416,14 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	var pub PublishResult
 	pubIn := PublishInput{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath,
-		CommitSHA:      dev.CommitSHA,
-		Branch:         fmt.Sprintf("konoha/issue-%d", in.IssueNum),
-		BaseBranch:     "main",
-		Title:          a.Title,
-		Body:           prBody(in, a),
-		ValidationCmd:  "", // §26 repo validation; config later
+		CommitSHA:  dev.CommitSHA,
+		Branch:     fmt.Sprintf("konoha/issue-%d", in.IssueNum),
+		BaseBranch: "main",
+		Title:      a.Title,
+		Body:       prBody(in, a),
+		// §26 validation already ran in the developer activity; its aggregate is
+		// carried on dev.Validated/ValidationOutput, so publish does not re-run it.
+		ValidationCmd:  "",
 		AllowOnFailure: false,
 		DryRun:         in.Lifecycle.DryRun,
 	}
@@ -500,6 +505,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 				Constraints:        a.Constraints,
 				Assumptions:        a.Assumptions,
 				OpenQuestions:      a.OpenQuestions,
+				// §26: structured gates / legacy command resolved from lifecycle.
+				Validation:    ValidationGates(in.Lifecycle),
+				ValidationCmd: ValidationCommand(in.Lifecycle),
 			},
 			Review:         rev,
 			PreviousCommit: reviewedSHA, // the SHA the reviewer actually saw (§15)

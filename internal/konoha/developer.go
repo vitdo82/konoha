@@ -48,12 +48,13 @@ type DevelopRequest struct {
 	Body       string `json:"body"`
 	Spec       string `json:"spec"`
 	// Structured spec artifact (§35). All issue-derived, so every bullet is data.
-	Requirements       []string `json:"requirements"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria"`
-	Constraints        []string `json:"constraints"`
-	Assumptions        []string `json:"assumptions"`
-	OpenQuestions      []string `json:"openQuestions"`
-	ValidationCmd      string   `json:"validationCmd,omitempty"` // §26 repo validation; "" = none
+	Requirements       []string         `json:"requirements"`
+	AcceptanceCriteria []string         `json:"acceptanceCriteria"`
+	Constraints        []string         `json:"constraints"`
+	Assumptions        []string         `json:"assumptions"`
+	OpenQuestions      []string         `json:"openQuestions"`
+	ValidationCmd      string           `json:"validationCmd,omitempty"` // §26 repo validation; "" = none
+	Validation         []ValidationGate `json:"validation,omitempty"`    // §26 structured argv gates
 }
 
 // DevelopResult is what the developer returns to Konoha (§25). CommitSHA is the
@@ -440,7 +441,8 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	// §26: record validation output unconditionally; the publication gate
 	// decides whether a failing result still ships (never silently ignored).
 	res.Validated, res.ValidationSkipped, res.ValidationOutput, err =
-		validateRepo(PublishInput{RepoPath: dir, ValidationCmd: in.ValidationCmd})
+		validateRepo(PublishInput{RepoPath: dir, ValidationCmd: in.ValidationCmd,
+			Validation: in.Validation, CycleID: in.WorkflowID})
 	if err != nil {
 		return DevelopResult{}, err
 	}

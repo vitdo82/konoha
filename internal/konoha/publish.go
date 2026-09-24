@@ -2,9 +2,11 @@ package konoha
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"go.temporal.io/sdk/activity"
@@ -17,17 +19,19 @@ import (
 // there because worktrees share the main repo object DB), so publication can run
 // from the main repo after the worktree is cleaned up.
 type PublishInput struct {
-	Owner          string `json:"owner"`
-	Repo           string `json:"repo"`
-	RepoPath       string `json:"repoPath"`   // repo whose object DB holds the commit
-	CommitSHA      string `json:"commitSha"`  // optional local commit to publish (§25)
-	Branch         string `json:"branch"`     // branch to push and open a PR for
-	BaseBranch     string `json:"baseBranch"` // PR base (default: the repo default)
-	Title          string `json:"title"`
-	Body           string `json:"body"`
-	ValidationCmd  string `json:"validationCmd"`  // repo validation command (§26); "" = none
-	AllowOnFailure bool   `json:"allowOnFailure"` // explicit policy permission to publish despite failing validation (§26)
-	DryRun         bool   `json:"dryRun,omitempty"`
+	Owner          string           `json:"owner"`
+	Repo           string           `json:"repo"`
+	RepoPath       string           `json:"repoPath"`   // repo whose object DB holds the commit
+	CommitSHA      string           `json:"commitSha"`  // optional local commit to publish (§25)
+	Branch         string           `json:"branch"`     // branch to push and open a PR for
+	BaseBranch     string           `json:"baseBranch"` // PR base (default: the repo default)
+	Title          string           `json:"title"`
+	Body           string           `json:"body"`
+	ValidationCmd  string           `json:"validationCmd"`        // repo validation command (§26); "" = none
+	Validation     []ValidationGate `json:"validation,omitempty"` // §26 structured argv gates; mutually exclusive with ValidationCmd
+	CycleID        string           `json:"cycleId,omitempty"`    // evidence store scope for per-gate output (§26)
+	AllowOnFailure bool             `json:"allowOnFailure"`       // explicit policy permission to publish despite failing validation (§26)
+	DryRun         bool             `json:"dryRun,omitempty"`
 }
 
 // PublishResult reports what PublishDeveloperChange did. ValidationOutput is
@@ -42,19 +46,157 @@ type PublishResult struct {
 	ValidationOutput  string `json:"validationOutput"`
 }
 
-// validateRepo runs the repo's validation command in the worktree. A
-// configured command that exits non-zero means validation failed. Empty
-// ValidationCmd means "nothing required", which reports as skipped (Validated
-// stays false so callers can distinguish "not checked" from "checked+passed").
+// validateRepo runs the repo's validation in the worktree. When structured
+// gates are configured, every gate runs in order (no early exit), each gate's
+// stdout/stderr is persisted to evidence, and the aggregate passes iff every
+// mandatory gate exited 0; a gate that cannot start records ERROR and fails
+// closed (§40). Absent gates, the legacy shell-string ValidationCmd runs as
+// before. Empty/absent both means "nothing required", reported as skipped
+// (Validated stays false so callers can distinguish "not checked" from
+// "checked+passed").
 func validateRepo(in PublishInput) (ok, skipped bool, output string, err error) {
+	if len(in.Validation) > 0 {
+		if strings.TrimSpace(in.ValidationCmd) != "" {
+			return false, false, "", fmt.Errorf("validation and validationCmd are mutually exclusive (ambiguous)")
+		}
+		results := runGates(in)
+		return gatesPassed(results), false, gateOutput(results), nil
+	}
 	cmd := strings.TrimSpace(in.ValidationCmd)
 	if cmd == "" {
 		return false, true, "", nil
 	}
 	c := exec.Command("sh", "-c", cmd)
 	c.Dir = in.RepoPath
+	c.Env = cmdEnv(in.RepoPath) // §23: never expose GH_* to repo validation
 	out, runErr := c.CombinedOutput()
 	return runErr == nil, false, string(out), nil
+}
+
+// gateRun is one gate's observed result.
+type gateRun struct {
+	ID        string
+	Mandatory bool
+	Started   bool
+	ExitCode  int
+	Stdout    string
+	Stderr    string
+	Err       string
+}
+
+// status is the gate disposition recorded in the aggregate output: PASSED,
+// FAILED (non-zero exit), or ERROR (could not start / timed out).
+func (r gateRun) status() string {
+	if r.Err != "" {
+		return "ERROR"
+	}
+	if r.ExitCode == 0 {
+		return "PASSED"
+	}
+	return "FAILED"
+}
+
+// runGates runs every gate in order without short-circuiting, persisting each
+// gate's streams to the evidence store (best-effort). Gates get the scrubbed
+// agent env (§23) and a bounded per-gate timeout.
+func runGates(in PublishInput) []gateRun {
+	results := make([]gateRun, 0, len(in.Validation))
+	for _, g := range in.Validation {
+		r := runGate(in.RepoPath, g)
+		persistGateEvidence(in.CycleID, r, in.DryRun)
+		results = append(results, r)
+	}
+	return results
+}
+
+// gatesPassed is the §26 aggregate: every mandatory gate exited 0; any gate
+// that could not start (ERROR) fails closed regardless of mandatory (§40).
+func gatesPassed(results []gateRun) bool {
+	for _, r := range results {
+		if r.Err != "" {
+			return false
+		}
+		if r.Mandatory && r.ExitCode != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// runGate executes one structured-argv gate. argv is used verbatim (never a
+// shell), dir is relative to repoPath and must not escape it.
+func runGate(repoPath string, g ValidationGate) gateRun {
+	r := gateRun{ID: g.ID, Mandatory: g.isMandatory()}
+	if len(g.Argv) == 0 {
+		r.Err = "empty argv"
+		return r
+	}
+	dir := repoPath
+	if d := strings.TrimSpace(g.Dir); d != "" {
+		dir = filepath.Join(repoPath, d)
+		if rel, err := filepath.Rel(repoPath, dir); err != nil || rel == ".." ||
+			strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			r.Err = fmt.Sprintf("dir %q escapes the checkout", g.Dir)
+			return r
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout())
+	defer cancel()
+	c := exec.CommandContext(ctx, g.Argv[0], g.Argv[1:]...)
+	c.Dir = dir
+	c.Env = cmdEnv(dir)
+	stdout, stderr, err := runCapture(c)
+	r.Stdout, r.Stderr = stdout, stderr
+	if err == nil {
+		r.Started = true
+		return r
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		r.Started = true // it started, then the bounded window killed it
+		r.Err = "timeout after " + g.timeout().String()
+		return r
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		r.Started = true
+		r.ExitCode = ee.ExitCode()
+		return r
+	}
+	r.Err = err.Error() // could not start (not found, bad dir, permission, ...)
+	return r
+}
+
+// gateOutput renders the per-gate aggregate recorded in PublishResult.
+func gateOutput(results []gateRun) string {
+	var b strings.Builder
+	for _, r := range results {
+		fmt.Fprintf(&b, "=== gate %s (%s) ===\n", r.ID, r.status())
+		if r.Err != "" {
+			fmt.Fprintf(&b, "%s\n", r.Err)
+		}
+		if s := strings.TrimRight(r.Stdout, "\n"); s != "" {
+			b.WriteString(s)
+			b.WriteByte('\n')
+		}
+		if s := strings.TrimRight(r.Stderr, "\n"); s != "" {
+			b.WriteString(s)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// persistGateEvidence writes one gate's streams under the cycle's verification
+// dir, redacted. Best-effort (§40): an evidence failure never changes the gate
+// verdict, and a cycle without an ID (direct CLI run) skips persistence.
+func persistGateEvidence(cycleID string, r gateRun, dryRun bool) {
+	if cycleID == "" {
+		return
+	}
+	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	_ = store.WriteVerification(cycleID, r.ID, "stdout", r.Stdout, dryRun)
+	_ = store.WriteVerification(cycleID, r.ID, "stderr", r.Stderr, dryRun)
 }
 
 // gitEnv returns the process env enriched with a GitHub App installation token

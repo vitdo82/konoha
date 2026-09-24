@@ -34,13 +34,15 @@ type WorkerConfig struct {
 // LifecycleDefaults is the `defaults.lifecycle` block: the fallback per-repo
 // policy when repos.yaml leaves the field unset.
 type LifecycleDefaults struct {
-	DevelopmentMaxComplexity int          `yaml:"developmentMaxComplexity"`
-	MaxDevReviewAttempts     int          `yaml:"maxDevReviewAttempts"`
-	MaxResolutionAttempts    int          `yaml:"maxResolutionAttempts"`
-	POGateTimeout            string       `yaml:"poGateTimeout"`
-	Harness                  string       `yaml:"harness"`
-	Merge                    MergeConfig  `yaml:"merge"`
-	Deploy                   DeployConfig `yaml:"deploy"`
+	DevelopmentMaxComplexity int              `yaml:"developmentMaxComplexity"`
+	MaxDevReviewAttempts     int              `yaml:"maxDevReviewAttempts"`
+	MaxResolutionAttempts    int              `yaml:"maxResolutionAttempts"`
+	POGateTimeout            string           `yaml:"poGateTimeout"`
+	Harness                  string           `yaml:"harness"`
+	Merge                    MergeConfig      `yaml:"merge"`
+	Deploy                   DeployConfig     `yaml:"deploy"`
+	Validation               []ValidationGate `yaml:"validation"`
+	ValidationCmd            string           `yaml:"validationCmd"`
 }
 
 // AppConfig is the resolved application configuration.
@@ -268,6 +270,9 @@ func (c AppConfig) validate() error {
 		return err
 	}
 	if err := c.Defaults.Lifecycle.Deploy.validate("defaults.lifecycle.deploy"); err != nil {
+		return err
+	}
+	if err := validateGates("defaults.lifecycle", c.Defaults.Lifecycle.Validation, c.Defaults.Lifecycle.ValidationCmd); err != nil {
 		return err
 	}
 	return nil
