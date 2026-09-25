@@ -208,6 +208,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// inherit the latest agent/verification outcome (defaulting to SKIPPED via
 	// recordTerminal's stampOutcome, never silently absent §40).
 	agentOut, verifOut := AgentOutcome(""), VerificationOutcome("")
+	// #94: the latest attempt's post-verification drift, threaded into the
+	// terminal outcome. Evidence only — it never changes the state or commit.
+	verificationMutated := false
 	// #88: best-effort per-issue activation lineage. The activity upserts by
 	// WorkflowID (idempotent §24), so a replay/retry never duplicates an
 	// activation; a write failure is logged, never fatal (§40).
@@ -276,6 +279,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if out.Usage.IsZero() {
 			out.Usage = usage
 		}
+		// #94: carry the latest attempt's drift evidence (never state-changing).
+		out.VerificationMutated = out.VerificationMutated || verificationMutated
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
 		}
@@ -466,6 +471,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 	lastAttempts++
 	agentOut, verifOut = agentOutcomeOf(dev), verificationOutcomeOf(dev)
+	verificationMutated = dev.VerificationMutated // #94
 	status.recordAgent(agentOut, agentConditionReason(dev), dev.BlockedReason, workflow.Now(ctx))
 	status.recordVerification(verifOut, workflow.Now(ctx))
 	usage.add(dev.Usage) // #87
@@ -614,6 +620,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
 		usage.add(repaired.Usage) // #87
 		agentOut, verifOut = agentOutcomeOf(repaired), verificationOutcomeOf(repaired)
+		verificationMutated = repaired.VerificationMutated // #94
 		status.recordAgent(agentOut, agentConditionReason(repaired), repaired.BlockedReason, workflow.Now(ctx))
 		status.recordVerification(verifOut, workflow.Now(ctx))
 		// #88: a repair is a distinct activation (reason repair, per-attempt

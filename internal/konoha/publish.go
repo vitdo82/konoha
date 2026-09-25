@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +72,67 @@ func validateRepo(in PublishInput) (ok, skipped bool, output string, err error) 
 	c.Env = cmdEnv(in.RepoPath) // §23: never expose GH_* to repo validation
 	out, runErr := c.CombinedOutput()
 	return runErr == nil, false, string(out), nil
+}
+
+// verificationDrift is the #94 post-verification evidence: whether a §26 gate
+// dirtied the worktree after the agent's commit. Evidence only — it never
+// changes the delivered commit SHA or any verdict (§40).
+type verificationDrift struct {
+	Mutated bool
+	Patch   string
+}
+
+// validateRepoWithDrift wraps validateRepo with #94 drift detection: snapshot
+// `git status --porcelain` before the gates, re-check after, and when the gates
+// left the worktree dirty capture the post-verification patch under the cycle's
+// `verification/post-verification.patch` (redacted, best-effort). The delivered
+// commit is untouched: a validation gate that rewrites a tracked file is
+// recorded as drift, never folded into the deliverable.
+func validateRepoWithDrift(in PublishInput) (ok, skipped bool, output string, drift verificationDrift, err error) {
+	pre, _ := execGit(context.Background(), in.RepoPath, "status", "--porcelain")
+	ok, skipped, output, err = validateRepo(in)
+	// Only a run that actually executed gates can drift; a skipped profile (or
+	// the publish path's already-validated no-op) has nothing to check — and
+	// must not flag the main checkout's pre-existing state.
+	if skipped {
+		return ok, skipped, output, drift, err
+	}
+	drift = detectVerificationDrift(in.RepoPath, pre)
+	if drift.Mutated {
+		log.Printf("konoha: verification drift in %s (cycle %s): a validation gate left uncommitted changes (evidence only)",
+			in.RepoPath, in.CycleID)
+		persistPostVerificationPatch(in.CycleID, drift.Patch, in.DryRun)
+	}
+	return ok, skipped, output, drift, err
+}
+
+// detectVerificationDrift re-reads `git status --porcelain` after validation and,
+// when non-empty, captures the diff since HEAD. pre is the pre-validation status
+// (kept in the evidence for context; the developer path asserts a clean tree
+// before validation, so any post-validation dirt is gate-induced).
+func detectVerificationDrift(repoPath, pre string) verificationDrift {
+	ctx := context.Background()
+	post, err := execGit(ctx, repoPath, "status", "--porcelain")
+	if err != nil || strings.TrimSpace(post) == "" {
+		return verificationDrift{}
+	}
+	patch, _ := execGit(ctx, repoPath, "diff", "HEAD")
+	body := "before:\n" + strings.TrimRight(pre, "\n") + "\nafter:\n" + strings.TrimSpace(post)
+	if d := strings.TrimSpace(patch); d != "" {
+		body += "\n\n" + d
+	}
+	return verificationDrift{Mutated: true, Patch: body}
+}
+
+// persistPostVerificationPatch writes the drift patch under the cycle's
+// verification/ evidence (best-effort, redacted). A cycle without an ID (direct
+// CLI run) or no patch skips persistence.
+func persistPostVerificationPatch(cycleID, patch string, dryRun bool) {
+	if cycleID == "" || strings.TrimSpace(patch) == "" {
+		return
+	}
+	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	_ = store.WriteVerification(cycleID, "post-verification", "patch", patch, dryRun)
 }
 
 // gateRun is one gate's observed result.
@@ -250,7 +312,8 @@ func cmdWithEnv(ctx context.Context, env []string, dir string, name string, args
 // failure is recorded, never silently ignored.
 func validateGate(in PublishInput) (PublishResult, error) {
 	res := PublishResult{Branch: in.Branch}
-	ok, skipped, output, err := validateRepo(in)
+	// #94: the wrapper records verification drift as evidence (never a verdict).
+	ok, skipped, output, _, err := validateRepoWithDrift(in)
 	if err != nil {
 		return res, fmt.Errorf("run validation %q: %w", in.ValidationCmd, err)
 	}

@@ -149,7 +149,11 @@ scrubbed agent env (no `GH_*`). All gates run — never early-exit — and the
 aggregate passes iff every **mandatory** gate exits 0; an advisory failure is
 recorded but tolerated, while a gate that cannot start records `ERROR` and fails
 closed. Each gate's `stdout`/`stderr` lands under the cycle's
-`verification/<id>.stdout|stderr` evidence (redacted). The legacy
+`verification/<id>.stdout|stderr` evidence (redacted). A gate that rewrites a
+tracked file is recorded as **verification drift**: `verificationMutated=true`
+in `outcome.json` plus a saved `verification/post-verification.patch` and a
+warning log — evidence only, never folded into the deliverable (the delivered
+commit SHA and terminal state are unchanged). The legacy
 `lifecycle.validationCmd` shell string still works; setting both is a load-time
 error (ambiguous). A repo that declares neither inherits
 `defaults.lifecycle.validation`.
@@ -171,6 +175,7 @@ cycles/<repo>-issue-<n>/     (and <repo>-review-<n> for PR cycles)
   verification/     # §26 per-gate streams (one pair per configured gate)
     <id>.stdout     # redacted gate stdout
     <id>.stderr     # redacted gate stderr
+    post-verification.patch   # #94 drift: a gate rewrote a tracked file
   outcome.json      # the terminal §6 outcome
 lineage/<owner>-<repo>-issue-<n>.json   # #88 per-issue activation lineage (below)
 ```

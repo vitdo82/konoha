@@ -62,19 +62,20 @@ type DevelopRequest struct {
 // always recorded (never silently dropped, §26): Validated/Skipped/Output
 // describe the §26 repo-validation run before publication.
 type DevelopResult struct {
-	WorktreeDir       string         `json:"worktreeDir"`
-	BaseSHA           string         `json:"baseSha,omitempty"` // #88: resolved branch-from commit (lineage)
-	CommitSHA         string         `json:"commitSha"`
-	ChangedFiles      []string       `json:"changedFiles"`
-	Summary           string         `json:"summary"`
-	Concerns          []string       `json:"concerns"`
-	Blocked           bool           `json:"blocked,omitempty"`       // #84 agent-reported blocked (no deliverable)
-	BlockedReason     string         `json:"blockedReason,omitempty"` // why the agent cannot proceed
-	Validated         bool           `json:"validated"`
-	ValidationSkipped bool           `json:"validationSkipped"`
-	ValidationOutput  string         `json:"validationOutput"`
-	Evidence          *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
-	Usage             HarnessUsage   `json:"usage,omitempty"`    // #87 best-effort tokens/cost (zero = not reported)
+	WorktreeDir         string         `json:"worktreeDir"`
+	BaseSHA             string         `json:"baseSha,omitempty"` // #88: resolved branch-from commit (lineage)
+	CommitSHA           string         `json:"commitSha"`
+	ChangedFiles        []string       `json:"changedFiles"`
+	Summary             string         `json:"summary"`
+	Concerns            []string       `json:"concerns"`
+	Blocked             bool           `json:"blocked,omitempty"`       // #84 agent-reported blocked (no deliverable)
+	BlockedReason       string         `json:"blockedReason,omitempty"` // why the agent cannot proceed
+	Validated           bool           `json:"validated"`
+	ValidationSkipped   bool           `json:"validationSkipped"`
+	ValidationOutput    string         `json:"validationOutput"`
+	VerificationMutated bool           `json:"verificationMutated,omitempty"` // #94: a §26 gate dirtied the worktree (evidence only)
+	Evidence            *AgentEvidence `json:"evidence,omitempty"`            // #83 raw prompt/streams (redacted on write)
+	Usage               HarnessUsage   `json:"usage,omitempty"`               // #87 best-effort tokens/cost (zero = not reported)
 }
 
 // developerSystem is the authoritative developer instruction block (§4.4, §26,
@@ -445,12 +446,16 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	}
 	// §26: record validation output unconditionally; the publication gate
 	// decides whether a failing result still ships (never silently ignored).
-	res.Validated, res.ValidationSkipped, res.ValidationOutput, err =
-		validateRepo(PublishInput{RepoPath: dir, ValidationCmd: in.ValidationCmd,
+	// #94: the wrapper also records post-verification drift as evidence; the
+	// delivered commit SHA stays exactly what the agent committed.
+	var drift verificationDrift
+	res.Validated, res.ValidationSkipped, res.ValidationOutput, drift, err =
+		validateRepoWithDrift(PublishInput{RepoPath: dir, ValidationCmd: in.ValidationCmd,
 			Validation: in.Validation, CycleID: in.WorkflowID})
 	if err != nil {
 		return DevelopResult{}, err
 	}
+	res.VerificationMutated = drift.Mutated
 	return res, nil
 }
 
