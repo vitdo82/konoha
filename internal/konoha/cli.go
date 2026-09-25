@@ -128,6 +128,14 @@ func Main() {
 	}
 	defer c.Close()
 
+	// #89: print the running cycle's status snapshot as JSON.
+	if len(os.Args) > 1 && os.Args[1] == "status" {
+		if err := runStatus(c, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	w := worker.New(c, appCfg.Worker.TaskQueue, worker.Options{
 		MaxConcurrentActivityExecutionSize: workerMaxConcurrentActivities(),
 	})
@@ -814,6 +822,36 @@ func debugIssueInput(n int) IssueInput {
 		RepoPath:  getenv("REPO_PATH", "/Users/vit/projects/ducklambda"),
 		Lifecycle: LifecycleConfig{DryRun: true},
 	}
+}
+
+// runStatus is the `prbot status <repo> <issue>` reader (#89): it queries the
+// stable <repo>-issue-<n> workflow's "status" handler via the Temporal client
+// and prints the JSON snapshot. The projection (statusJSON) is pure and
+// unit-tested without a Temporal server.
+func runStatus(c client.Client, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: prbot status <repo> <issue>")
+	}
+	var n int
+	fmt.Sscan(args[1], &n)
+	if n <= 0 {
+		return fmt.Errorf("usage: prbot status <repo> <issue>")
+	}
+	wfID := fmt.Sprintf("%s-issue-%d", args[0], n)
+	val, err := c.QueryWorkflow(context.Background(), wfID, "", "status")
+	if err != nil {
+		return fmt.Errorf("query status %s: %w", wfID, err)
+	}
+	var st StatusQuery
+	if err := val.Get(&st); err != nil {
+		return err
+	}
+	out, err := statusJSON(st)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
+	return nil
 }
 
 func startReviewWorkflow(c client.Client) {

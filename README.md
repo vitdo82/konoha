@@ -343,7 +343,10 @@ of `vitdo82/ducklambda`; `PR_NUM` overrides), and `/tmp/prbot publish`
 activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
 `VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override), and `/tmp/prbot deps`
 (runs the §52 dependency scan for `OWNER`/`REPO`/`REPO_PATH` and prints the
-validated `DependencyReport`; `SCAN_CMD` required). `prbot config --deps`
+validated `DependencyReport`; `SCAN_CMD` required), and `/tmp/prbot status
+<repo> <issue>` (queries the running issue cycle's `status` handler and prints
+the `{state, currentStep, conditions, agentOutcome, verificationOutcome}` JSON;
+needs a running worker + Temporal). `prbot config --deps`
 prints the §52 dependency schedule inputs for `apply.sh`, `prbot config
 --alerts` prints the §53 alert schedule inputs, and `prbot config --grooming`
 prints the §56 grooming schedule inputs.
