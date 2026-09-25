@@ -332,7 +332,8 @@ and prints the `ReleaseResult`; `OWNER`/`REPO`/`BASE_BRANCH`/`CHANGELOG_PATH`/
 `VERSION_PREFIX`/`RELEASE_ENABLED`/`DRY_RUN` env overrides; no Temporal), and
 `./prbot deps` (runs the §52 `ScanDependencies` activity directly and prints the
 validated `DependencyReport`; `OWNER`/`REPO`/`REPO_PATH` plus `SCAN_CMD`
-required; no Temporal).
+required; no Temporal), and `./prbot status <repo> <issue>` (queries the running
+cycle's `status` handler via the Temporal client and prints the JSON snapshot).
 - `workflow.go` owns the lifecycle state machine: `IssueCycleWorkflow` now
   wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
   (suppresses publish on restricted paths/labels) → publish (idempotent PR) →
@@ -353,6 +354,13 @@ required; no Temporal).
   (§14/§19), disagreement (§37), diagnosis → HUMAN_REQUIRED (§17/§18), and the
   LARGE path (split/children — currently ends at the deterministic `NOT_WIRED`
   terminal, never a silent drop). All I/O stays in activities (replay-safe).
+  `status.go` adds the read-only `status` query handler to both
+  `IssueCycleWorkflow` and `PrReviewWorkflow`, returning
+  `{state, currentStep, conditions, agentOutcome, verificationOutcome}`; it is
+  additive to the unchanged `state` handler, and the per-step `conditions` are
+  appended in workflow code (never activities) so replay reconstructs them.
+  `prbot status <repo> <issue>` queries it via the Temporal client; the pure
+  projection (`statusJSON`) is unit-tested without a server.
 - `IssueAllWorkflow` is the issue-sweep analog of `ReviewAllWorkflow` (§32):
   lists open issues lacking `konoha:managed` and starts a stable
   `<repo>-issue-<n>` child `IssueCycleWorkflow` per issue, capped by

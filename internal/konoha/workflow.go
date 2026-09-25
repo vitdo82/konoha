@@ -38,6 +38,12 @@ func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 	ctx = workflow.WithActivityOptions(ctx, ao)
 	info := workflow.GetInfo(ctx)
 
+	// #89: additive read-only status query (state + current step + conditions).
+	status := newStatusTracker(stateReviewing)
+	if err := workflow.SetQueryHandler(ctx, "status", func() (StatusQuery, error) { return status.snapshot(), nil }); err != nil {
+		workflow.GetLogger(ctx).Error("set status query handler failed", "err", err)
+	}
+
 	// #83: durable per-cycle evidence (best-effort — never fails the review).
 	writeEvidence := func(req EvidenceRequest) {
 		req.CycleID = info.WorkflowExecution.ID
@@ -47,25 +53,30 @@ func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 		}
 	}
 
+	status.setStep("fetch")
 	var diff string
 	if err := workflow.ExecuteActivity(ctx, FetchDiff, in).Get(ctx, &diff); err != nil {
 		return err
 	}
 	writeEvidence(EvidenceRequest{Diff: diff})
 
+	status.setStep("review")
 	var result ReviewResult
 	if err := workflow.ExecuteActivity(ctx, ReviewWithOpencode, in, diff).Get(ctx, &result); err != nil {
 		return err
 	}
+	status.recordAgent(agentOutcomeSuccess, "", "", workflow.Now(ctx))
 	e := evidenceOf(result.Evidence)
 	writeEvidence(EvidenceRequest{
 		Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
 		Result: evidenceResultJSON(result), Diff: diff,
 	})
 
+	status.setStep("submit")
 	if err := workflow.ExecuteActivity(ctx, SubmitReview, in, result).Get(ctx, nil); err != nil {
 		return err
 	}
+	status.recordTerminal(stateReviewed, "", workflow.Now(ctx))
 
 	workflow.GetLogger(ctx).Info("review done",
 		"workflow", info.WorkflowExecution.ID, "verdict", result.Verdict)
@@ -159,11 +170,19 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	if err := workflow.SetQueryHandler(ctx, "state", func() (string, error) { return state, nil }); err != nil {
 		workflow.GetLogger(ctx).Error("set state query handler failed", "err", err)
 	}
+	// #89: additive read-only status query (state + current step + per-step
+	// conditions + outcomes). Conditions are appended in workflow code, never an
+	// activity, so replay reconstructs the snapshot identically.
+	status := newStatusTracker(state)
+	if err := workflow.SetQueryHandler(ctx, "status", func() (StatusQuery, error) { return status.snapshot(), nil }); err != nil {
+		workflow.GetLogger(ctx).Error("set status query handler failed", "err", err)
+	}
 	// §39 observability state tracked across transitions (logged on each).
 	lastComplexity, lastConfidence := 0, ""
 	lastAttempts, lastReviewRounds := 0, 0
 	transition := func(s string) {
 		state = s
+		status.setState(s)
 		// §39 observability: every transition emits the field set (workflow ID,
 		// issue, state, repo, complexity, confidence, review rounds). Logging is
 		// replay-safe, so this stays deterministic.
@@ -218,6 +237,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
 		}
+		// #89: land the terminal condition on the live status snapshot too.
+		status.recordTerminal(out.TerminalState, out.EscalationReason, workflow.Now(ctx))
 		return recordTerminal(ctx, info, in, out)
 	}
 
@@ -399,6 +420,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 	lastAttempts++
 	agentOut, verifOut = agentOutcomeOf(dev), verificationOutcomeOf(dev)
+	status.recordAgent(agentOut, agentConditionReason(dev), dev.BlockedReason, workflow.Now(ctx))
+	status.recordVerification(verifOut, workflow.Now(ctx))
 	usage.add(dev.Usage) // #87
 	recordActivation(LineageActivation{
 		Attempt: lastAttempts, WorkflowID: info.WorkflowExecution.ID,
@@ -439,6 +462,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 
 	// -- publish (idempotent PR, §25) — from the MAIN repo path + the dev commit
 	// (the worktree was cleaned up; its commit lives in the main repo object DB).
+	status.setStep("publish")
 	var pub PublishResult
 	pubIn := PublishInput{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath,
@@ -544,6 +568,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
 		usage.add(repaired.Usage) // #87
 		agentOut, verifOut = agentOutcomeOf(repaired), verificationOutcomeOf(repaired)
+		status.recordAgent(agentOut, agentConditionReason(repaired), repaired.BlockedReason, workflow.Now(ctx))
+		status.recordVerification(verifOut, workflow.Now(ctx))
 		// #88: a repair is a distinct activation (reason repair, per-attempt
 		// workflowId) so develop + repair are two ordered activations.
 		recordActivation(LineageActivation{
@@ -557,6 +583,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return blockedTerminal(repaired.BlockedReason)
 		}
 		// re-publish the repaired commit onto the same branch (idempotent).
+		status.setStep("publish")
 		pubIn.CommitSHA = repaired.CommitSHA
 		pubIn.RepoPath = in.RepoPath
 		if err := workflow.ExecuteActivity(ctx, PublishDeveloperChange, pubIn).Get(ctx, &pub); err != nil {
@@ -590,6 +617,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		},
 	}
 	ciCtx := workflow.WithActivityOptions(ctx, ciAO)
+	status.setStep("ci")
 	var ci CIStatus
 	if err := workflow.ExecuteActivity(ciCtx, WaitForCI, CIRequest{
 		Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber,
@@ -612,6 +640,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return nil
 	}
 	transition(stateMerging)
+	status.setStep("merge")
 
 	var merged MergeResult
 	if err := workflow.ExecuteActivity(ctx, MergePullRequest, MergeRequest{
