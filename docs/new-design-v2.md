@@ -2460,3 +2460,60 @@ unchanged. The canonical triple the record must never collapse:
 Per-outcome counts are mirrored into the §39 sink
 (`agent_outcome_<lower>` / `verification_outcome_<lower>`) so derived gauges can
 consume them; the existing derived gauges are unchanged.
+
+## 58. Speculative candidate fan-out (DEFERRED)
+
+Status: **deferred — design only, nothing implemented.** This is the ESF Phase 2
+capability: prepare an environment once, snapshot it, clone N ways, run N
+independent agents at the *same* task, and pick the strongest result by
+**deterministic ranking**, not model confidence. Konoha's existing fan-out is
+*decomposition* (Splitter → child DAG, one attempt per sub-task); this is
+*speculation* (N attempts at one task). The distinction is the whole point.
+
+The architectural rule this section must hold:
+
+> **The workflow controls parallelism and infrastructure. Agents operate only
+> inside the worktree/sandbox assigned to them — no agent clones or manages
+> infrastructure.**
+
+### Preconditions (hard blockers — both must hold before any implementation)
+
+1. **LARGE path + completion gate wired.** The LARGE path is wired
+   (`runLargePath`: split → children → parent close), but the completion gate
+   (§14/§19) is still the follow-up — `IssueCycleWorkflow` closes the SMALL path
+   at the §15/§25 approval without running `EvaluateCompletion`/`EvaluateClosePolicy`
+   (`workflow.go` "completion gate is the follow-up"). Speculation over a
+   lifecycle that cannot yet complete is meaningless. (The old `stateNotWired`
+   constant is now dead and can be dropped.)
+2. **Isolation mechanism chosen.** Host worktrees are the only isolation today;
+   no snapshot/clone/rollback provider exists. An isolation provider that can
+   snapshot a prepared base and cheaply clone it N ways must be selected first.
+
+Until both hold this section is a note, not a spec. Do not declare a half-built
+`Snapshotter`, do not add config keys, and do not fake capability detection — an
+unsupported provider must read as unsupported, never as a silent no-op success.
+
+### Plan (when unblocked)
+
+1. **Snapshot seam.** A `Snapshotter` interface (`Snapshot`/`Clone`/`Rollback`)
+   plus an explicit capability flag, implemented only once a provider supports
+   it.
+2. **Fan-out.** A `SpeculativeChangeWorkflow` (or a `strategy` branch of
+   `IssueCycleWorkflow`) prepares the base once, clones N candidates, runs the
+   existing develop→verify sequence per candidate concurrently, and collects
+   per-candidate evidence. One candidate failing must not abort siblings;
+   cancellation must destroy every live candidate.
+3. **Deterministic evaluation.** A pure ranking function over already-recorded
+   signals (mandatory gates passed, number of gates passed, diff size, test-file
+   overlap, no infrastructure error). A candidate is eligible only if **every
+   mandatory gate passed**. Lexicographic, total, reproducible — **no LLM
+   tie-break**.
+4. **Evidence.** Per candidate: `candidate_id`, `clone_parent`, `strategy`,
+   `evaluator_score`, and the winning rationale, recorded alongside the existing
+   §57 outcome record. The canonical `agent=SUCCESS, verification=FAILED` case
+   remains representable per candidate.
+
+Concurrency is bounded and deterministic (the workflow owns scheduling, §43/§10
+style); the ranking is a pure function so the same candidate set always yields
+the same winner. An ineligible candidate can never be selected regardless of
+diff size, and the pre-execution/§40 fail-closed rules apply unchanged.
