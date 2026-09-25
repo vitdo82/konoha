@@ -102,6 +102,8 @@ worker:
   sweepTimeout: 10m               # sweep activity window
   retryMaxAttempts: 3
   sweepRetryMaxAttempts: 2
+  cleanupMaxAttempts: 5           # #93 worktree teardown retries (idempotent)
+  orphanWorktreeTTL: 24h          # #93 sweep a stranded owned worktree after this age
 evidence:
   dir: .konoha/evidence           # durable per-cycle evidence root (see below)
 harness:                          # §85 generic harness (used when a repo selects `generic`)
@@ -179,6 +181,24 @@ the outcome and logged, but never changes the authoritative workflow state
 redacted via the §23 `Redactor` and atomic (temp file + rename, owner-only
 perms). Under `dryRun` (§42) evidence is namespaced under `dryrun/` — it is a
 record, not a mutation.
+
+`outcome.json`'s `cleanup` section records the #93 worktree teardown that runs on
+**every** exit path (including cancellation, via a disconnected workflow
+context):
+
+```json
+"cleanup": {"attempted": true, "outcome": "removed", "verified": true, "remaining": 0}
+```
+
+`outcome` is one of `removed`/`absent`/`skipped`/`failed`; `verified` is an
+independent `git worktree list` + on-disk check, and `remaining` counts
+konoha-owned worktrees still present (a leftover is reported, never hidden).
+Teardown removes only a worktree whose `.owner` claim matches the run — a
+foreign/unclaimed directory is never touched. A cleanup failure is logged and
+recorded but never changes the terminal state (§40). Once per worker start an
+orphan sweep removes an owned worktree whose workflow is gone and whose age
+exceeds `worker.orphanWorktreeTTL`; `KONOHA_DISABLE_WORKTREE_CLEANUP=1`
+(test/debug only) disables teardown and the sweep.
 
 ### Agent token/cost accounting (§39)
 

@@ -23,9 +23,11 @@ import (
 
 const testIssue = 7
 
-// mockCycleEnv returns an env with the analysis/estimate mocks wired and
-// RecordCycleMetrics registered, primed for the given estimate.
-func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironment {
+// newCycleEnv returns an env with the analysis/estimate mocks wired and
+// RecordCycleMetrics registered, primed for the given estimate. It does NOT
+// stub the #93 cleanup activity: callers either call mockCleanup or register
+// the real CleanupWorktree activity (to assert a real teardown).
+func newCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironment {
 	t.Helper()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
 	env.RegisterActivity(RecordCycleMetrics)
@@ -40,6 +42,30 @@ func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvir
 	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
 	env.OnActivity(EstimateIssue, mock.Anything, mock.Anything, mock.Anything).Return(est, nil)
 	return env
+}
+
+// mockCycleEnv is newCycleEnv plus the #93 teardown stub.
+func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironment {
+	env := newCycleEnv(t, est)
+	mockCleanup(env)
+	return env
+}
+
+// mockCleanup stubs the #93 teardown activity (nothing to remove in tests that
+// mock the agent activities); tests that assert real teardown register the real
+// activity instead.
+func mockCleanup(env *testsuite.TestWorkflowEnvironment) {
+	env.OnActivity(CleanupWorktree, mock.Anything, mock.Anything).Return(
+		CleanupResult{Outcome: cleanupAbsent, Verified: true}, nil)
+}
+
+// createClaimedWorktree materializes the deterministic worktree dir + owner
+// claim for a develop request, so a test can exercise the workflow's real
+// teardown (the mocked agent activity does not run the real one).
+func createClaimedWorktree(in DevelopRequest) {
+	dir := worktreeDir(filepath.Clean(in.RepoPath), in.Repo, in.IssueNum)
+	_ = os.MkdirAll(dir, 0o700)
+	_ = writeOwner(dir, worktreeOwner{WorkflowID: in.WorkflowID, BaseSHA: "testbase"})
 }
 
 // smallPathHooks counts the side-effecting calls a test cares about.
@@ -59,11 +85,15 @@ func mockSmallPath(env *testsuite.TestWorkflowEnvironment) *smallPathHooks {
 func mockSmallPathWith(env *testsuite.TestWorkflowEnvironment, ci CIStatus, ciErr error, merged MergeResult, mergeErr error) *smallPathHooks {
 	h := &smallPathHooks{}
 	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
-	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{
-		WorktreeDir: "/tmp/wt", CommitSHA: "devsha", ChangedFiles: []string{"pkg/worker.go"},
-		Summary: "change", Validated: true,
-		Evidence: &AgentEvidence{Prompt: "dev prompt", Stdout: "dev stdout", Stderr: "dev stderr"},
-	}, nil)
+	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(func(_ context.Context, in DevelopRequest) (DevelopResult, error) {
+		createClaimedWorktree(in) // #93: the real activity would leave this for workflow teardown
+		return DevelopResult{
+			WorktreeDir: worktreeDir(filepath.Clean(in.RepoPath), in.Repo, in.IssueNum),
+			CommitSHA:   "devsha", ChangedFiles: []string{"pkg/worker.go"},
+			Summary: "change", Validated: true,
+			Evidence: &AgentEvidence{Prompt: "dev prompt", Stdout: "dev stdout", Stderr: "dev stderr"},
+		}, nil
+	})
 	env.OnActivity(PublishDeveloperChange, mock.Anything, mock.Anything).Return(PublishResult{
 		Branch: "konoha/issue-7", PRNumber: 101, PRURL: "https://x/pr/101", Validated: true,
 	}, nil)
@@ -457,6 +487,7 @@ func TestWorkflowLargeSplitChildrenClose(t *testing.T) {
 	resetMetrics()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
 	env.RegisterActivity(RecordCycleMetrics)
+	mockCleanup(env)
 	analysis := IssueAnalysis{Title: "t", Body: "b", Summary: "s", Spec: specFallback,
 		Requirements: []string{"r1"}, AcceptanceCriteria: []string{"Given c When d Then e"}}
 	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
@@ -492,6 +523,7 @@ func TestWorkflowLargeChildFailureBlocksParent(t *testing.T) {
 	resetMetrics()
 	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
 	env.RegisterActivity(RecordCycleMetrics)
+	mockCleanup(env)
 	analysis := IssueAnalysis{Title: "t", Body: "b", Summary: "s", Spec: specFallback,
 		Requirements: []string{"r1"}, AcceptanceCriteria: []string{"Given c When d Then e"}}
 	env.OnActivity(AnalyzeIssue, mock.Anything, mock.Anything).Return(analysis, nil)
@@ -678,6 +710,7 @@ func newSweepEnv(t *testing.T, lc LifecycleConfig, issues []int) *testsuite.Test
 	env.RegisterWorkflow(IssueCycleWorkflow)
 	env.RegisterWorkflow(FailureFeedbackWorkflow)
 	env.RegisterActivity(RecordCycleMetrics)
+	mockCleanup(env)
 	var pending []IssueInput
 	for _, n := range issues {
 		pending = append(pending, IssueInput{
