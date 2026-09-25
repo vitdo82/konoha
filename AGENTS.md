@@ -143,7 +143,13 @@ without restarting a completed workflow. Deliveries with an invalid
   while any gate that cannot start records `ERROR` and fails closed (§40). Gates
   run with the scrubbed agent env (§23, no `GH_*`) in a repo-relative `dir`
   (traversal rejected at load and again at run). Each gate's streams land in the
-  cycle's `verification/<id>.stdout|stderr` evidence (redacted). The legacy
+  cycle's `verification/<id>.stdout|stderr` evidence (redacted). `validateRepoWithDrift`
+  (#94) snapshots `git status --porcelain` before/after the run: a gate that
+  rewrites a tracked file is recorded as `verificationMutated=true` on
+  `outcome.json` plus a `verification/post-verification.patch` (a warning is
+  logged). Drift is EVIDENCE ONLY — it never changes the delivered commit SHA or
+  the terminal §6 state; both the structured-gate and legacy `validationCmd`
+  paths are covered. The legacy
   `validationCmd` shell string is the fallback; declaring both is a load-time
   error (`config.go` `validateGates`), and an absent profile behaves exactly as
   before (skipped). `ValidationGates`/`ValidationCommand` (policy.go) resolve the
@@ -618,7 +624,8 @@ cycle's `status` handler via the Temporal client and prints the JSON snapshot).
   (`attempted`/`outcome`/`verified`/`remaining`; see `cleanup.go`).
   `WriteVerification` lands each §26 gate's streams under
   `cycles/<id>/verification/<gate-id>.stdout|stderr` (redacted, plain-segment
-  gate id), written best-effort by the validation runner via `persistGateEvidence`.
+  gate id), written best-effort by the validation runner via `persistGateEvidence`;
+  the #94 drift patch reuses it as `verification/post-verification.patch`.
   Never call `activity.GetLogger` in these activities (unit tests use a
   non-Temporal ctx, which panics).
 - `outcome.go` owns the #84 explicit three-outcome evidence record written into
