@@ -189,6 +189,17 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// inherit the latest agent/verification outcome (defaulting to SKIPPED via
 	// recordTerminal's stampOutcome, never silently absent §40).
 	agentOut, verifOut := AgentOutcome(""), VerificationOutcome("")
+	// #88: best-effort per-issue activation lineage. The activity upserts by
+	// WorkflowID (idempotent §24), so a replay/retry never duplicates an
+	// activation; a write failure is logged, never fatal (§40).
+	recordActivation := func(act LineageActivation) {
+		if err := workflow.ExecuteActivity(ctx, RecordActivation, ActivationRequest{
+			Owner: in.Owner, Repo: in.Repo, Issue: in.IssueNum,
+			Activation: act, DryRun: in.Lifecycle.DryRun,
+		}).Get(ctx, nil); err != nil {
+			workflow.GetLogger(ctx).Error("lineage activation write failed (non-fatal)", "err", err)
+		}
+	}
 	// #87: best-effort agent usage aggregated across the cycle's agent runs
 	// (develop/repair/review; zero when no harness reported any).
 	var usage HarnessUsage
@@ -269,6 +280,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	if strings.TrimSpace(model) == "" {
 		model = defaultAgentModel
 	}
+	// #88: the effective harness/model recorded on every lineage activation.
+	effHarness, effModel := resolvedHarnessModel(in.Lifecycle)
 	if err := workflow.ExecuteActivity(ctx, EnsureManagedNote, ManagedNoteRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum,
 		WorkflowID: info.WorkflowExecution.ID, Trigger: in.Trigger,
@@ -387,6 +400,12 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	lastAttempts++
 	agentOut, verifOut = agentOutcomeOf(dev), verificationOutcomeOf(dev)
 	usage.add(dev.Usage) // #87
+	recordActivation(LineageActivation{
+		Attempt: lastAttempts, WorkflowID: info.WorkflowExecution.ID,
+		Reason: activationReasonInitial, Harness: effHarness, Model: effModel,
+		BaseSHA: dev.BaseSHA, CommitSHA: dev.CommitSHA, Result: string(agentOut),
+		TokensIn: dev.Usage.TokensIn, TokensOut: dev.Usage.TokensOut, CostUSD: dev.Usage.CostUSD,
+	})
 	writeAgentEvidence(writeEvidence, dev.Evidence, dev, dev.ValidationOutput)
 	if dev.Blocked {
 		// #84: an agent-reported block is not a failed attempt — route to human.
@@ -525,6 +544,14 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
 		usage.add(repaired.Usage) // #87
 		agentOut, verifOut = agentOutcomeOf(repaired), verificationOutcomeOf(repaired)
+		// #88: a repair is a distinct activation (reason repair, per-attempt
+		// workflowId) so develop + repair are two ordered activations.
+		recordActivation(LineageActivation{
+			Attempt: lastAttempts, WorkflowID: fmt.Sprintf("%s-repair-%d", info.WorkflowExecution.ID, lastAttempts),
+			Reason: activationReasonRepair, Harness: effHarness, Model: effModel,
+			BaseSHA: repaired.BaseSHA, CommitSHA: repaired.CommitSHA, Result: string(agentOut),
+			TokensIn: repaired.Usage.TokensIn, TokensOut: repaired.Usage.TokensOut, CostUSD: repaired.Usage.CostUSD,
+		})
 		if repaired.Blocked {
 			// #84: a blocked repair must not loop — route to the human path.
 			return blockedTerminal(repaired.BlockedReason)
@@ -808,6 +835,12 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	// #84: fill the explicit three-outcome evidence (defaults to SKIPPED, never
 	// silently absent §40) and stamp the ordered conditions deterministically.
 	out = stampOutcome(out, workflow.Now(ctx))
+	// #88: pin the effective policy + resolved harness/model + task identity as a
+	// digest on every terminal outcome, so "same config, different result" is
+	// investigable from outcome.json.
+	if out.PolicyDigest == "" {
+		out.PolicyDigest = policyDigest(in.Lifecycle, taskHash(in.Owner, in.Repo, in.IssueNum))
+	}
 	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
 	// child ID for a sweep-escalated failure), so evidence is stable under retry.
 	cycleID := out.WorkflowID

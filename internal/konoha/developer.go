@@ -63,6 +63,7 @@ type DevelopRequest struct {
 // describe the §26 repo-validation run before publication.
 type DevelopResult struct {
 	WorktreeDir       string         `json:"worktreeDir"`
+	BaseSHA           string         `json:"baseSha,omitempty"` // #88: resolved branch-from commit (lineage)
 	CommitSHA         string         `json:"commitSha"`
 	ChangedFiles      []string       `json:"changedFiles"`
 	Summary           string         `json:"summary"`
@@ -416,7 +417,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	// the human path instead of the repair loop; no commit/validation is expected.
 	if rep.Blocked {
 		return DevelopResult{
-			Blocked: true, BlockedReason: rep.BlockedReason,
+			BaseSHA: baseSHA, Blocked: true, BlockedReason: rep.BlockedReason,
 			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
 			Usage:    parseHarnessUsage(combined),
 		}, nil
@@ -434,6 +435,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 
 	res := DevelopResult{
 		WorktreeDir:  dir,
+		BaseSHA:      baseSHA,
 		CommitSHA:    localHead(ctx, dir),
 		ChangedFiles: changedFiles(ctx, dir, baseSHA),
 		Summary:      rep.Summary,

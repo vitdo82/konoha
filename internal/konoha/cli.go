@@ -185,6 +185,7 @@ func Main() {
 	w.RegisterActivity(EvaluateAlerts)
 	w.RegisterActivity(EnsureFailureIssue)
 	w.RegisterActivity(WriteCycleEvidence) // #83: durable per-cycle evidence
+	w.RegisterActivity(RecordActivation)   // #88: per-issue activation lineage
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
