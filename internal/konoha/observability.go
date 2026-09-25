@@ -124,6 +124,7 @@ type CycleOutcome struct {
 	DurationSeconds     float64             `json:"durationSeconds,omitempty"`
 	Usage               HarnessUsage        `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
 	EvidenceError       string              `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
+	PolicyDigest        string              `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the

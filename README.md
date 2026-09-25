@@ -170,6 +170,7 @@ cycles/<repo>-issue-<n>/     (and <repo>-review-<n> for PR cycles)
     <id>.stdout     # redacted gate stdout
     <id>.stderr     # redacted gate stderr
   outcome.json      # the terminal §6 outcome
+lineage/<owner>-<repo>-issue-<n>.json   # #88 per-issue activation lineage (below)
 ```
 
 Evidence is **best-effort**: a write failure is recorded as `evidenceError` on
@@ -190,6 +191,23 @@ aggregate in `outcome.json`, and the §39 sink accumulates
 `agent_tokens_in_total`, `agent_tokens_out_total`, `agent_cost_usd_total` plus a
 derived `cost_per_completed_issue` gauge (total reported cost / total completes).
 Usage is observability only — no verdict or terminal state reads it.
+
+### Per-issue activation lineage + policy digest (#88)
+
+Per `(repo, issue)` Konoha keeps `lineage/<owner>-<repo>-issue-<n>.json`: every
+develop/repair **activation** with its attempt number, workflowId, reason
+(`initial`/`repair`), harness/model, base/commit SHA, result and reported usage,
+plus `attempts`/`totalTokens`/`totalCostUsd` **recomputed** from the recorded
+activations (missing usage contributes zero, never estimated). Recording is
+idempotent by `workflowId` — a retried activity replaces, never appends — so a
+develop + repair are two ordered activations and replays never duplicate.
+`outcome.json` additionally carries `policyDigest`, a SHA-256 of the effective
+lifecycle policy + resolved harness/model + task identity (canonical JSON, so it
+is stable across processes and changes when any policy/model/task field
+changes). Why: the same config can produce different results, and the digest
+plus the lineage make that difference investigable. Lineage is best-effort and
+never changes the terminal state. Under `dryRun` it is namespaced under
+`dryrun/lineage/` and mutates nothing external.
 
 ### Env override matrix
 

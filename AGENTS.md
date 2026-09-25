@@ -597,4 +597,20 @@ required; no Temporal).
   from a process failure: it routes to `HUMAN_REQUIRED` (`reasonAgentBlocked`)
   and never the repair loop. The Developer/Repair output contract gained a
   `{"blocked":true,"blockedReason":"..."}` variant (validated fail-closed in
-  `ValidateDeveloperReport`), parsed into `DevelopResult.Blocked`.
+   `ValidateDeveloperReport`), parsed into `DevelopResult.Blocked`.
+- `lineage.go` owns the #88 per-issue activation lineage + policy digest: per
+  `(repo, issue)` it writes `lineage/<owner>-<repo>-issue-<n>.json` under the
+  evidence root (`dryrun/lineage/` under §42) via the `RecordActivation`
+  activity, whose `LineageActivation` entries record attempt/workflowId/
+  reason(`initial|repair`)/harness/model/baseSha/commitSha/result + #87 usage.
+  `upsertActivation` is idempotent by `WorkflowID` (a duplicate REPLACES, never
+  appends, §24) and `recomputeLineage` derives `attempts`/`totalTokens`/
+  `totalCostUsd` from recorded usage only (missing = zero, never estimated); a
+  repair gets a distinct per-attempt workflowId so develop + repair are two
+  ordered activations. Recording is best-effort (a write failure never changes
+  the §6 terminal). `policyDigest` = SHA-256 of the effective `LifecycleConfig`
+  + resolved harness/model + `taskHash(owner,repo,issue)`, canonical JSON
+  (sorted map keys) so it is stable across processes; `recordTerminal` stamps it
+  onto `CycleOutcome.PolicyDigest` (→ `outcome.json`). `DevelopResult.BaseSHA`
+  carries the resolved branch-from commit for lineage.
+
