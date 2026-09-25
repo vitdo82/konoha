@@ -222,6 +222,48 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// #87: best-effort agent usage aggregated across the cycle's agent runs
 	// (develop/repair/review; zero when no harness reported any).
 	var usage HarnessUsage
+
+	// #93: worktree teardown is owned by the workflow, not the activity, so it
+	// runs on EVERY exit path — success, failure, timeout, and cancellation. The
+	// activity is idempotent + owner-verified, so re-running it after the
+	// activity already cleaned up is a harmless no-op (outcome "absent").
+	// cleanupDone guards against the double call; finish runs it while connected
+	// (so the result lands in outcome.json), and the deferred call uses a
+	// DISCONNECTED context so it still fires when the workflow is cancelled.
+	var cleanup *CleanupResult
+	cleanupDone := false
+	runCleanup := func(cctx workflow.Context) {
+		if cleanupDone {
+			return
+		}
+		cleanupDone = true
+		ao := workflow.ActivityOptions{
+			StartToCloseTimeout: appCfg.Worker.startToClose(),
+			// The activity retries internally (idempotent, bounded); one Temporal
+			// attempt is enough, but keep the policy explicit.
+			RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts)},
+		}
+		cctx = workflow.WithActivityOptions(cctx, ao)
+		var res CleanupResult
+		req := CleanupRequest{
+			RepoPath: in.RepoPath, Repo: in.Repo, IssueNum: in.IssueNum,
+			WorkflowID: info.WorkflowExecution.ID,
+		}
+		if err := workflow.ExecuteActivity(cctx, CleanupWorktree, req).Get(cctx, &res); err != nil {
+			res = CleanupResult{Attempted: true, Outcome: cleanupFailed, Error: Redact(err.Error())}
+		}
+		cleanup = &res
+		if res.Error != "" || res.Outcome == cleanupFailed {
+			workflow.GetLogger(ctx).Error("worktree cleanup failed (non-fatal, terminal state unchanged)",
+				"outcome", res.Outcome, "remaining", res.Remaining, "err", res.Error)
+		}
+	}
+	defer func() {
+		dctx, cancel := workflow.NewDisconnectedContext(ctx)
+		defer cancel()
+		runCleanup(dctx)
+	}()
+
 	// finish records a terminal outcome through the shared recorder, tagging it
 	// with the tracked outcomes and any prior evidence-write failure.
 	finish := func(out CycleOutcome) error {
@@ -237,6 +279,10 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
 		}
+		// #93: teardown before recording the terminal so outcome.json carries the
+		// cleanup record; a cleanup failure is logged/recorded, never state-changing.
+		runCleanup(ctx)
+		out.Cleanup = cleanup
 		// #89: land the terminal condition on the live status snapshot too.
 		status.recordTerminal(out.TerminalState, out.EscalationReason, workflow.Now(ctx))
 		return recordTerminal(ctx, info, in, out)

@@ -3,11 +3,13 @@ package konoha
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -192,8 +194,10 @@ func Main() {
 	w.RegisterActivity(EnsureCrossRepoIssue)
 	w.RegisterActivity(EvaluateAlerts)
 	w.RegisterActivity(EnsureFailureIssue)
-	w.RegisterActivity(WriteCycleEvidence) // #83: durable per-cycle evidence
-	w.RegisterActivity(RecordActivation)   // #88: per-issue activation lineage
+	w.RegisterActivity(WriteCycleEvidence)   // #83: durable per-cycle evidence
+	w.RegisterActivity(RecordActivation)     // #88: per-issue activation lineage
+	w.RegisterActivity(CleanupWorktree)      // #93: disconnect-safe worktree teardown
+	w.RegisterActivity(SweepOrphanWorktrees) // #93: stranded-worktree sweep
 
 	// §39 metrics sink (best-effort /metrics endpoint; env METRICS_ADDR, e.g. :9090)
 	StartMetricsServer(os.Getenv("METRICS_ADDR"))
@@ -205,6 +209,19 @@ func Main() {
 	} else {
 		log.Printf("webhook disabled: repos.yaml: %v", err)
 	}
+
+	// #93: recover worktrees stranded by a crashed worker. workflowAlive lets the
+	// sweep prove a claim's owner is gone before touching it (fail-safe: only an
+	// explicit NotFound counts as gone, so a transient Temporal error never
+	// sweeps a live run's worktree). Best-effort and non-blocking.
+	workflowAlive = func(ctx context.Context, id string) bool {
+		if _, err := c.DescribeWorkflowExecution(ctx, id, ""); err != nil {
+			var notFound *serviceerror.NotFound
+			return !errors.As(err, &notFound)
+		}
+		return true
+	}
+	go sweepOrphanWorktreesOnStart()
 
 	if len(os.Args) > 1 && os.Args[1] == "start" {
 		startReviewWorkflow(c)

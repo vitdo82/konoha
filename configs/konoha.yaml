@@ -14,6 +14,8 @@ worker:
   devTimeout: 45m                  # §4.4 agent dev/repair window (generous)
   retryMaxAttempts: 3              # cycle/PR activity retries
   sweepRetryMaxAttempts: 2         # sweep activity retries
+  cleanupMaxAttempts: 5            # #93 worktree teardown retries (idempotent)
+  orphanWorktreeTTL: 24h           # #93 sweep a stranded worktree after this age
 
 defaults:
   lifecycle:

@@ -29,6 +29,11 @@ type WorkerConfig struct {
 	DevTimeout              string `yaml:"devTimeout"` // §4.4 agent dev/repair window (default 45m)
 	RetryMaxAttempts        int    `yaml:"retryMaxAttempts"`
 	SweepRetryMaxAttempts   int    `yaml:"sweepRetryMaxAttempts"`
+	// #93 worktree teardown: how hard the idempotent CleanupWorktree activity
+	// retries (with backoff), and the age past which a konoha-owned worktree
+	// whose workflow is gone is swept as an orphan.
+	CleanupMaxAttempts int    `yaml:"cleanupMaxAttempts"`
+	OrphanWorktreeTTL  string `yaml:"orphanWorktreeTTL"`
 }
 
 // LifecycleDefaults is the `defaults.lifecycle` block: the fallback per-repo
@@ -91,6 +96,8 @@ func defaultAppConfig() AppConfig {
 			DevTimeout:              "45m",
 			RetryMaxAttempts:        3,
 			SweepRetryMaxAttempts:   2,
+			CleanupMaxAttempts:      5,
+			OrphanWorktreeTTL:       defaultOrphanWorktreeTTL,
 		},
 		Evidence: EvidenceConfig{Dir: defaultEvidenceDir},
 		Defaults: DefaultsConfig{
@@ -158,6 +165,24 @@ func (w WorkerConfig) devWindow() time.Duration {
 	d, err := time.ParseDuration(w.DevTimeout)
 	if err != nil {
 		return 45 * time.Minute
+	}
+	return d
+}
+
+// cleanupAttempts resolves how many times the idempotent CleanupWorktree
+// activity retries a removal before recording a failure (#93).
+func (w WorkerConfig) cleanupAttempts() int {
+	if w.CleanupMaxAttempts < 1 {
+		return 1
+	}
+	return w.CleanupMaxAttempts
+}
+
+// orphanTTL parses the orphan-worktree age threshold (#93).
+func (w WorkerConfig) orphanTTL() time.Duration {
+	d, err := time.ParseDuration(w.OrphanWorktreeTTL)
+	if err != nil || d <= 0 {
+		return 24 * time.Hour
 	}
 	return d
 }
@@ -237,6 +262,12 @@ func (c AppConfig) validate() error {
 	}
 	if c.Worker.RetryMaxAttempts < 1 || c.Worker.SweepRetryMaxAttempts < 1 {
 		return fmt.Errorf("worker retry attempts must be >= 1")
+	}
+	if c.Worker.CleanupMaxAttempts < 1 {
+		return fmt.Errorf("worker.cleanupMaxAttempts must be >= 1")
+	}
+	if d, err := time.ParseDuration(c.Worker.OrphanWorktreeTTL); err != nil || d <= 0 {
+		return fmt.Errorf("worker.orphanWorktreeTTL %q must be a positive duration", c.Worker.OrphanWorktreeTTL)
 	}
 	if _, err := time.ParseDuration(c.Worker.StartToCloseTimeout); err != nil {
 		return fmt.Errorf("worker.startToCloseTimeout %q invalid: %v", c.Worker.StartToCloseTimeout, err)

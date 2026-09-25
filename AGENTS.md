@@ -530,10 +530,32 @@ cycle's `status` handler via the Temporal client and prints the JSON snapshot).
   `<dir>.owner`). `ensureWorktree` verifies the claim before reuse: a directory
   with no claim, or claimed by another workflow, is rejected untouched; a dirty
   or base-moved **owned** worktree is wiped and recreated; a clean owned one is
-  reused. `cleanupWorktree` runs deferred so it fires on failure too. The agent
-  receives structured spec artifacts (§35); raw issue text is JSON-escaped inside
-  `UNTRUSTED ISSUE DATA` markers (§27). The activity returns only a local commit
-  artifact (never pushes/PRs) and records the §26 validation result.
+  reused. `cleanupWorktree` runs deferred so it fires on failure too — but the
+  WORKFLOW is the authoritative teardown owner (`cleanup.go`, #93): a deferred
+  `workflow.NewDisconnectedContext` step in `IssueCycleWorkflow` invokes the
+  idempotent `CleanupWorktree` activity on every exit path (success/failure/
+  timeout/cancellation). The agent receives structured spec artifacts (§35); raw
+  issue text is JSON-escaped inside `UNTRUSTED ISSUE DATA` markers (§27). The
+  activity returns only a local commit artifact (never pushes/PRs) and records
+  the §26 validation result.
+- `cleanup.go` owns the #93 disconnect-safe worktree teardown + durable cleanup
+  record. `CleanupWorktree` is the thin, idempotent wrapper over `removeWorktree`:
+  it removes ONLY a dir whose `.owner` claim matches the requesting `WorkflowID`
+  (foreign/unclaimed is never touched) and then independently verifies via
+  `git worktree list` + an on-disk stat, returning
+  `CleanupResult{Attempted,Outcome,Verified,Remaining,Error}` (outcome ∈
+  `removed|absent|skipped|failed`; `Remaining` = owned worktrees still present).
+  Removal retries (configurable `worker.cleanupMaxAttempts`, backoff) and always
+  returns a result — a failure is recorded in `outcome.json`'s `cleanup` section
+  but NEVER changes the terminal §6 state (§40). `IssueCycleWorkflow` runs it
+  before `recordTerminal` (so the record lands) and again via a deferred
+  disconnected-context call as the cancellation backstop (§44 #20). The startup
+  orphan sweep (`SweepOrphanWorktrees`, run once from `Main`) removes a
+  konoha-owned worktree only when it is older than `worker.orphanWorktreeTTL`
+  AND `workflowAlive` proves the owning workflow is gone; with no probe it never
+  sweeps (fail-safe). `KONOHA_DISABLE_WORKTREE_CLEANUP=1` is the test/debug
+  escape hatch (mirrors `KONOHA_TOKEN_FIXED`; never set in a real deploy) and
+  disables both. Claim-vs-tracker reconciliation is #141, not this file.
 - `reviewer.go` owns the Reviewer agent (§4.5/§13/§15/§27): `RunReviewer` runs an
   **independent** opencode execution that gets issue requirements/spec/diff/tests
   — never the developer's reasoning (§13). `parseReviewOutput` is the **single
@@ -592,6 +614,8 @@ cycle's `status` handler via the Temporal client and prints the JSON snapshot).
   absolute rejected); `DryRun` (§42) namespaces under `dryrun/` and still writes
   (evidence is a record, not a mutation). The agent activities capture
   prompt/stdout/stderr into `AgentEvidence` on their result types for this.
+  `outcome.json` also carries the #93 `cleanup` section
+  (`attempted`/`outcome`/`verified`/`remaining`; see `cleanup.go`).
   `WriteVerification` lands each §26 gate's streams under
   `cycles/<id>/verification/<gate-id>.stdout|stderr` (redacted, plain-segment
   gate id), written best-effort by the validation runner via `persistGateEvidence`.
