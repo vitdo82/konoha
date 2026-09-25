@@ -130,6 +130,30 @@ func TestValidateRepoGateStartErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// §90(b): a structured gate is dispatched as bare argv, never through a shell.
+// Shell metacharacters in an argument stay literal data.
+func TestValidationGateArgvNeverInvokesShell(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "pwned")
+	mandatory := true
+	payload := "safe; touch " + marker
+	ok, _, out, err := validateRepo(PublishInput{RepoPath: dir, Validation: []ValidationGate{
+		{ID: "argv", Argv: []string{"printf", "%s", payload}, Mandatory: &mandatory},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("literal argv gate should pass, got %q", out)
+	}
+	if !strings.Contains(out, payload) {
+		t.Fatalf("argv argument must be passed literally, got %q", out)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("shell metacharacters in a structured argv must not be interpreted")
+	}
+}
+
 // §23/§26: gates run with the scrubbed agent env (no GH_*).
 func TestValidateRepoGatesScrubbedEnv(t *testing.T) {
 	t.Setenv("GH_TOKEN", "sekret-gate-token")

@@ -24,6 +24,39 @@ const (
 // lifecycle.harness unset.
 const defaultHarnessName = "opencode"
 
+// isGitHubCredentialEnv reports whether key is a GitHub credential. These are
+// stripped from every agent AND validation child unconditionally (§23/§90): no
+// allowlist can re-enable them.
+func isGitHubCredentialEnv(key string) bool {
+	return strings.HasPrefix(key, "GH_") || key == "GITHUB_TOKEN"
+}
+
+// cloudCredentialPrefixes are the provider families stripped by default. A
+// generic harness's passEnv may deliberately allowlist one (the operator opts
+// in explicitly); the opencode harness and all validation gates never do.
+var cloudCredentialPrefixes = []string{"AWS_", "GOOGLE_", "AZURE_"}
+
+// cloudCredentialNames are the provider/registry secrets stripped by default.
+var cloudCredentialNames = map[string]bool{
+	"OPENAI_API_KEY":    true,
+	"ANTHROPIC_API_KEY": true,
+	"NPM_TOKEN":         true,
+}
+
+// isCloudCredentialEnv reports whether key is a common cloud/provider
+// credential (§90(a)).
+func isCloudCredentialEnv(key string) bool {
+	if cloudCredentialNames[key] {
+		return true
+	}
+	for _, p := range cloudCredentialPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // builtinHarnessNames is the closed set of resolvable harness names. An unknown
 // name fails at config load (apply.sh / prbot config).
 var builtinHarnessNames = []string{"generic", "opencode"}
@@ -213,8 +246,10 @@ func (g genericHarness) modelArgs(model string) []string {
 	return []string{g.cfg.ModelFlag, model}
 }
 
-// Env forwards only passEnv-listed variables (plus PWD); every GH_* credential
-// is stripped regardless (§23) — an operator cannot accidentally whitelist one.
+// Env forwards only passEnv-listed variables (plus PWD). Every GitHub
+// credential is stripped regardless (§23) — an operator cannot whitelist one.
+// Cloud/provider credentials (§90(a)) are absent unless explicitly allowlisted,
+// so opting in is a deliberate operator decision.
 func (g genericHarness) Env(dir string) []string {
 	allow := make(map[string]bool, len(g.cfg.PassEnv))
 	for _, k := range g.cfg.PassEnv {
@@ -227,7 +262,7 @@ func (g genericHarness) Env(dir string) []string {
 			continue
 		}
 		k := kv[:i]
-		if k == "PWD" || strings.HasPrefix(k, "GH_") || !allow[k] {
+		if k == "PWD" || isGitHubCredentialEnv(k) || !allow[k] {
 			continue
 		}
 		out = append(out, kv)
