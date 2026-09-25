@@ -23,6 +23,10 @@ Product/process policy — milestones, ticket format, delivery workflow, and the
 non-configurable contract list — lives in `docs/best-practices.md`. That policy
 is **NOT** build instruction; do not enforce it as an engineering gate.
 
+Security model — trusted vs untrusted inputs, the agent/validation env
+allowlist, argv-only gates, worktree isolation, and the host-execution trade-off
+— lives in `docs/security.md` (§23/§27/#90).
+
 ## Verify
 
 ```bash

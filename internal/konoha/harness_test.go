@@ -224,6 +224,61 @@ func TestHarnessEnvAllowlist(t *testing.T) {
 	}
 }
 
+// §90(a): common cloud/provider credentials are absent from the child agent env
+// unless an operator explicitly allowlists one via the generic passEnv. GitHub
+// credentials can never be allowlisted.
+func TestHarnessEnvStripsCloudCredentials(t *testing.T) {
+	creds := []string{
+		"AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS",
+		"AZURE_CLIENT_SECRET", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NPM_TOKEN",
+	}
+	for _, k := range creds {
+		t.Setenv(k, "sekret-"+k)
+	}
+	t.Setenv("GH_TOKEN", "ghs_never")
+
+	opencodeEnv := strings.Join(opencodeHarness{}.Env("/repo"), "\n")
+	for _, k := range creds {
+		if strings.Contains(opencodeEnv, k+"=") {
+			t.Fatalf("opencode env leaked %s: %v", k, opencodeEnv)
+		}
+	}
+
+	// Unlisted cloud credential stays out of the generic harness.
+	unlisted := strings.Join(genericHarness{cfg: GenericHarnessConfig{PassEnv: []string{"KONOHA_NOPE"}}}.Env("/repo"), "\n")
+	if strings.Contains(unlisted, "AWS_ACCESS_KEY_ID=") {
+		t.Fatalf("unlisted cloud credential leaked: %v", unlisted)
+	}
+
+	// Explicitly allowlisting a cloud var opts it in; GitHub creds never opt in.
+	listed := strings.Join(genericHarness{cfg: GenericHarnessConfig{
+		PassEnv: []string{"AWS_ACCESS_KEY_ID", "GH_TOKEN"},
+	}}.Env("/repo"), "\n")
+	if !strings.Contains(listed, "AWS_ACCESS_KEY_ID=sekret-AWS_ACCESS_KEY_ID") {
+		t.Fatalf("allowlisted cloud credential must pass: %v", listed)
+	}
+	if strings.Contains(listed, "GH_TOKEN=") {
+		t.Fatalf("GitHub credential must never be allowlistable: %v", listed)
+	}
+}
+
+// §90(a): validation gates inherit the same scrubbed env (no cloud creds).
+func TestValidationGateScrubsCloudCredentials(t *testing.T) {
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "sekret")
+	t.Setenv("OPENAI_API_KEY", "sk-sekret")
+	mandatory := true
+	dir := t.TempDir()
+	_, _, out, err := validateRepo(PublishInput{RepoPath: dir, Validation: []ValidationGate{
+		{ID: "env", Argv: []string{"sh", "-c", "env"}, Mandatory: &mandatory},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "AWS_SECRET_ACCESS_KEY=") || strings.Contains(out, "OPENAI_API_KEY=") {
+		t.Fatalf("gate env leaked cloud credentials: %q", out)
+	}
+}
+
 // AC #85: model resolution is explicit; an unknown/malformed model is rejected.
 func TestHarnessResolveModel(t *testing.T) {
 	m, err := opencodeHarness{}.ResolveModel("")

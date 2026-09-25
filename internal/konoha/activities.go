@@ -40,20 +40,22 @@ func agentArgs(prompt, model string) []string {
 	return []string{"run", "--model", model, prompt}
 }
 
-// agentEnv returns an env for child opencode processes with every GitHub
-// credential stripped: the App PEM path + any token the shell may carry
-// (GH_TOKEN/GITHUB_TOKEN and friends). §23: agents never receive write creds.
-// Missing vars are dropped entirely (GH_APP_* pointing at still-readable paths
-// would be an opaque hint, not a secret, but dropping is simpler and stricter).
+// agentEnv returns an env for child opencode processes with every GitHub and
+// common cloud/provider credential stripped (§23/§90(a)): the App PEM path +
+// any token the shell may carry (GH_TOKEN/GITHUB_TOKEN and friends), plus
+// AWS_*/GOOGLE_*/AZURE_*/OPENAI_API_KEY/ANTHROPIC_API_KEY/NPM_TOKEN. Missing
+// vars are dropped entirely (GH_APP_* pointing at still-readable paths would be
+// an opaque hint, not a secret, but dropping is simpler and stricter). An
+// operator who needs a provider var in the agent uses the generic harness's
+// explicit passEnv allowlist.
 func agentEnv() []string {
-	drops := map[string]bool{
-		"GH_APP_ID": true, "GH_APP_INSTALL_ID": true, "GH_APP_PEM": true,
-		"GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_ENTERPRISE_TOKEN": true,
-	}
 	var out []string
 	for _, kv := range os.Environ() {
-		if i := strings.IndexByte(kv, '='); i > 0 && drops[kv[:i]] {
-			continue
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			k := kv[:i]
+			if isGitHubCredentialEnv(k) || isCloudCredentialEnv(k) {
+				continue
+			}
 		}
 		out = append(out, kv)
 	}
