@@ -151,7 +151,11 @@ func EstimateIssue(ctx context.Context, in IssueInput, a IssueAnalysis) (Estimat
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := estimatorPrompt(in, a)
 
-	cmd, _, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	model, err := stageAgentModel(appCfg.Defaults.Agents, in.Lifecycle, stageEstimator)
+	if err != nil {
+		return EstimateResult{}, err
+	}
+	cmd, _, err := agentCommand(ctx, prompt, model, in.Lifecycle.Harness, in.RepoPath)
 	if err != nil {
 		return EstimateResult{}, err
 	}

@@ -31,6 +31,8 @@ const (
 type LifecycleConfig struct {
 	Mode                          string            `yaml:"mode" json:"mode,omitempty"`
 	Model                         string            `yaml:"model" json:"model,omitempty"`     // opencode agent model for this repo; "" = built-in default
+	Models                        map[string]string `yaml:"models" json:"models,omitempty"`   // §98 per-stage catalog name (analyst/estimator/developer/reviewer/repair/completion)
+	Budget                        string            `yaml:"budget" json:"budget,omitempty"`   // §98 named budget from defaults.agents.budgets; "" = none
 	Harness                       string            `yaml:"harness" json:"harness,omitempty"` // §85 agent harness by NAME; "" = defaults.lifecycle.harness
 	DevelopmentMaxComplexity      int               `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
 	MaxDevReviewAttempts          int               `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
@@ -190,6 +192,25 @@ func LoadReposConfig(path string) ([]RepoConfig, error) {
 	return f.Repos, nil
 }
 
+// loadReposConfigWithResources loads repos.yaml AND validates its §98
+// model/budget name references against the catalog in konoha.yaml, so an unknown
+// name fails at apply time (`prbot config`), never mid-cycle. The app config is
+// resolved through the same env > file > default path as the worker.
+func loadReposConfigWithResources(path string) ([]RepoConfig, error) {
+	repos, err := LoadReposConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := loadAppConfig(defaultAppConfigPath())
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := validateResourceRefs(repos, cfg.Defaults.Agents); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return repos, nil
+}
+
 func (lc *LifecycleConfig) validate() error {
 	if lc == nil {
 		return nil
@@ -206,6 +227,13 @@ func (lc *LifecycleConfig) validate() error {
 	}
 	if h := lc.Harness; h != "" && !knownHarnessName(h) {
 		return fmt.Errorf("lifecycle.harness: unknown harness %q (known: %s)", h, strings.Join(builtinHarnessNames, ", "))
+	}
+	// §98: stage keys are a closed set; the catalog NAMEs they reference are
+	// validated against the catalog at load by validateResourceRefs.
+	for stage := range lc.Models {
+		if !knownStage(stage) {
+			return fmt.Errorf("lifecycle.models.%s: unknown stage (known: %s)", stage, strings.Join(pipelineStages, ", "))
+		}
 	}
 	if lc.DevelopmentMaxComplexity < 0 || lc.DevelopmentMaxComplexity > 10 {
 		return fmt.Errorf("lifecycle.developmentMaxComplexity: %d out of range 0-10", lc.DevelopmentMaxComplexity)
@@ -316,7 +344,7 @@ func repoScope(r RepoConfig) RepoScope {
 // to `temporal schedule create`, so parsing/validation lives in Go and never
 // drifts from what the workflows decode.
 func scheduleInputs(path string) ([]string, error) {
-	repos, err := LoadReposConfig(path)
+	repos, err := loadReposConfigWithResources(path)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +364,7 @@ func scheduleInputs(path string) ([]string, error) {
 // creates one <repo>-deps DependencyWorkflow schedule per line, so a disabled
 // repo has no scan and no issues.
 func depsScheduleInputs(path string) ([]string, error) {
-	repos, err := LoadReposConfig(path)
+	repos, err := loadReposConfigWithResources(path)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +387,7 @@ func depsScheduleInputs(path string) ([]string, error) {
 // creates one <repo>-alerts AlertWorkflow schedule per line, so a disabled repo
 // has no evaluation.
 func alertsScheduleInputs(path string) ([]string, error) {
-	repos, err := LoadReposConfig(path)
+	repos, err := loadReposConfigWithResources(path)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +410,7 @@ func alertsScheduleInputs(path string) ([]string, error) {
 // apply.sh creates one <repo>-groom BacklogGroomWorkflow schedule per line, so a
 // disabled repo never grooms.
 func groomingScheduleInputs(path string) ([]string, error) {
-	repos, err := LoadReposConfig(path)
+	repos, err := loadReposConfigWithResources(path)
 	if err != nil {
 		return nil, err
 	}

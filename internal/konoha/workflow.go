@@ -151,6 +151,16 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	devCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryAgent, appCfg.Worker.devWindow()))
 	info := workflow.GetInfo(ctx)
 
+	// §98: resolve the repo's named model/budget catalog once. Pure given the
+	// process-fixed catalog, so replay is deterministic. apply.sh validates the
+	// name references at load; a bad name here fails closed, never silently
+	// falls back to the default model.
+	resources, err := resolveResources(appCfg.Defaults.Agents, in.Lifecycle)
+	if err != nil {
+		return err
+	}
+	workflowStart := workflow.Now(ctx)
+
 	state := stateDiscovered
 	if err := workflow.SetQueryHandler(ctx, "state", func() (string, error) { return state, nil }); err != nil {
 		workflow.GetLogger(ctx).Error("set state query handler failed", "err", err)
@@ -276,6 +286,22 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
 		}
+		// §98: record the resolved catalog + budget crossings as evidence. A
+		// crossing NEVER rewrites the verdict/state or shortens a timeout — it is
+		// a reviewable record only (§40).
+		elapsed := workflow.Now(ctx).Sub(workflowStart)
+		if out.DurationSeconds == 0 {
+			out.DurationSeconds = elapsed.Seconds()
+		}
+		if resources != nil {
+			res := *resources
+			if res.Budget != nil {
+				b := *res.Budget
+				b.Crossings = budgetCrossings(res.Budget, out.Usage, elapsed)
+				res.Budget = &b
+			}
+			out.Resources = &res
+		}
 		// #93: teardown before recording the terminal so outcome.json carries the
 		// cleanup record; a cleanup failure is logged/recorded, never state-changing.
 		runCleanup(ctx)
@@ -340,12 +366,17 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// both routes: an LARGE parent is claimed here, and each split child posts its
 	// own note when its cycle runs. Best-effort like the label projection: Temporal
 	// retries the activity, and an exhausted retry must not abort the cycle.
-	model := in.Lifecycle.Model
+	model := resources.modelFor(stageDeveloper).AgentModel()
 	if strings.TrimSpace(model) == "" {
 		model = defaultAgentModel
 	}
-	// #88: the effective harness/model recorded on every lineage activation.
-	effHarness, effModel := resolvedHarnessModel(in.Lifecycle)
+	// §98: per-stage resolved models. The developer/reviewer/repair ids are
+	// passed to their activities; all stages are recorded as outcome evidence.
+	devModel := resources.modelFor(stageDeveloper)
+	repairModel := resources.modelFor(stageRepair)
+	reviewModel := resources.modelFor(stageReviewer)
+	// #88: the effective harness recorded on every lineage activation.
+	effHarness := effectiveHarnessName(in.Lifecycle.Harness)
 	if err := workflow.ExecuteActivity(ctx, EnsureManagedNote, ManagedNoteRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum,
 		WorkflowID: info.WorkflowExecution.ID, Trigger: in.Trigger,
@@ -447,7 +478,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	var dev DevelopResult
 	if err := workflow.ExecuteActivity(devCtx, RunDeveloper, DevelopRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
-		Model:              in.Lifecycle.Model,
+		Model:              devModel.AgentModel(),
 		Harness:            in.Lifecycle.Harness,
 		WorkflowID:         info.WorkflowExecution.ID,
 		Title:              a.Title,
@@ -472,8 +503,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	usage.add(dev.Usage) // #87
 	recordActivation(LineageActivation{
 		Attempt: lastAttempts, WorkflowID: info.WorkflowExecution.ID,
-		Reason: activationReasonInitial, Harness: effHarness, Model: effModel,
-		BaseSHA: dev.BaseSHA, CommitSHA: dev.CommitSHA, Result: string(agentOut),
+		Reason: activationReasonInitial, Stage: stageDeveloper, Harness: effHarness, Model: devModel.AgentModel(),
+		ModelDigest: devModel.Digest,
+		BaseSHA:     dev.BaseSHA, CommitSHA: dev.CommitSHA, Result: string(agentOut),
 		TokensIn: dev.Usage.TokensIn, TokensOut: dev.Usage.TokensOut, CostUSD: dev.Usage.CostUSD,
 	})
 	writeAgentEvidence(writeEvidence, dev.Evidence, dev, dev.ValidationOutput)
@@ -546,7 +578,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		var rev ReviewResult
 		if err := workflow.ExecuteActivity(agentCtx, RunReviewer, ReviewRequest{
 			Owner: in.Owner, Repo: in.Repo, PRNumber: pub.PRNumber, RepoPath: in.RepoPath,
-			Model:              in.Lifecycle.Model,
+			Model:              reviewModel.AgentModel(),
 			Harness:            in.Lifecycle.Harness,
 			CommitSHA:          headSha,
 			Diff:               diff,
@@ -604,7 +636,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		if err := workflow.ExecuteActivity(devCtx, RunRepair, RepairRequest{
 			Develop: DevelopRequest{
 				Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
-				Model:              in.Lifecycle.Model,
+				Model:              repairModel.AgentModel(),
 				Harness:            in.Lifecycle.Harness,
 				WorkflowID:         info.WorkflowExecution.ID,
 				Title:              a.Title,
@@ -634,8 +666,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// workflowId) so develop + repair are two ordered activations.
 		recordActivation(LineageActivation{
 			Attempt: lastAttempts, WorkflowID: fmt.Sprintf("%s-repair-%d", info.WorkflowExecution.ID, lastAttempts),
-			Reason: activationReasonRepair, Harness: effHarness, Model: effModel,
-			BaseSHA: repaired.BaseSHA, CommitSHA: repaired.CommitSHA, Result: string(agentOut),
+			Reason: activationReasonRepair, Stage: stageRepair, Harness: effHarness, Model: repairModel.AgentModel(),
+			ModelDigest: repairModel.Digest,
+			BaseSHA:     repaired.BaseSHA, CommitSHA: repaired.CommitSHA, Result: string(agentOut),
 			ReworkNote: rework, // #97: carry the instruction onto the repair activation
 			TokensIn:   repaired.Usage.TokensIn, TokensOut: repaired.Usage.TokensOut, CostUSD: repaired.Usage.CostUSD,
 		})

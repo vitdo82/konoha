@@ -137,7 +137,51 @@ defaults:
     validation:                   # §26 fallback verification gates
       - id: test
         argv: ["make", "test"]
+  agents:                        # §98 named resource catalog
+    models:                      # selectable per stage: analyst/estimator/developer/reviewer/repair/completion
+      cheap:
+        provider: anthropic
+        model: claude-haiku
+        baseUrl: ""               # optional provider endpoint override
+        apiKeyEnv: ANTHROPIC_API_KEY  # credential NAME only; the value is never read or recorded
+      strong:
+        provider: anthropic
+        model: claude-sonnet
+    budgets:                     # recorded as evidence; never gate a verdict or shorten a timeout
+      default:
+        maxCostUsd: 5.0           # crossing computed from #87 reported usage
+        maxTokens: 200000
+        maxWallClock: 30m         # crossing computed from elapsed cycle time
 ```
+
+A repo (or a single stage) selects a model by **name** in `repos.yaml`:
+
+```yaml
+lifecycle:
+  models:                        # §98 per-stage catalog name (falls back to `model`)
+    analyst: cheap
+    developer: strong
+    reviewer: strong
+  budget: default                # §98 named budget (optional)
+```
+
+An unknown model/budget name, or an unknown stage key, **fails at load**
+(`prbot config` / worker startup) — never mid-cycle. The resolved
+provider/model plus a content **digest** land in `outcome.json` under
+`resources`, and each develop/repair activation records its stage + model
+digest in `lineage.json`, so "same config, different result" is investigable
+and a catalog edit is a reviewable diff. Budget crossings (`maxCostUsd` /
+`maxTokens` / `maxWallClock`) are **evidence only** (§40): they are computed
+from the harness's reported #87 usage and the elapsed cycle time, and they never
+rewrite a verdict or shorten a configured timeout. Credential values never reach
+evidence — only the `apiKeyEnv` **name** is recorded.
+
+**Egress and workspaces are intentionally omitted (no sandbox).** Konoha has no
+sandbox (see `docs/security.md`), so there is nothing to name: there is no
+egress to policy and no isolated workspace to attach. They are documented as
+not-applicable rather than stubbed, so the catalog never advertises a capability
+that does not exist.
+
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
 

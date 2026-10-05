@@ -221,7 +221,7 @@ func Main() {
 
 	// §32 webhook fast-path trigger (env GH_WEBHOOK_SECRET + WEBHOOK_ADDR).
 	// Loads repos.yaml so events route to the configured lifecycle policy.
-	if repos, err := LoadReposConfig(defaultReposPath()); err == nil {
+	if repos, err := loadReposConfigWithResources(defaultReposPath()); err == nil {
 		StartWebhookServer(c, repos)
 	} else {
 		log.Printf("webhook disabled: repos.yaml: %v", err)
@@ -390,8 +390,13 @@ func runDevelop() error {
 	if err != nil {
 		return err
 	}
+	devModel, err := stageAgentModel(appCfg.Defaults.Agents, in.Lifecycle, stageDeveloper)
+	if err != nil {
+		return err
+	}
 	d, err := RunDeveloper(context.Background(), DevelopRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+		Model:              devModel,
 		WorkflowID:         "cli-develop", // debug: single synthetic workflow
 		BaseSHA:            os.Getenv("BASE_SHA"),
 		Title:              a.Title,
@@ -449,8 +454,13 @@ func runReview() error {
 		}
 	}
 
+	reviewModel, err := stageAgentModel(appCfg.Defaults.Agents, in.Lifecycle, stageReviewer)
+	if err != nil {
+		return err
+	}
 	r, err := RunReviewer(context.Background(), ReviewRequest{
 		Owner: in.Owner, Repo: in.Repo, PRNumber: pr, RepoPath: in.RepoPath,
+		Model:     reviewModel,
 		CommitSHA: sha, Diff: diff,
 		Title: a.Title, Body: a.Body, Spec: a.Spec,
 		Requirements: a.Requirements, AcceptanceCriteria: a.AcceptanceCriteria,
@@ -488,9 +498,14 @@ func runRepair() error {
 	if len(blocking) == 0 {
 		blocking = []string{"fix the change so it satisfies the acceptance criteria"}
 	}
+	repairModel, err := stageAgentModel(appCfg.Defaults.Agents, in.Lifecycle, stageRepair)
+	if err != nil {
+		return err
+	}
 	repair, err := RunRepair(context.Background(), RepairRequest{
 		Develop: DevelopRequest{
 			Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+			Model:              repairModel,
 			WorkflowID:         "cli-repair", // debug: single synthetic workflow
 			Title:              a.Title,
 			Body:               a.Body,
@@ -559,9 +574,14 @@ func runComplete() error {
 		}
 	}
 
+	compModel, err := stageAgentModel(appCfg.Defaults.Agents, in.Lifecycle, stageCompletion)
+	if err != nil {
+		return err
+	}
 	c, err := RunCompletion(context.Background(), CompletionRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, PRNumber: pr,
 		RepoPath: in.RepoPath,
+		Model:    compModel,
 		Title:    a.Title, Body: a.Body, Spec: a.Spec,
 		Requirements:       a.Requirements,
 		AcceptanceCriteria: a.AcceptanceCriteria,
