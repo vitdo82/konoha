@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -305,13 +304,7 @@ func AlertWorkflow(ctx workflow.Context, scope RepoScope) error {
 	if !AlertingEnabled(lc) {
 		return nil
 	}
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
 
 	window := alertWindow(workflow.Now(ctx), alertInterval(lc))
 	var res AlertResult
@@ -444,13 +437,7 @@ func failureIssueBody(in FailureFeedbackRequest, marker string) string {
 // files at most one bug issue carrying the structured failure. The workflow's
 // only I/O is the EnsureFailureIssue activity.
 func FailureFeedbackWorkflow(ctx workflow.Context, in FailureFeedbackRequest) error {
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
 
 	var res FailureIssueResult
 	if err := workflow.ExecuteActivity(ctx, EnsureFailureIssue, in).Get(ctx, &res); err != nil {

@@ -27,8 +27,11 @@ type WorkerConfig struct {
 	StartToCloseTimeout     string `yaml:"startToCloseTimeout"`
 	SweepTimeout            string `yaml:"sweepTimeout"`
 	DevTimeout              string `yaml:"devTimeout"` // §4.4 agent dev/repair window (default 45m)
-	RetryMaxAttempts        int    `yaml:"retryMaxAttempts"`
-	SweepRetryMaxAttempts   int    `yaml:"sweepRetryMaxAttempts"`
+	// #95: infrastructure-class activity attempts (gh/git/evidence I/O, with
+	// exponential backoff). Agent/verification/deterministic attempt counts are
+	// fixed in retry.go, not config-driven.
+	RetryMaxAttempts      int `yaml:"retryMaxAttempts"`
+	SweepRetryMaxAttempts int `yaml:"sweepRetryMaxAttempts"`
 	// #93 worktree teardown: how hard the idempotent CleanupWorktree activity
 	// retries (with backoff), and the age past which a konoha-owned worktree
 	// whose workflow is gone is swept as an orphan.
@@ -94,7 +97,7 @@ func defaultAppConfig() AppConfig {
 			StartToCloseTimeout:     "15m",
 			SweepTimeout:            "10m",
 			DevTimeout:              "45m",
-			RetryMaxAttempts:        3,
+			RetryMaxAttempts:        defaultInfraRetryMaxAttempts,
 			SweepRetryMaxAttempts:   2,
 			CleanupMaxAttempts:      5,
 			OrphanWorktreeTTL:       defaultOrphanWorktreeTTL,
@@ -167,6 +170,15 @@ func (w WorkerConfig) devWindow() time.Duration {
 		return 45 * time.Minute
 	}
 	return d
+}
+
+// infraAttempts resolves the infrastructure-class activity attempt count,
+// falling back to the bundled default when unset/invalid (#95).
+func (w WorkerConfig) infraAttempts() int {
+	if w.RetryMaxAttempts < 1 {
+		return defaultInfraRetryMaxAttempts
+	}
+	return w.RetryMaxAttempts
 }
 
 // cleanupAttempts resolves how many times the idempotent CleanupWorktree

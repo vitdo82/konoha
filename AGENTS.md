@@ -82,6 +82,18 @@ without restarting a completed workflow. Deliveries with an invalid
 - **Workflows vs activities** (`internal/konoha/workflow.go` vs `activities.go`): Temporal workflows
   must be deterministic (no I/O, no time in logic). All I/O — shelling out to `gh`
   and `opencode` — lives in activities. Keep it that way.
+- **Typed activity retries + agent attempt provenance (`retry.go`, #95)**:
+  `retryPolicyFor`/`activityOptionsFor` assign one of four retry classes at the
+  call site — `deterministic` (`MaximumAttempts: 1`; pure/derived records where a
+  retry would double-count), `infrastructure` (`worker.retryMaxAttempts`, default
+  5, with exponential backoff), `agent` (exactly 1; a transport-loss retry must
+  not replay an LLM) and `verification` (3; CI/deploy gates). Long agent
+  activities also get a `HeartbeatTimeout`; `startAgentHeartbeat`/`runAgentCombined`
+  beat while the child runs so a hung agent surfaces as a timeout, not a
+  `StartToCloseTimeout` stall. Agent activities stamp the Temporal
+  `activity.GetInfo(ctx).Attempt` onto their result (`activityAttempt`, safe
+  outside Temporal) so the attempt lands in `result.json`. The sweeps keep their
+  own `sweepRetryMaxAttempts` policy (`ReviewAllWorkflow`/`IssueAllWorkflow`).
 - **Workflows are registered by string name** (`cmd/konoha/main.go`, `Main()`);
   activity executions
   are serialized by signature. Changing a workflow/activity signature breaks in-flight

@@ -196,6 +196,7 @@ func ValidateReview(r ReviewResult) error {
 // it to CommitSHA per §15. Does not submit anything to GitHub (§23); the caller
 // decides what an approval authorizes.
 func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	prompt := reviewPrompt(req, req.Diff)
 
 	cmd, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath)
@@ -211,6 +212,7 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	r := ReviewResult{Verdict: verdict, Summary: summary, PRNumber: req.PRNumber,
 		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits,
+		Attempt:  activityAttempt(ctx),
 		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
 		Usage:    parseHarnessUsage(combined)}
 	if err := ValidateReview(r); err != nil {

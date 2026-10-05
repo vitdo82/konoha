@@ -33,6 +33,7 @@ type IssueAnalysis struct {
 	OpenQuestions      []string `json:"openQuestions"`
 	Risks              []string `json:"risks"`
 	AcceptanceCriteria []string `json:"acceptanceCriteria"`
+	Attempt            int      `json:"attempt,omitempty"` // #95 Temporal activity attempt provenance
 }
 
 // analystSystem is the authoritative issue-analyst instruction block (§4.1,
@@ -340,6 +341,7 @@ func validSpec(repoPath, spec string) bool {
 // Invalid output fails closed, so it can never drive a transition; the
 // workflow's retry policy gives the agent another try.
 func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
+	defer startAgentHeartbeat(ctx)() // #95: cover the whole activity, not just the child
 	data, err := fetchIssueData(ctx, in)
 	if err != nil {
 		return IssueAnalysis{}, err
@@ -359,7 +361,7 @@ func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
 	if err != nil {
 		return IssueAnalysis{}, err
 	}
-	a.Title, a.Body = data.Title, data.Body
+	a.Title, a.Body, a.Attempt = data.Title, data.Body, activityAttempt(ctx)
 	if err := ValidateIssueAnalysis(in.RepoPath, a); err != nil {
 		return IssueAnalysis{}, fmt.Errorf("agent analysis invalid: %w", err)
 	}

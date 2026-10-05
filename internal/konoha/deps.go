@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -303,13 +302,7 @@ func DependencyWorkflow(ctx workflow.Context, scope RepoScope) error {
 	if !DependencyEnabled(lc) {
 		return nil
 	}
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
 
 	var report DependencyReport
 	if err := workflow.ExecuteActivity(ctx, ScanDependencies, DependencyScanRequest{

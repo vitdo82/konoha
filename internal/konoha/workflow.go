@@ -29,13 +29,8 @@ func batchRuns(n, max int) [][2]int {
 
 // PrReviewWorkflow: fetch diff -> opencode review -> post verdict back to PR.
 func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
+	agentCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryAgent, appCfg.Worker.startToClose()))
 	info := workflow.GetInfo(ctx)
 
 	// #89: additive read-only status query (state + current step + conditions).
@@ -62,7 +57,7 @@ func PrReviewWorkflow(ctx workflow.Context, in PrInput) error {
 
 	status.setStep("review")
 	var result ReviewResult
-	if err := workflow.ExecuteActivity(ctx, ReviewWithOpencode, in, diff).Get(ctx, &result); err != nil {
+	if err := workflow.ExecuteActivity(agentCtx, ReviewWithOpencode, in, diff).Get(agentCtx, &result); err != nil {
 		return err
 	}
 	status.recordAgent(agentOutcomeSuccess, "", "", workflow.Now(ctx))
@@ -148,22 +143,12 @@ const (
 // is also a later issue, the next sweep may simply run the cycle again; the
 // stable <repo>-issue-<n> ID guarantees only one run is active at a time.
 func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
-	// §4.4: agent dev/repair run long (real opencode work), so they get a wider
-	// window than the default cycle activities.
-	devAO := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.devWindow(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	devCtx := workflow.WithActivityOptions(ctx, devAO)
+	// §95: `ctx` carries the infrastructure class (gh/git/evidence); agent
+	// activities get their own context with MaximumAttempts=1 + heartbeat, and
+	// dev/repair get the wider long-run window.
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
+	agentCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryAgent, appCfg.Worker.startToClose()))
+	devCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryAgent, appCfg.Worker.devWindow()))
 	info := workflow.GetInfo(ctx)
 
 	state := stateDiscovered
@@ -240,13 +225,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return
 		}
 		cleanupDone = true
-		ao := workflow.ActivityOptions{
-			StartToCloseTimeout: appCfg.Worker.startToClose(),
-			// The activity retries internally (idempotent, bounded); one Temporal
-			// attempt is enough, but keep the policy explicit.
-			RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts)},
-		}
-		cctx = workflow.WithActivityOptions(cctx, ao)
+		// §95: teardown is idempotent and retries internally — a single Temporal
+		// attempt (deterministic class) is enough.
+		cctx = workflow.WithActivityOptions(cctx, activityOptionsFor(retryDeterministic, appCfg.Worker.startToClose()))
 		var res CleanupResult
 		req := CleanupRequest{
 			RepoPath: in.RepoPath, Repo: in.Repo, IssueNum: in.IssueNum,
@@ -310,13 +291,13 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 
 	transition(stateAnalyzing)
 	var a IssueAnalysis
-	if err := workflow.ExecuteActivity(ctx, AnalyzeIssue, in).Get(ctx, &a); err != nil {
+	if err := workflow.ExecuteActivity(agentCtx, AnalyzeIssue, in).Get(agentCtx, &a); err != nil {
 		return err
 	}
 
 	transition(stateEstimating)
 	var est EstimateResult
-	if err := workflow.ExecuteActivity(ctx, EstimateIssue, in, a).Get(ctx, &est); err != nil {
+	if err := workflow.ExecuteActivity(agentCtx, EstimateIssue, in, a).Get(agentCtx, &est); err != nil {
 		return err
 	}
 
@@ -364,7 +345,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	}
 
 	if route == stateLarge {
-		return runLargePath(ctx, devCtx, in, a, est, info, route, transition, projectLabels, finish)
+		return runLargePath(ctx, agentCtx, devCtx, in, a, est, info, route, transition, projectLabels, finish)
 	}
 
 	// escalateTerminal routes the cycle to HUMAN_REQUIRED with a recorded §18
@@ -549,7 +530,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		}
 		reviewedSHA = headSha
 		var rev ReviewResult
-		if err := workflow.ExecuteActivity(ctx, RunReviewer, ReviewRequest{
+		if err := workflow.ExecuteActivity(agentCtx, RunReviewer, ReviewRequest{
 			Owner: in.Owner, Repo: in.Repo, PRNumber: pub.PRNumber, RepoPath: in.RepoPath,
 			Model:              in.Lifecycle.Model,
 			Harness:            in.Lifecycle.Harness,
@@ -563,7 +544,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			AcceptanceCriteria: a.AcceptanceCriteria,
 			Constraints:        a.Constraints,
 			Assumptions:        a.Assumptions,
-		}).Get(ctx, &rev); err != nil {
+		}).Get(agentCtx, &rev); err != nil {
 			return err
 		}
 		lastReviewRounds++
@@ -663,13 +644,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// merges. A non-green CI gate or a merge failure escalates to
 	// HUMAN_REQUIRED and never closes (no silent success, §40).
 	transition(stateMerging)
-	ciAO := workflow.ActivityOptions{
-		StartToCloseTimeout: CIMaxWait(in.Lifecycle) + time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ciCtx := workflow.WithActivityOptions(ctx, ciAO)
+	// §95: the CI status poll is a verification gate → verification class.
+	ciCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryVerification, CIMaxWait(in.Lifecycle)+time.Minute))
 	status.setStep("ci")
 	var ci CIStatus
 	if err := workflow.ExecuteActivity(ciCtx, WaitForCI, CIRequest{
@@ -758,10 +734,10 @@ func runPostMerge(ctx workflow.Context, in IssueInput, prNum int, sha string) {
 // → parent CLOSED. A child failure fails the whole parent (§44) and routes to
 // BLOCKED — never a silent skip. Child cycles are started with the deterministic
 // <repo>-issue-<childNumber> ID so sweeps/retries converge (§32/§24).
-func runLargePath(ctx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int), finish func(CycleOutcome) error) error {
+func runLargePath(ctx workflow.Context, agentCtx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int), finish func(CycleOutcome) error) error {
 	transition(stateSplitting)
 	var split SplitResult
-	if err := workflow.ExecuteActivity(ctx, RunSplit, in, a, est).Get(ctx, &split); err != nil {
+	if err := workflow.ExecuteActivity(agentCtx, RunSplit, in, a, est).Get(agentCtx, &split); err != nil {
 		return err
 	}
 	if err := ValidateSplit(in.Lifecycle, split); err != nil {
@@ -861,12 +837,7 @@ func ensureChildrenActivity(ctx workflow.Context, in IssueInput, split SplitResu
 // the caller maps the verdict to a deterministic transition. Reused by
 // IssueCycleWorkflow (publish/merge) and PostMergeWorkflow (deploy).
 func awaitApprovalGate(ctx workflow.Context, owner, repo string, num int, step string, lc LifecycleConfig) (ApprovalResult, error) {
-	gateCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: POGateTimeout(lc) + time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	})
+	gateCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, POGateTimeout(lc)+time.Minute))
 	var res ApprovalResult
 	if err := workflow.ExecuteActivity(gateCtx, AwaitApproval, ApprovalRequest{
 		Owner: owner, Repo: repo, Num: num, Step: step,
@@ -884,8 +855,10 @@ func awaitApprovalGate(ctx workflow.Context, owner, repo string, num int, step s
 }
 
 // recordAudit emits one §55 audit event (activity; all I/O outside the workflow).
+// §95: append-only → deterministic class (a retry must never double-write).
 func recordAudit(ctx workflow.Context, cfg AuditConfig, ev AuditEvent) error {
-	return workflow.ExecuteActivity(ctx, RecordAuditEvent, AuditRequest{Event: ev, Config: cfg}).Get(ctx, nil)
+	dctx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryDeterministic, appCfg.Worker.startToClose()))
+	return workflow.ExecuteActivity(dctx, RecordAuditEvent, AuditRequest{Event: ev, Config: cfg}).Get(dctx, nil)
 }
 
 // auditDecision maps a gate verdict to the audit record's decision field.
@@ -937,7 +910,10 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 			out.EvidenceError = err.Error()
 		}
 	}
-	if err := workflow.ExecuteActivity(ctx, RecordCycleMetrics, out).Get(ctx, nil); err != nil {
+	// §95: the metrics sink recomputes derived gauges from the outcome; a
+	// Temporal retry would double-count, so it is deterministic (1 attempt).
+	dctx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryDeterministic, appCfg.Worker.startToClose()))
+	if err := workflow.ExecuteActivity(dctx, RecordCycleMetrics, out).Get(dctx, nil); err != nil {
 		return err
 	}
 	// §53 failure feedback: a terminal BLOCKED/FAILED run files at most one
