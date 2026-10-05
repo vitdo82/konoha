@@ -678,6 +678,22 @@ cycle's `status` handler via the Temporal client and prints the JSON snapshot).
   the §6 terminal). `policyDigest` = SHA-256 of the effective `LifecycleConfig`
   + resolved harness/model + `taskHash(owner,repo,issue)`, canonical JSON
   (sorted map keys) so it is stable across processes; `recordTerminal` stamps it
-  onto `CycleOutcome.PolicyDigest` (→ `outcome.json`). `DevelopResult.BaseSHA`
-  carries the resolved branch-from commit for lineage.
+   onto `CycleOutcome.PolicyDigest` (→ `outcome.json`). `DevelopResult.BaseSHA`
+   carries the resolved branch-from commit for lineage.
+- `change.go` owns the #97 change/work-item lifecycle on top of evidence + lineage:
+  per `(repo, issue)` it writes `changes/<repo>-issue-<n>.json` (`dryrun/changes/`
+  under §42) via the `RecordChange` activity. `deriveChangeStatus` maps the §6
+  state → status (`CLOSED`→`DONE`, `CANCELLED`→`ABANDONED`, a human-decision wait
+  `PENDING_APPROVAL`/`HUMAN_REQUIRED`→`IN_REVIEW`, else `OPEN`) — status is
+  DERIVED, never set directly. The record carries a redacted `reworkNote` (a
+  rejected review's blocking instruction / a §55 denial detail) and the full
+  ORDERED feedback thread (`reviewFeedback` keys each entry by workflow+revision+
+  kind+index; `upsertFeedback` REPLACES by key, never appends, §24). `recordTerminal`
+  records the terminal status; the workflow records `IN_REVIEW` on gate entry,
+  review comments + the rework note per revision, and stamps `ReworkNote` onto the
+  repair `LineageActivation`. Recording is best-effort and idempotent by
+  `(repo, issue)`; CLI `prbot get changes` (newest first) / `prbot describe change
+  <repo> <issue>` (joins change + recomputed lineage via pure
+  `buildChangeView`/`changeViewJSON`, no Temporal). Never call
+  `activity.GetLogger` in `RecordChange` (non-Temporal ctx panics).
 

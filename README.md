@@ -401,7 +401,11 @@ activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
 validated `DependencyReport`; `SCAN_CMD` required), and `/tmp/prbot status
 <repo> <issue>` (queries the running issue cycle's `status` handler and prints
 the `{state, currentStep, conditions, agentOutcome, verificationOutcome}` JSON;
-needs a running worker + Temporal). `prbot config --deps`
+needs a running worker + Temporal), and `/tmp/prbot get changes` (lists every
+recorded change/work-item record newest first) and `/tmp/prbot describe change
+<repo> <issue>` (prints the record's status, rework note, full ordered feedback
+thread, and recomputed activations/attempts/totals; both read `evidence.dir` and
+need no Temporal). `prbot config --deps`
 prints the §52 dependency schedule inputs for `apply.sh`, `prbot config
 --alerts` prints the §53 alert schedule inputs, and `prbot config --grooming`
 prints the §56 grooming schedule inputs.

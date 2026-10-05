@@ -43,6 +43,9 @@ type LineageActivation struct {
 	BaseSHA    string `json:"baseSha,omitempty"`
 	CommitSHA  string `json:"commitSha,omitempty"`
 	Result     string `json:"result,omitempty"` // AgentOutcome (SUCCESS|BLOCKED|...)
+	// #97: the rework instruction carried onto this activation from a rejected
+	// review (empty for the initial develop).
+	ReworkNote string `json:"reworkNote,omitempty"`
 	// #87 usage, recorded per activation so the totals are a recomputation.
 	TokensIn  int64   `json:"tokensIn,omitempty"`
 	TokensOut int64   `json:"tokensOut,omitempty"`
