@@ -432,6 +432,24 @@ Env: `GH_APP_ID`, `GH_APP_INSTALL_ID`, `GH_APP_PEM` (path to private key —
 never committed) and `TEMPORAL_ADDRESS` (default `127.0.0.1:7233`).
 `KONOHA_CONFIG_DIR` overrides where `repos.yaml` is read (default `configs/`).
 
+## Operator CLI
+
+Operator-facing inspection over the durable evidence store (`evidence.dir`),
+plus a `doctor` preflight. Only `status` needs Temporal; the readers work
+offline against `evidence.dir`:
+
+```bash
+/tmp/prbot doctor                  # preflight; exits non-zero with a specific
+                                   # message per failure: konoha.yaml/repos.yaml
+                                   # load, Temporal reachable, gh present +
+                                   # authenticated, harness on PATH, evidence dir writable
+/tmp/prbot status <repo> <issue>   # running cycle's status snapshot (needs Temporal;
+                                   # degrades with a clear message when none is running)
+/tmp/prbot logs <repo> <issue>     # agent.stdout / agent.stderr / validation.txt (no Temporal)
+/tmp/prbot describe <repo> <issue> # outcome.json summary: state, agent/verification
+                                   # outcomes, conditions, usage (no Temporal)
+```
+
 ## Debug
 
 The binary also has CLI entrypoints used with `make build`:
