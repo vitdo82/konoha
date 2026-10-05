@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -134,29 +134,28 @@ func reworkInstruction(rev ReviewResult) string {
 	return strings.Join(rev.Blocking, "\n")
 }
 
-// changePath resolves change.json for one repo+issue, rejecting a non-plain-
-// segment id (traversal guard, mirroring the evidence store). DryRun mirrors
-// evidence under dryrun/ (§42: a record, not a mutation).
+// changePath resolves the sink-relative change.json path for one repo+issue,
+// rejecting a non-plain-segment id (traversal guard, mirroring the evidence
+// store). DryRun mirrors evidence under dryrun/ (§42: a record, not a mutation).
 func (s *EvidenceStore) changePath(repo string, issue int, dryRun bool) (string, error) {
 	id := fmt.Sprintf("%s-issue-%d", repo, issue)
 	if !validCycleID(id) {
 		return "", fmt.Errorf("change id %q is not a plain path segment", id)
 	}
-	dir := filepath.Join(s.root, "changes")
 	if dryRun {
-		dir = filepath.Join(s.root, "dryrun", "changes")
+		return path.Join("dryrun", "changes", id+".json"), nil
 	}
-	return filepath.Join(dir, id+".json"), nil
+	return path.Join("changes", id+".json"), nil
 }
 
 // loadLineage reads lineage.json for one (owner, repo, issue); a missing file is
 // not an error (an issue may have a change record but no recorded activations).
 func (s *EvidenceStore) loadLineage(owner, repo string, issue int, dryRun bool) (Lineage, error) {
-	path, err := s.lineagePath(owner, repo, issue, dryRun)
+	rel, err := s.lineagePath(owner, repo, issue, dryRun)
 	if err != nil {
 		return Lineage{}, err
 	}
-	b, err := os.ReadFile(path)
+	b, err := s.sink.Read(rel)
 	if os.IsNotExist(err) {
 		return Lineage{}, nil
 	}
@@ -175,16 +174,16 @@ func (s *EvidenceStore) loadLineage(owner, repo string, issue int, dryRun bool) 
 // redacted. A corrupt existing file fails closed rather than discarding prior
 // feedback.
 func (s *EvidenceStore) recordChange(in ChangeRequest) error {
-	path, err := s.changePath(in.Repo, in.Issue, in.DryRun)
+	rel, err := s.changePath(in.Repo, in.Issue, in.DryRun)
 	if err != nil {
 		return err
 	}
 	var c Change
-	b, err := os.ReadFile(path)
+	b, err := s.sink.Read(rel)
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(b, &c); err != nil {
-			return fmt.Errorf("change %s: %w", path, err)
+			return fmt.Errorf("change %s: %w", rel, err)
 		}
 	case os.IsNotExist(err):
 		// fresh record
@@ -211,17 +210,17 @@ func (s *EvidenceStore) recordChange(in ChangeRequest) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, []byte(s.redactor.Redact(string(out))))
+	return s.sink.Write(rel, []byte(s.redactor.Redact(string(out))))
 }
 
 // loadChange reads the recorded change for one (repo, issue). A missing file is
 // an error (the CLI reports "no such change" rather than printing an empty one).
 func (s *EvidenceStore) loadChange(repo string, issue int) (Change, error) {
-	path, err := s.changePath(repo, issue, false)
+	rel, err := s.changePath(repo, issue, false)
 	if err != nil {
 		return Change{}, err
 	}
-	b, err := os.ReadFile(path)
+	b, err := s.sink.Read(rel)
 	if err != nil {
 		return Change{}, err
 	}
@@ -233,22 +232,18 @@ func (s *EvidenceStore) loadChange(repo string, issue int) (Change, error) {
 }
 
 // listChanges reads every recorded (non-dryrun) change record. A missing
-// changes/ dir is an empty list, never an error.
+// changes/ prefix is an empty list, never an error.
 func (s *EvidenceStore) listChanges() ([]Change, error) {
-	dir := filepath.Join(s.root, "changes")
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+	paths, err := s.sink.List("changes")
 	if err != nil {
 		return nil, err
 	}
 	var out []Change
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+	for _, p := range paths {
+		if !strings.HasSuffix(p, ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		b, err := s.sink.Read(p)
 		if err != nil {
 			return nil, err
 		}
@@ -267,7 +262,10 @@ func (s *EvidenceStore) listChanges() ([]Change, error) {
 // state. Never call activity.GetLogger here: unit tests use a non-Temporal
 // context (it panics).
 func RecordChange(_ context.Context, in ChangeRequest) error {
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	return store.recordChange(in)
 }
 

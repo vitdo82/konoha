@@ -658,8 +658,15 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   redacted, atomic (temp+rename, `0600`), traversal-validated record under
   `cycles/<repo>-issue-<n>/` (or `<repo>-review-<n>`) with the byte-exact
   artifact set `prompt.txt`/`agent.stdout`/`agent.stderr`/`result.json`/
-  `diff.patch`/`validation.txt`/`outcome.json`. `WriteCycleEvidence` is the
-  single evidence I/O activity; the workflow invokes it after
+  `diff.patch`/`validation.txt`/`outcome.json`. All raw I/O goes through the
+  #100 pluggable `EvidenceSink` seam (`Write`/`Read`/`List` by root-relative
+  slash path): the store owns redaction, path validation, and the layout, while
+  a sink only moves opaque bytes. `evidence.sink` selects the backend —
+  `local` (default) is `localDirSink`, byte-identical to the #83 layout; an
+  S3/MinIO sink is a **documented deferred** implementation (YAGNI), an unknown
+  value fails at config load (`EvidenceConfig.validate`), and `newEvidenceSink`
+  builds only `local` (constructor also fails closed). `WriteCycleEvidence` is
+  the single evidence I/O activity; the workflow invokes it after
   develop/repair/review and at the terminal via `recordTerminal`. Evidence is
   BEST-EFFORT and never authoritative over §6 Temporal state (§40/§44 #20): a
   write failure is logged and recorded as `CycleOutcome.EvidenceError`, never a

@@ -106,6 +106,7 @@ worker:
   orphanWorktreeTTL: 24h          # #93 sweep a stranded owned worktree after this age
 evidence:
   dir: .konoha/evidence           # durable per-cycle evidence root (see below)
+  sink: local                     # storage backend; `local` only — S3/MinIO is a deferred seam
 harness:                          # §85 generic harness (used when a repo selects `generic`)
   executable: ""                  # bare executable NAME (no path separators)
   args: ["run", "{{model_args}}", "{{prompt}}"]  # {{model_args}}/{{prompt}} expand
@@ -260,6 +261,16 @@ the outcome and logged, but never changes the authoritative workflow state
 redacted via the §23 `Redactor` and atomic (temp file + rename, owner-only
 perms). Under `dryRun` (§42) evidence is namespaced under `dryrun/` — it is a
 record, not a mutation.
+
+All evidence I/O goes through the pluggable `EvidenceSink` seam (#100): the
+store owns redaction, path validation, and the artifact layout, while a sink
+only moves opaque bytes by root-relative path (`Write`/`Read`/`List`). The
+`evidence.sink` key selects the backend — `local` (the default) is the
+local-directory sink and is byte-identical to the #83 layout. An
+S3/MinIO sink is a **documented, deferred** implementation (YAGNI until
+retention/durability needs it), not a stub; an unknown `evidence.sink` value
+fails fast at config load, and `localDirSink` is the only backend the factory
+builds today.
 
 `outcome.json`'s `cleanup` section records the #93 worktree teardown that runs on
 **every** exit path (including cancellation, via a disconnected workflow

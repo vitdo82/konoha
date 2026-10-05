@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -107,35 +107,35 @@ func recomputeLineage(l *Lineage) {
 	l.TotalCostUsd = cost
 }
 
-// lineagePath resolves lineage.json for one (owner, repo, issue), rejecting a
-// non-plain-segment id (traversal guard, mirroring the evidence store). DryRun
-// mirrors evidence under dryrun/ (§42: a record, not a mutation).
+// lineagePath resolves the sink-relative lineage.json path for one (owner,
+// repo, issue), rejecting a non-plain-segment id (traversal guard, mirroring the
+// evidence store). DryRun mirrors evidence under dryrun/ (§42: a record, not a
+// mutation).
 func (s *EvidenceStore) lineagePath(owner, repo string, issue int, dryRun bool) (string, error) {
 	id := fmt.Sprintf("%s-%s-issue-%d", owner, repo, issue)
 	if !validCycleID(id) {
 		return "", fmt.Errorf("lineage id %q is not a plain path segment", id)
 	}
-	dir := filepath.Join(s.root, "lineage")
 	if dryRun {
-		dir = filepath.Join(s.root, "dryrun", "lineage")
+		return path.Join("dryrun", "lineage", id+".json"), nil
 	}
-	return filepath.Join(dir, id+".json"), nil
+	return path.Join("lineage", id+".json"), nil
 }
 
 // recordActivation loads the existing lineage (if any), upserts the activation
 // by WorkflowID, recomputes the aggregates, and writes it atomically. A corrupt
 // existing file fails closed rather than silently discarding prior activations.
 func (s *EvidenceStore) recordActivation(owner, repo string, issue int, act LineageActivation, dryRun bool) error {
-	path, err := s.lineagePath(owner, repo, issue, dryRun)
+	rel, err := s.lineagePath(owner, repo, issue, dryRun)
 	if err != nil {
 		return err
 	}
 	var l Lineage
-	b, err := os.ReadFile(path)
+	b, err := s.sink.Read(rel)
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(b, &l); err != nil {
-			return fmt.Errorf("lineage %s: %w", path, err)
+			return fmt.Errorf("lineage %s: %w", rel, err)
 		}
 	case os.IsNotExist(err):
 		// fresh record
@@ -150,7 +150,7 @@ func (s *EvidenceStore) recordActivation(owner, repo string, issue int, act Line
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, []byte(s.redactor.Redact(string(out))))
+	return s.sink.Write(rel, []byte(s.redactor.Redact(string(out))))
 }
 
 // RecordActivation is the lineage I/O activity (#88): an idempotent, atomic
@@ -158,7 +158,10 @@ func (s *EvidenceStore) recordActivation(owner, repo string, issue int, act Line
 // write failure never changes the §6 terminal state. Never call
 // activity.GetLogger here: unit tests use a non-Temporal context (it panics).
 func RecordActivation(_ context.Context, in ActivationRequest) error {
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	return store.recordActivation(in.Owner, in.Repo, in.Issue, in.Activation, in.DryRun)
 }
 

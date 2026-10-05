@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -57,23 +59,134 @@ func evidenceOf(ev *AgentEvidence) AgentEvidence {
 	return *ev
 }
 
-// EvidenceStore writes one cycle's artifacts under root/cycles/<id>/ (or
-// root/dryrun/cycles/<id>/ under §42 DryRun).
-type EvidenceStore struct {
-	root     string
-	redactor *Redactor
+// EvidenceSink is the pluggable, domain-free storage backend for cycle
+// evidence (#100): it reads/writes/lists opaque bytes at a store-root-relative
+// slash path. Redaction and path semantics belong to the EvidenceStore; a sink
+// only moves bytes, so an S3/MinIO implementation slots in without touching the
+// store. That remote sink is the documented DEFERRED seam — not implemented
+// here (YAGNI until retention/durability requires it); the local-directory sink
+// is the default and must stay byte-identical to the #83 layout.
+type EvidenceSink interface {
+	// Write stores data at relPath, creating parents as needed.
+	Write(relPath string, data []byte) error
+	// Read returns the bytes at relPath, or an error satisfying
+	// os.IsNotExist when the object is absent.
+	Read(relPath string) ([]byte, error)
+	// List returns the store-root-relative slash paths of every object under
+	// prefix (sorted). A missing prefix is an empty result, never an error.
+	List(prefix string) ([]string, error)
 }
 
-// NewEvidenceStore roots a store at dir; a nil redactor uses the process-wide
-// redactor so registered operator secrets are masked.
-func NewEvidenceStore(dir string, r *Redactor) *EvidenceStore {
-	if strings.TrimSpace(dir) == "" {
+// localDirSink is the default EvidenceSink: a root directory on the local
+// filesystem. Writes are atomic (temp + rename) and owner-only (0600), exactly
+// the #83 contract.
+type localDirSink struct {
+	root string
+}
+
+// newEvidenceSink resolves the configured backend into a sink. Only the
+// local-directory sink exists (#100); unknown names fail closed. Load-time
+// config validation already rejects them, so this is defense in depth.
+func newEvidenceSink(cfg EvidenceConfig) (EvidenceSink, error) {
+	switch cfg.sinkName() {
+	case evidenceSinkLocal:
+		return &localDirSink{root: filepath.Clean(cfg.Dir)}, nil
+	default:
+		return nil, fmt.Errorf("evidence.sink: unknown backend %q (supported: %s)", cfg.Sink, evidenceSinkLocal)
+	}
+}
+
+// abs maps a store-root-relative slash path to a local path, rejecting any path
+// that escapes the root (traversal defense in depth).
+func (s *localDirSink) abs(rel string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	if rel == "" || clean == "." || filepath.IsAbs(clean) ||
+		clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("evidence path %q escapes sink root", rel)
+	}
+	return filepath.Join(s.root, clean), nil
+}
+
+func (s *localDirSink) Write(relPath string, data []byte) error {
+	p, err := s.abs(relPath)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(p, data)
+}
+
+func (s *localDirSink) Read(relPath string) ([]byte, error) {
+	p, err := s.abs(relPath)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(p)
+}
+
+func (s *localDirSink) List(prefix string) ([]string, error) {
+	dir, err := s.abs(prefix)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+	var out []string
+	err = filepath.WalkDir(dir, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(s.root, p)
+		if rerr != nil {
+			return rerr
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// EvidenceStore writes one cycle's artifacts under root/cycles/<id>/ (or
+// root/dryrun/cycles/<id>/ under §42 DryRun). All raw I/O goes through the
+// EvidenceSink seam (#100); the store owns redaction, path validation, and the
+// artifact layout.
+type EvidenceStore struct {
+	sink     EvidenceSink
+	redactor *Redactor
+	root     string // local root, for operator-facing error messages only
+}
+
+// NewEvidenceStore builds a store for the resolved evidence config; a nil
+// redactor uses the process-wide redactor so registered operator secrets are
+// masked.
+func NewEvidenceStore(cfg EvidenceConfig, r *Redactor) (*EvidenceStore, error) {
+	dir := strings.TrimSpace(cfg.Dir)
+	if dir == "" {
 		dir = defaultEvidenceDir
 	}
+	cfg.Dir = dir
 	if r == nil {
 		r = &defaultRedactor
 	}
-	return &EvidenceStore{root: filepath.Clean(dir), redactor: r}
+	sink, err := newEvidenceSink(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &EvidenceStore{sink: sink, redactor: r, root: filepath.Clean(dir)}, nil
 }
 
 // validCycleID reports whether id is a single plain path segment (path
@@ -88,21 +201,16 @@ func validCycleID(id string) bool {
 	return true
 }
 
-// dirFor resolves the on-disk directory for a cycle, rejecting traversal.
-func (s *EvidenceStore) dirFor(id string, dryRun bool) (string, error) {
+// relDirFor resolves the sink-relative directory for a cycle, rejecting
+// traversal (slash path so it is backend-neutral).
+func (s *EvidenceStore) relDirFor(id string, dryRun bool) (string, error) {
 	if !validCycleID(id) {
 		return "", fmt.Errorf("evidence cycle id %q is not a plain path segment", id)
 	}
-	dir := filepath.Join(s.root, "cycles", id)
 	if dryRun {
-		dir = filepath.Join(s.root, "dryrun", "cycles", id)
+		return path.Join("dryrun", "cycles", id), nil
 	}
-	// Defense in depth: the cleaned path must stay under the root.
-	rel, err := filepath.Rel(s.root, dir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("evidence path %q escapes root %q", dir, s.root)
-	}
-	return dir, nil
+	return path.Join("cycles", id), nil
 }
 
 // Write redacts and atomically writes one artifact. Empty content is skipped so
@@ -111,11 +219,11 @@ func (s *EvidenceStore) Write(id, name, content string, dryRun bool) error {
 	if content == "" {
 		return nil
 	}
-	dir, err := s.dirFor(id, dryRun)
+	rel, err := s.relDirFor(id, dryRun)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(dir, name), []byte(s.redactor.Redact(content)))
+	return s.sink.Write(path.Join(rel, name), []byte(s.redactor.Redact(content)))
 }
 
 // WriteVerification redacts and writes one §26 gate stream under the cycle's
@@ -129,34 +237,31 @@ func (s *EvidenceStore) WriteVerification(id, gateID, stream, content string, dr
 	if !validCycleID(gateID) {
 		return fmt.Errorf("gate id %q is not a plain path segment", gateID)
 	}
-	dir, err := s.dirFor(id, dryRun)
+	rel, err := s.relDirFor(id, dryRun)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(dir, "verification", gateID+"."+stream),
+	return s.sink.Write(path.Join(rel, "verification", gateID+"."+stream),
 		[]byte(s.redactor.Redact(content)))
 }
 
 // ensureSet creates the full artifact set (empty files where absent) so one
 // cycle always lands the documented layout, without truncating existing data.
 func (s *EvidenceStore) ensureSet(id string, dryRun bool) error {
-	dir, err := s.dirFor(id, dryRun)
+	rel, err := s.relDirFor(id, dryRun)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	for _, name := range evidenceArtifactNames {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
+		p := path.Join(rel, name)
+		if _, err := s.sink.Read(p); err == nil {
 			continue
-		}
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
+		} else if !os.IsNotExist(err) {
 			return err
 		}
-		f.Close()
+		if err := s.sink.Write(p, nil); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -209,7 +314,10 @@ type EvidenceRequest struct {
 // as non-fatal (§40). Never call activity.GetLogger here: unit tests use a
 // non-Temporal context (it panics).
 func WriteCycleEvidence(_ context.Context, in EvidenceRequest) error {
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	for _, a := range []struct{ name, content string }{
 		{evidencePrompt, in.Prompt},
 		{evidenceStdout, in.Stdout},
