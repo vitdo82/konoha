@@ -90,13 +90,44 @@ type MCPConfig struct {
 
 // EvidenceConfig is the `evidence:` block (#83): the durable per-cycle evidence
 // store root. Resolved once at bootstrap so workflow replay sees a stable value.
+// Sink selects the storage backend (#100): empty/"local" is the local-directory
+// sink; an S3/MinIO backend is the documented deferred seam and is rejected as
+// unknown until it exists.
 type EvidenceConfig struct {
-	Dir string `yaml:"dir"`
+	Dir  string `yaml:"dir"`
+	Sink string `yaml:"sink"`
 }
 
 // defaultEvidenceDir is where per-cycle evidence lands when no konoha.yaml
 // overrides it. Relative to the worker's working directory.
 const defaultEvidenceDir = ".konoha/evidence"
+
+// evidenceSinkLocal is the only implemented evidence backend (#100).
+const evidenceSinkLocal = "local"
+
+// sinkName resolves the configured backend name, defaulting an unset value to
+// the local-directory sink.
+func (e EvidenceConfig) sinkName() string {
+	if n := strings.ToLower(strings.TrimSpace(e.Sink)); n != "" {
+		return n
+	}
+	return evidenceSinkLocal
+}
+
+// validate gates the evidence block: a non-empty root with no NUL, and a known
+// backend name (#100). An unknown/unconfigured backend fails fast at load.
+func (e EvidenceConfig) validate() error {
+	if strings.TrimSpace(e.Dir) == "" {
+		return fmt.Errorf("evidence.dir must not be empty")
+	}
+	if strings.ContainsRune(e.Dir, 0) {
+		return fmt.Errorf("evidence.dir %q contains a NUL byte", e.Dir)
+	}
+	if name := e.sinkName(); name != evidenceSinkLocal {
+		return fmt.Errorf("evidence.sink: unknown backend %q (supported: %s)", e.Sink, evidenceSinkLocal)
+	}
+	return nil
+}
 
 // DefaultsConfig is the `defaults:` block.
 type DefaultsConfig struct {
@@ -119,7 +150,7 @@ func defaultAppConfig() AppConfig {
 			CleanupMaxAttempts:      5,
 			OrphanWorktreeTTL:       defaultOrphanWorktreeTTL,
 		},
-		Evidence: EvidenceConfig{Dir: defaultEvidenceDir},
+		Evidence: EvidenceConfig{Dir: defaultEvidenceDir, Sink: evidenceSinkLocal},
 		Defaults: DefaultsConfig{
 			Lifecycle: LifecycleDefaults{
 				DevelopmentMaxComplexity: 4,
@@ -309,11 +340,8 @@ func workerMaxConcurrentActivities() int {
 }
 
 func (c AppConfig) validate() error {
-	if strings.TrimSpace(c.Evidence.Dir) == "" {
-		return fmt.Errorf("evidence.dir must not be empty")
-	}
-	if strings.ContainsRune(c.Evidence.Dir, 0) {
-		return fmt.Errorf("evidence.dir %q contains a NUL byte", c.Evidence.Dir)
+	if err := c.Evidence.validate(); err != nil {
+		return err
 	}
 	if c.Worker.MaxConcurrentActivities < 1 {
 		return fmt.Errorf("worker.maxConcurrentActivities must be >= 1")

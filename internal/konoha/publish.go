@@ -131,7 +131,10 @@ func persistPostVerificationPatch(cycleID, patch string, dryRun bool) {
 	if cycleID == "" || strings.TrimSpace(patch) == "" {
 		return
 	}
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return
+	}
 	_ = store.WriteVerification(cycleID, "post-verification", "patch", patch, dryRun)
 }
 
@@ -256,7 +259,10 @@ func persistGateEvidence(cycleID string, r gateRun, dryRun bool) {
 	if cycleID == "" {
 		return
 	}
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return
+	}
 	_ = store.WriteVerification(cycleID, r.ID, "stdout", r.Stdout, dryRun)
 	_ = store.WriteVerification(cycleID, r.ID, "stderr", r.Stderr, dryRun)
 }

@@ -5,6 +5,7 @@
 
 evidence:
   dir: .konoha/evidence           # #83: durable per-cycle evidence root (cycles/<id>/)
+  sink: local                     # #100: storage backend; local only (S3/MinIO is a deferred seam)
 
 worker:
   taskQueue: review-queue

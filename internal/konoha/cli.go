@@ -932,7 +932,10 @@ func runStatus(c client.Client, args []string) error {
 // newest first. The projection (sortChangesNewestFirst/changesJSON) is pure and
 // unit-tested without a Temporal server.
 func runGetChanges() error {
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	list, err := store.listChanges()
 	if err != nil {
 		return err
@@ -960,7 +963,10 @@ func runDescribeChange(args []string) error {
 	if n <= 0 {
 		return fmt.Errorf("usage: prbot describe change <repo> <issue>")
 	}
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	c, err := store.loadChange(repo, n)
 	if err != nil {
 		return err

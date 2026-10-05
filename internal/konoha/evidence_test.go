@@ -2,8 +2,12 @@ package konoha
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -118,5 +122,100 @@ func TestWriteCycleEvidenceDryRunNamespaces(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "cycles", "ducklambda-issue-7")); err == nil {
 		t.Fatal("dry-run must not write the non-dryrun path")
+	}
+}
+
+// evidenceDigest returns a sorted (relative-path, perms, sha256) fingerprint of
+// every file under root, so two trees can be compared byte-for-byte.
+func evidenceDigest(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(b)
+		out = append(out, fmt.Sprintf("%s|%o|%x", filepath.ToSlash(rel), info.Mode().Perm(), sum))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// #100: the local sink's output is byte-identical to the #83 layout — same
+// names, same perms (0600), same bytes — for every artifact including the empty
+// ensureSet fillers.
+func TestEvidenceSinkLocalByteIdentical(t *testing.T) {
+	root := withEvidenceDir(t)
+	req := EvidenceRequest{
+		CycleID: "ducklambda-issue-7",
+		Prompt:  "the prompt", Stdout: "the stdout", Stderr: "the stderr",
+		Result: `{"verdict":"APPROVE"}`, Diff: "diff --git a/x b/x",
+		Validation: "go test ./... ok", Outcome: `{"terminalState":"CLOSED"}`,
+		Provisioning: `[{"capability":"binary","outcome":"APPLIED"}]`,
+	}
+	if err := WriteCycleEvidence(context.Background(), req); err != nil {
+		t.Fatalf("WriteCycleEvidence: %v", err)
+	}
+
+	// Reproduce the #83 layout independently with the raw atomic writer.
+	ref := t.TempDir()
+	base := filepath.Join(ref, "cycles", req.CycleID)
+	content := map[string]string{
+		evidencePrompt: req.Prompt, evidenceStdout: req.Stdout, evidenceStderr: req.Stderr,
+		evidenceResult: req.Result, evidenceDiff: req.Diff, evidenceValidation: req.Validation,
+		evidenceOutcome: req.Outcome, evidenceProvisioning: req.Provisioning,
+	}
+	for _, name := range evidenceArtifactNames {
+		if err := writeFileAtomic(filepath.Join(base, name), []byte(content[name])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := evidenceDigest(t, root), evidenceDigest(t, ref); !reflect.DeepEqual(got, want) {
+		t.Fatalf("local sink output differs from the #83 layout:\n got=%v\nwant=%v", got, want)
+	}
+}
+
+// #100: an unknown evidence.sink fails at load; empty and "local" both resolve
+// to the local-directory sink (the documented S3/MinIO seam is not implemented).
+func TestEvidenceSinkUnknownBackendFailsLoad(t *testing.T) {
+	for _, sink := range []string{"s3", "minio", "bogus"} {
+		p := writeAppConfig(t, "evidence:\n  dir: .konoha/evidence\n  sink: "+sink+"\n")
+		if _, err := loadAppConfig(p); err == nil {
+			t.Fatalf("evidence.sink %q must fail at load", sink)
+		}
+	}
+	for _, content := range []string{
+		"evidence:\n  dir: .konoha/evidence\n",
+		"evidence:\n  dir: .konoha/evidence\n  sink: local\n",
+	} {
+		cfg, err := loadAppConfig(writeAppConfig(t, content))
+		if err != nil {
+			t.Fatalf("local/empty sink must load: %v", err)
+		}
+		if cfg.Evidence.sinkName() != evidenceSinkLocal {
+			t.Fatalf("sinkName = %q, want %q", cfg.Evidence.sinkName(), evidenceSinkLocal)
+		}
+	}
+	if _, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir(), Sink: "s3"}, nil); err == nil {
+		t.Fatal("constructor must reject an unknown sink (defense in depth)")
 	}
 }

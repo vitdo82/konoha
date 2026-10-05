@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -194,7 +194,10 @@ func runLogs(args []string, out io.Writer) error {
 		return err
 	}
 	id := fmt.Sprintf("%s-issue-%d", repo, n)
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	printed := false
 	for _, name := range []string{evidenceStdout, evidenceStderr, evidenceValidation} {
 		content, err := store.loadArtifact(id, name)
@@ -225,7 +228,10 @@ func runDescribeOutcome(args []string, out io.Writer) error {
 		return err
 	}
 	id := fmt.Sprintf("%s-issue-%d", repo, n)
-	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	store, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		return err
+	}
 	o, err := store.loadOutcome(id)
 	if err != nil {
 		return err
@@ -237,11 +243,11 @@ func runDescribeOutcome(args []string, out io.Writer) error {
 // loadArtifact reads one artifact for a cycle; a missing file is an empty string
 // (a phase may not have produced it), never an error.
 func (s *EvidenceStore) loadArtifact(id, name string) (string, error) {
-	dir, err := s.dirFor(id, false)
+	rel, err := s.relDirFor(id, false)
 	if err != nil {
 		return "", err
 	}
-	b, err := os.ReadFile(filepath.Join(dir, name))
+	b, err := s.sink.Read(path.Join(rel, name))
 	if os.IsNotExist(err) {
 		return "", nil
 	}
@@ -254,11 +260,11 @@ func (s *EvidenceStore) loadArtifact(id, name string) (string, error) {
 // loadOutcome reads + parses outcome.json for one cycle. A missing record is a
 // specific "no evidence" error (an empty outcome would be misleading).
 func (s *EvidenceStore) loadOutcome(id string) (CycleOutcome, error) {
-	dir, err := s.dirFor(id, false)
+	rel, err := s.relDirFor(id, false)
 	if err != nil {
 		return CycleOutcome{}, err
 	}
-	b, err := os.ReadFile(filepath.Join(dir, evidenceOutcome))
+	b, err := s.sink.Read(path.Join(rel, evidenceOutcome))
 	if os.IsNotExist(err) {
 		return CycleOutcome{}, fmt.Errorf("no evidence for %s under %s", id, s.root)
 	}
