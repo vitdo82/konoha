@@ -24,6 +24,13 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "doctor":
+			// #99: preflight runs before bootstrap so a broken konoha.yaml is
+			// reported by the doctor itself, not a bare config fatal.
+			if err := runDoctor(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "publish":
 			if err := runPublish(); err != nil {
 				log.Fatal(err)
@@ -120,16 +127,29 @@ func Main() {
 	applyEnvOverrides()
 	registerOperatorSecrets() // §23: mask operator-provisioned credentials in captured output
 
-	// #97: change/work-item query surface (reads evidence.dir; no Temporal).
-	if len(os.Args) > 2 {
+	// #83/#97/#99: read-only inspection surface (reads evidence.dir; no Temporal).
+	if len(os.Args) > 1 {
 		switch {
-		case os.Args[1] == "get" && os.Args[2] == "changes":
+		case os.Args[1] == "get" && len(os.Args) > 2 && os.Args[2] == "changes":
 			if err := runGetChanges(); err != nil {
 				log.Fatal(err)
 			}
 			return
-		case os.Args[1] == "describe" && os.Args[2] == "change":
+		case os.Args[1] == "describe" && len(os.Args) > 2 && os.Args[2] == "change":
 			if err := runDescribeChange(os.Args[3:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case os.Args[1] == "describe" && len(os.Args) > 2:
+			// #99: summary of one cycle's outcome.json (no Temporal). A bare
+			// `describe` keeps its prior behavior (falls through to the worker).
+			if err := runDescribeOutcome(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case os.Args[1] == "logs":
+			// #99: print one cycle's agent/validation evidence (no Temporal).
+			if err := runLogs(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)
 			}
 			return

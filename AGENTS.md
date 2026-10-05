@@ -382,7 +382,15 @@ and prints the `ReleaseResult`; `OWNER`/`REPO`/`BASE_BRANCH`/`CHANGELOG_PATH`/
 `./prbot deps` (runs the §52 `ScanDependencies` activity directly and prints the
 validated `DependencyReport`; `OWNER`/`REPO`/`REPO_PATH` plus `SCAN_CMD`
 required; no Temporal), and `./prbot status <repo> <issue>` (queries the running
-cycle's `status` handler via the Temporal client and prints the JSON snapshot).
+cycle's `status` handler via the Temporal client and prints the JSON snapshot),
+and `./prbot doctor` (operator preflight: `konoha.yaml`/`repos.yaml` load,
+Temporal reachability, `gh` present + authenticated, the selected harness on
+PATH, and the evidence dir writable; exits non-zero with a specific message per
+failure; no Temporal needed for the readers), and `./prbot logs <repo> <issue>`
+/ `./prbot describe <repo> <issue>` (print the cycle's agent streams +
+`validation.txt`, and a human-readable `outcome.json` summary — state, agent/
+verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; the
+#97 `./prbot describe change <repo> <issue>` view is unchanged).
 - `workflow.go` owns the lifecycle state machine: `IssueCycleWorkflow` now
   wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
   (suppresses publish on restricted paths/labels) → publish (idempotent PR) →
