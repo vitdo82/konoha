@@ -397,7 +397,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		}
 	}
 
-	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir)
+	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir)
 	if err != nil {
 		return DevelopResult{}, err
 	}
@@ -422,7 +422,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		return DevelopResult{
 			BaseSHA: baseSHA, Blocked: true, BlockedReason: rep.BlockedReason,
 			Attempt:  activityAttempt(ctx),
-			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr, Provisioning: caps},
 			Usage:    parseHarnessUsage(combined),
 		}, nil
 	}
@@ -445,7 +445,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		Summary:      rep.Summary,
 		Concerns:     rep.Concerns,
 		Attempt:      activityAttempt(ctx),
-		Evidence:     &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+		Evidence:     &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr, Provisioning: caps},
 		Usage:        parseHarnessUsage(combined),
 	}
 	// §26: record validation output unconditionally; the publication gate

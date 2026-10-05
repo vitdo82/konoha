@@ -206,7 +206,7 @@ func RunCompletion(ctx context.Context, in CompletionRequest) (CompletionResult,
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := completionPrompt(in)
 
-	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
 	if err != nil {
 		return CompletionResult{}, err
 	}

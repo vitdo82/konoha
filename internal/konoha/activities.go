@@ -273,7 +273,7 @@ CONCLUDE: one-line verdict sentence
 DIFF:
 %s`, in.PrNum, in.Owner, in.Repo, diff)
 
-	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	cmd, caps, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
 	if err != nil {
 		return ReviewResult{}, err
 	}
@@ -288,7 +288,7 @@ DIFF:
 	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum,
 		Blocking: blocking, Nits: nits, Attempt: activityAttempt(ctx),
-		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr},
+		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr, Provisioning: caps},
 		Usage:    parseHarnessUsage(combined)}, nil
 }
 

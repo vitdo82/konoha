@@ -201,7 +201,7 @@ func RunDiagnosis(ctx context.Context, in DevelopmentFailure) (DiagnosisResult, 
 	}
 	prompt := diagnosisPrompt(in)
 
-	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
 	if err != nil {
 		return DiagnosisResult{}, err
 	}

@@ -111,7 +111,14 @@ harness:                          # §85 generic harness (used when a repo selec
   args: ["run", "{{model_args}}", "{{prompt}}"]  # {{model_args}}/{{prompt}} expand
   modelFlag: "--model"
   passEnv: ["PATH", "HOME", "LANG"]  # explicit allowlist; GH_* is always stripped
-  promptOnStdin: false            # true = prompt via stdin, not argv
+  promptOnStdin: false            # legacy: true = prompt via stdin, not argv
+  prompt_mode: ""                 # #96: arg | stdin | stdin_file (overrides promptOnStdin)
+  binary: ""                      # #96: operator path to a standalone binary to stage
+  binary_sha256: ""               # #96: required sha256 of `binary`; mismatch fails closed
+  catalog_cache: ""               # #96: operator path to a model catalog for offline resolution
+  mcp:                            # #96: MCP server config for supporting harnesses (optional)
+    path: ".mcp.json"             # worktree-relative location to write (git-excluded)
+    config: "{}"                  # config content
 defaults:
   lifecycle:
     harness: opencode             # §85 fallback harness name when a repo leaves it unset
@@ -151,6 +158,19 @@ bare `executable` plus `args`/`modelFlag`/`passEnv` are operator-declared). An
 unknown harness name fails at load; `GH_*` is stripped for every harness and
 `generic` forwards only `passEnv`-listed variables.
 
+**Harness provisioning (§96).** Independently of the name, a harness may expose
+optional capabilities, detected per run: `binary` + `binary_sha256` stage a
+standalone binary into the agent's PATH after verifying its digest (a mismatch
+**fails closed**); `catalog_cache` stages a model catalog so `--model` resolution
+is deterministic and **offline** (a model absent from the catalog fails closed);
+`prompt_mode: stdin_file` writes the prompt to a file and redirects the child's
+stdin from it (never argv); and an `mcp` block writes the operator-declared MCP
+server config into the worktree (git-excluded) for harnesses that use MCP. Each
+capability is operator configuration — a caller can never supply a path. The
+`<executable> --version` is captured **best-effort** (never fails a run). Every
+capability records `APPLIED` or `SKIPPED` (a harness without it is never a false
+success) in the cycle's `provisioning.json` evidence.
+
 **Validation (§26).** A repo may declare `lifecycle.validation` as an ordered
 list of structured gates. Each gate runs as a bare argv in `dir` (repo-relative,
 validated at load: no `..` / leading `/`), with a bounded `timeout` and the
@@ -181,6 +201,7 @@ cycles/<repo>-issue-<n>/     (and <repo>-review-<n> for PR cycles)
   result.json       # the validated agent result
   diff.patch        # the reviewed PR diff
   validation.txt    # the §26 validation output
+  provisioning.json # #96 optional harness-capability outcomes (APPLIED/SKIPPED)
   verification/     # §26 per-gate streams (one pair per configured gate)
     <id>.stdout     # redacted gate stdout
     <id>.stderr     # redacted gate stderr

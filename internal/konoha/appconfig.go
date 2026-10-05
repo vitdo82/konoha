@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -64,12 +65,27 @@ type AppConfig struct {
 // GenericHarnessConfig is the operator-declared `generic` harness (§85): a bare
 // executable NAME (never a path), fixed argv with {{model_args}}/{{prompt}}
 // placeholders, the model flag, an explicit env allowlist, and prompt transport.
+// #96 adds optional provisioning: a pinned binary (+ sha256), an offline model
+// catalog cache, an explicit prompt mode (stdin_file), and MCP server config.
+// All binary/catalog paths are operator configuration; a caller never supplies one.
 type GenericHarnessConfig struct {
-	Executable    string   `yaml:"executable"`
-	Args          []string `yaml:"args"`
-	ModelFlag     string   `yaml:"modelFlag"`
-	PassEnv       []string `yaml:"passEnv"`
-	PromptOnStdin bool     `yaml:"promptOnStdin"`
+	Executable    string     `yaml:"executable"`
+	Args          []string   `yaml:"args"`
+	ModelFlag     string     `yaml:"modelFlag"`
+	PassEnv       []string   `yaml:"passEnv"`
+	PromptOnStdin bool       `yaml:"promptOnStdin"`
+	PromptMode    string     `yaml:"prompt_mode"`   // arg | stdin | stdin_file (overrides promptOnStdin)
+	Binary        string     `yaml:"binary"`        // operator path to a standalone binary to stage
+	BinarySHA256  string     `yaml:"binary_sha256"` // required sha256 of `binary`; mismatch fails closed
+	CatalogCache  string     `yaml:"catalog_cache"` // operator path to a model catalog for offline resolution
+	MCP           *MCPConfig `yaml:"mcp"`           // optional MCP server config for supporting harnesses
+}
+
+// MCPConfig is the operator-declared MCP server config (#96): the
+// worktree-relative Path to write and the Config content.
+type MCPConfig struct {
+	Path   string `yaml:"path"`
+	Config string `yaml:"config"`
 }
 
 // EvidenceConfig is the `evidence:` block (#83): the durable per-cycle evidence
@@ -126,7 +142,9 @@ func defaultAppConfig() AppConfig {
 }
 
 // validate gates the §85 generic harness block: the executable is a bare name
-// (name, not path) and the allowlist entries are non-empty.
+// (name, not path), the allowlist entries are non-empty, and the #96
+// provisioning fields are consistent (pinned binary needs a sha256, prompt mode
+// is a known value, MCP config is complete and worktree-relative).
 func (g GenericHarnessConfig) validate() error {
 	if e := strings.TrimSpace(g.Executable); e != "" {
 		if e != g.Executable || strings.ContainsAny(e, `/\`) || strings.Contains(e, "..") {
@@ -136,6 +154,33 @@ func (g GenericHarnessConfig) validate() error {
 	for _, k := range g.PassEnv {
 		if strings.TrimSpace(k) == "" {
 			return fmt.Errorf("harness.generic.passEnv: entries must be non-empty env var names")
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(g.PromptMode)) {
+	case "", promptModeArg, promptModeStdin, promptModeStdinFile:
+	default:
+		return fmt.Errorf("harness.generic.prompt_mode: %q must be arg, stdin or stdin_file", g.PromptMode)
+	}
+	bin := strings.TrimSpace(g.Binary)
+	sha := strings.ToLower(strings.TrimSpace(g.BinarySHA256))
+	if bin == "" && sha != "" {
+		return fmt.Errorf("harness.generic.binary_sha256 set without harness.generic.binary")
+	}
+	if bin != "" {
+		if len(sha) != 64 || strings.Trim(sha, "0123456789abcdef") != "" {
+			return fmt.Errorf("harness.generic.binary_sha256: must be a 64-char hex sha256")
+		}
+	}
+	if strings.TrimSpace(g.CatalogCache) != "" && strings.TrimSpace(g.ModelFlag) == "" {
+		return fmt.Errorf("harness.generic.catalog_cache requires harness.generic.modelFlag")
+	}
+	if g.MCP != nil {
+		p := filepath.Clean(strings.TrimSpace(g.MCP.Path))
+		if strings.TrimSpace(g.MCP.Path) == "" || filepath.IsAbs(p) || p == ".." || strings.HasPrefix(p, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("harness.generic.mcp.path: %q must be a worktree-relative path", g.MCP.Path)
+		}
+		if strings.TrimSpace(g.MCP.Config) == "" {
+			return fmt.Errorf("harness.generic.mcp.config must not be empty")
 		}
 	}
 	return nil
