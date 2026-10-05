@@ -120,6 +120,22 @@ func Main() {
 	applyEnvOverrides()
 	registerOperatorSecrets() // §23: mask operator-provisioned credentials in captured output
 
+	// #97: change/work-item query surface (reads evidence.dir; no Temporal).
+	if len(os.Args) > 2 {
+		switch {
+		case os.Args[1] == "get" && os.Args[2] == "changes":
+			if err := runGetChanges(); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case os.Args[1] == "describe" && os.Args[2] == "change":
+			if err := runDescribeChange(os.Args[3:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+	}
+
 	addr := os.Getenv("TEMPORAL_ADDRESS")
 	if addr == "" {
 		addr = "127.0.0.1:7233"
@@ -196,6 +212,7 @@ func Main() {
 	w.RegisterActivity(EnsureFailureIssue)
 	w.RegisterActivity(WriteCycleEvidence)   // #83: durable per-cycle evidence
 	w.RegisterActivity(RecordActivation)     // #88: per-issue activation lineage
+	w.RegisterActivity(RecordChange)         // #97: change/work-item lifecycle
 	w.RegisterActivity(CleanupWorktree)      // #93: disconnect-safe worktree teardown
 	w.RegisterActivity(SweepOrphanWorktrees) // #93: stranded-worktree sweep
 
@@ -864,6 +881,55 @@ func runStatus(c client.Client, args []string) error {
 		return err
 	}
 	out, err := statusJSON(st)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
+	return nil
+}
+
+// runGetChanges is `prbot get changes` (#97): lists every recorded change record
+// newest first. The projection (sortChangesNewestFirst/changesJSON) is pure and
+// unit-tested without a Temporal server.
+func runGetChanges() error {
+	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	list, err := store.listChanges()
+	if err != nil {
+		return err
+	}
+	sortChangesNewestFirst(list)
+	out, err := changesJSON(list)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
+	return nil
+}
+
+// runDescribeChange is `prbot describe change <repo> <issue>` (#97): prints the
+// change record joined with its recomputed lineage (activations, attempts,
+// totals). The projection (buildChangeView/changeViewJSON) is pure and
+// unit-tested without a Temporal server.
+func runDescribeChange(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: prbot describe change <repo> <issue>")
+	}
+	repo := args[0]
+	var n int
+	fmt.Sscan(args[1], &n)
+	if n <= 0 {
+		return fmt.Errorf("usage: prbot describe change <repo> <issue>")
+	}
+	store := NewEvidenceStore(appCfg.Evidence.Dir, &defaultRedactor)
+	c, err := store.loadChange(repo, n)
+	if err != nil {
+		return err
+	}
+	var l Lineage
+	if owner, repoName, ok := strings.Cut(c.Repo, "/"); ok {
+		l, _ = store.loadLineage(owner, repoName, n, false)
+	}
+	out, err := changeViewJSON(buildChangeView(c, l))
 	if err != nil {
 		return err
 	}

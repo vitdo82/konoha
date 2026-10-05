@@ -207,6 +207,17 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			workflow.GetLogger(ctx).Error("lineage activation write failed (non-fatal)", "err", err)
 		}
 	}
+	// #97: best-effort change-lifecycle record (derived status + rework note +
+	// full feedback thread). Idempotent by (repo, issue) and feedback key; a
+	// write failure is logged, never fatal (§40).
+	recordChange := func(req ChangeRequest) {
+		req.Owner, req.Repo, req.Issue = in.Owner, in.Repo, in.IssueNum
+		req.WorkflowID = info.WorkflowExecution.ID
+		req.DryRun = in.Lifecycle.DryRun
+		if err := workflow.ExecuteActivity(ctx, RecordChange, req).Get(ctx, nil); err != nil {
+			workflow.GetLogger(ctx).Error("change record write failed (non-fatal)", "err", err)
+		}
+	}
 	// #87: best-effort agent usage aggregated across the cycle's agent runs
 	// (develop/repair/review; zero when no harness reported any).
 	var usage HarnessUsage
@@ -396,6 +407,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		}
 		transition(statePendingApproval)
 		projectLabels(statePendingApproval, est.Complexity)
+		recordChange(ChangeRequest{State: statePendingApproval}) // #97: IN_REVIEW while awaiting a human
 		res, err := awaitApprovalGate(ctx, in.Owner, in.Repo, in.IssueNum, step, in.Lifecycle)
 		if err != nil {
 			return false, err
@@ -404,6 +416,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			return true, nil
 		}
 		if res.Denied {
+			// #97: carry the human's denial instruction forward as the rework note.
+			recordChange(ChangeRequest{ReworkNote: res.Detail})
 			transition(stateHumanRequired)
 			projectLabels(stateHumanRequired, est.Complexity)
 			return false, finish(CycleOutcome{
@@ -553,6 +567,18 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		writeEvidence(EvidenceRequest{Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
 			Result: evidenceResultJSON(rev), Diff: diff})
 
+		// #97: append this revision's review comments to the ordered feedback
+		// thread and, on rejection, carry the blocking instruction forward as the
+		// rework note (onto the change and the next activation).
+		rework := ""
+		if rev.Verdict != "APPROVE" {
+			rework = reworkInstruction(rev)
+		}
+		recordChange(ChangeRequest{
+			Feedback:   reviewFeedback(info.WorkflowExecution.ID, lastReviewRounds, rev),
+			ReworkNote: rework,
+		})
+
 		if rev.Verdict == "APPROVE" {
 			approved = rev
 			break
@@ -610,7 +636,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			Attempt: lastAttempts, WorkflowID: fmt.Sprintf("%s-repair-%d", info.WorkflowExecution.ID, lastAttempts),
 			Reason: activationReasonRepair, Harness: effHarness, Model: effModel,
 			BaseSHA: repaired.BaseSHA, CommitSHA: repaired.CommitSHA, Result: string(agentOut),
-			TokensIn: repaired.Usage.TokensIn, TokensOut: repaired.Usage.TokensOut, CostUSD: repaired.Usage.CostUSD,
+			ReworkNote: rework, // #97: carry the instruction onto the repair activation
+			TokensIn:   repaired.Usage.TokensIn, TokensOut: repaired.Usage.TokensOut, CostUSD: repaired.Usage.CostUSD,
 		})
 		if repaired.Blocked {
 			// #84: a blocked repair must not loop — route to the human path.
@@ -915,6 +942,18 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	dctx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryDeterministic, appCfg.Worker.startToClose()))
 	if err := workflow.ExecuteActivity(dctx, RecordCycleMetrics, out).Get(dctx, nil); err != nil {
 		return err
+	}
+	// #97: derive + persist the change lifecycle status from the terminal §6
+	// state (idempotent rewrite; best-effort, never state-changing).
+	changeWFID := out.WorkflowID
+	if changeWFID == "" {
+		changeWFID = info.WorkflowExecution.ID
+	}
+	if err := workflow.ExecuteActivity(dctx, RecordChange, ChangeRequest{
+		Owner: in.Owner, Repo: in.Repo, Issue: in.IssueNum,
+		WorkflowID: changeWFID, State: out.TerminalState, DryRun: in.Lifecycle.DryRun,
+	}).Get(dctx, nil); err != nil {
+		workflow.GetLogger(ctx).Error("change status write failed (non-fatal)", "err", err)
 	}
 	// §53 failure feedback: a terminal BLOCKED/FAILED run files at most one
 	// idempotent bug issue (only when the repo opted into alerting). Best-effort:
