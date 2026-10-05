@@ -12,8 +12,8 @@ worker:
   startToCloseTimeout: 15m         # default activity window for cycle/PR steps
   sweepTimeout: 10m                # sweep workflow activity window
   devTimeout: 45m                  # §4.4 agent dev/repair window (generous)
-  retryMaxAttempts: 3              # cycle/PR activity retries
-  sweepRetryMaxAttempts: 2         # sweep activity retries
+  retryMaxAttempts: 5              # #95 infrastructure-class activity retries (gh/git/evidence, backoff)
+  sweepRetryMaxAttempts: 2         # sweep activity retries (unchanged by #95)
   cleanupMaxAttempts: 5            # #93 worktree teardown retries (idempotent)
   orphanWorktreeTTL: 24h           # #93 sweep a stranded worktree after this age
 

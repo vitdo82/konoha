@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -294,13 +293,8 @@ func BacklogGroomWorkflow(ctx workflow.Context, scope RepoScope) error {
 	if !GroomingEnabled(lc) {
 		return nil
 	}
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
+	agentCtx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryAgent, appCfg.Worker.startToClose()))
 
 	var items []RawBacklogItem
 	if err := workflow.ExecuteActivity(ctx, ListBacklogItems, GroomListRequest{
@@ -327,7 +321,7 @@ func BacklogGroomWorkflow(ctx workflow.Context, scope RepoScope) error {
 			RepoPath: scope.RepoPath, Lifecycle: lc,
 		}
 		var a IssueAnalysis
-		if err := workflow.ExecuteActivity(ctx, AnalyzeIssue, in).Get(ctx, &a); err != nil {
+		if err := workflow.ExecuteActivity(agentCtx, AnalyzeIssue, in).Get(agentCtx, &a); err != nil {
 			outcome.Rejected++
 			if e := noteUngroomable(ctx, scope, it, "The Issue Analyst could not produce a validated analysis."); e != nil {
 				return e
@@ -335,7 +329,7 @@ func BacklogGroomWorkflow(ctx workflow.Context, scope RepoScope) error {
 			continue
 		}
 		var est EstimateResult
-		if err := workflow.ExecuteActivity(ctx, EstimateIssue, in, a).Get(ctx, &est); err != nil {
+		if err := workflow.ExecuteActivity(agentCtx, EstimateIssue, in, a).Get(agentCtx, &est); err != nil {
 			outcome.Rejected++
 			if e := noteUngroomable(ctx, scope, it, "The Estimator could not produce a validated estimate."); e != nil {
 				return e
@@ -353,7 +347,9 @@ func BacklogGroomWorkflow(ctx workflow.Context, scope RepoScope) error {
 		workflow.GetLogger(ctx).Info("groomed backlog item",
 			"source", it.Number, "ready", res.Number, "created", res.Created)
 	}
-	return workflow.ExecuteActivity(ctx, RecordGroomMetrics, outcome).Get(ctx, nil)
+	// §95: derived gauge recomputation → deterministic (never double-counted).
+	dctx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryDeterministic, appCfg.Worker.startToClose()))
+	return workflow.ExecuteActivity(dctx, RecordGroomMetrics, outcome).Get(dctx, nil)
 }
 
 // noteUngroomable records the idempotent note on a raw item (and honors DryRun).

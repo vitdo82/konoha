@@ -33,6 +33,7 @@ type CompletionResult struct {
 	Risks          []string          `json:"risks"`
 	OpenQuestions  []string          `json:"openQuestions"`
 	Recommendation string            `json:"recommendation"`
+	Attempt        int               `json:"attempt,omitempty"` // #95 Temporal activity attempt provenance
 }
 
 // validCompletionRecommendation is the §30 controlled set. Anything else fails
@@ -202,6 +203,7 @@ func ValidateCompletion(c CompletionResult) error {
 // and deterministically validates it (§36). It does not mutate GitHub (§23);
 // the workflow consults the §14 policy gate before any EnsureIssueState(CLOSED).
 func RunCompletion(ctx context.Context, in CompletionRequest) (CompletionResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	prompt := completionPrompt(in)
 
 	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
@@ -217,6 +219,7 @@ func RunCompletion(ctx context.Context, in CompletionRequest) (CompletionResult,
 	if err != nil {
 		return CompletionResult{}, err
 	}
+	c.Attempt = activityAttempt(ctx)
 	if err := ValidateCompletion(c); err != nil {
 		return CompletionResult{}, fmt.Errorf("agent completion invalid: %w", err)
 	}

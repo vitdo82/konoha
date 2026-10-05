@@ -17,6 +17,7 @@ type EstimateResult struct {
 	Rationale   string   `json:"rationale"`
 	Risks       []string `json:"risks"`
 	Assumptions []string `json:"assumptions"`
+	Attempt     int      `json:"attempt,omitempty"` // #95 Temporal activity attempt provenance
 }
 
 // Confidence controlled set (§12). Deterministic policy may gate on "low" (e.g.
@@ -147,6 +148,7 @@ func ValidateEstimate(e EstimateResult) error {
 // output fails closed, so it can never drive a transition; the workflow's
 // retry policy gives the agent another try (bounded retry).
 func EstimateIssue(ctx context.Context, in IssueInput, a IssueAnalysis) (EstimateResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	prompt := estimatorPrompt(in, a)
 
 	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
@@ -162,6 +164,7 @@ func EstimateIssue(ctx context.Context, in IssueInput, a IssueAnalysis) (Estimat
 	if err != nil {
 		return EstimateResult{}, err
 	}
+	e.Attempt = activityAttempt(ctx)
 	if err := ValidateEstimate(e); err != nil {
 		return EstimateResult{}, fmt.Errorf("agent estimate invalid: %w", err)
 	}

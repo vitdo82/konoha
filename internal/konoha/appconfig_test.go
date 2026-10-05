@@ -22,7 +22,7 @@ func TestLoadAppConfigMissingFileDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing file must not error: %v", err)
 	}
-	if cfg.Worker.TaskQueue != "review-queue" || cfg.Worker.RetryMaxAttempts != 3 ||
+	if cfg.Worker.TaskQueue != "review-queue" || cfg.Worker.RetryMaxAttempts != defaultInfraRetryMaxAttempts ||
 		cfg.Defaults.Lifecycle.DevelopmentMaxComplexity != 4 || cfg.Defaults.Lifecycle.MaxResolutionAttempts != 1 {
 		t.Fatalf("defaults wrong: %+v", cfg)
 	}

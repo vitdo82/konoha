@@ -100,8 +100,8 @@ worker:
   maxConcurrentActivities: 10     # env: WORKER_MAX_CONCURRENT_ACTIVITIES
   startToCloseTimeout: 15m        # cycle/PR activity window
   sweepTimeout: 10m               # sweep activity window
-  retryMaxAttempts: 3
-  sweepRetryMaxAttempts: 2
+  retryMaxAttempts: 5             # #95 infrastructure-class retries (gh/git/evidence, backoff)
+  sweepRetryMaxAttempts: 2        # sweep activity retries (separate policy)
   cleanupMaxAttempts: 5           # #93 worktree teardown retries (idempotent)
   orphanWorktreeTTL: 24h          # #93 sweep a stranded owned worktree after this age
 evidence:
@@ -133,6 +133,15 @@ defaults:
 ```
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
+
+**Typed activity retries (#95).** `worker.retryMaxAttempts` is the
+**infrastructure** class — gh/git/evidence I/O, retried with exponential
+backoff. The other classes are fixed in code, not config-driven: deterministic
+record/policy activities get `MaximumAttempts: 1` (a retry would double-count),
+agent runs get exactly 1 (a transport-loss retry must not replay an LLM) plus a
+`HeartbeatTimeout` so a hung agent surfaces as a timeout, and verification
+activities (CI/deploy gates) get 3. Sweeps keep their own
+`sweepRetryMaxAttempts` policy.
 
 **Agent harness (§85).** A repo selects an agent harness by **name**
 (`lifecycle.harness`, fallback `defaults.lifecycle.harness`, default

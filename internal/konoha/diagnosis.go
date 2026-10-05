@@ -59,6 +59,7 @@ type DiagnosisResult struct {
 	Recommendation string   `json:"recommendation"`
 	Rationale      string   `json:"rationale"`
 	Notes          []string `json:"notes"`
+	Attempt        int      `json:"attempt,omitempty"` // #95 Temporal activity attempt provenance
 }
 
 // §17 bounded diagnosis recommendations.
@@ -194,6 +195,7 @@ func ValidateDiagnosis(d DiagnosisResult) error {
 // read-only §23 environment, structured DevelopmentFailure in, validated
 // DiagnosisResult out. It performs no mutation; the workflow applies ApplyDiagnosis.
 func RunDiagnosis(ctx context.Context, in DevelopmentFailure) (DiagnosisResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	if !validDiagnosisReason(in.Reason) {
 		return DiagnosisResult{}, fmt.Errorf("diagnosis reason %q not in {development_failed, review_loop_exhausted}", in.Reason)
 	}
@@ -212,6 +214,7 @@ func RunDiagnosis(ctx context.Context, in DevelopmentFailure) (DiagnosisResult, 
 	if err != nil {
 		return DiagnosisResult{}, err
 	}
+	d.Attempt = activityAttempt(ctx)
 	if err := ValidateDiagnosis(d); err != nil {
 		return DiagnosisResult{}, fmt.Errorf("agent diagnosis invalid: %w", err)
 	}

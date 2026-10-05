@@ -237,6 +237,7 @@ type ReviewResult struct {
 	CommitSHA string         `json:"commitSha,omitempty"`
 	Blocking  []string       `json:"blocking,omitempty"`
 	Nits      []string       `json:"nits,omitempty"`
+	Attempt   int            `json:"attempt,omitempty"`  // #95 Temporal activity attempt provenance
 	Evidence  *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
 	Usage     HarnessUsage   `json:"usage,omitempty"`    // #87 best-effort tokens/cost (zero = not reported)
 }
@@ -255,6 +256,7 @@ func FetchDiff(ctx context.Context, in PrInput) (string, error) {
 // ReviewWithOpencode runs the local opencode agent against the diff.
 // The agent must print a line: "VERDICT:<APPROVE|REQUEST_CHANGES>".
 func ReviewWithOpencode(ctx context.Context, in PrInput, diff string) (ReviewResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	prompt := fmt.Sprintf(
 		`Review the code in the diff below (PR #%d of %s/%s) against: correctness, security, code quality, testing, performance, docs.
 If any critical or warning-level issue exists, verdict is REQUEST_CHANGES; otherwise APPROVE.
@@ -285,7 +287,7 @@ DIFF:
 	// sections, defaulting to REQUEST_CHANGES on any malformed output.
 	verdict, blocking, nits, summary := parseReviewOutput([]byte(combined))
 	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum,
-		Blocking: blocking, Nits: nits,
+		Blocking: blocking, Nits: nits, Attempt: activityAttempt(ctx),
 		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr},
 		Usage:    parseHarnessUsage(combined)}, nil
 }

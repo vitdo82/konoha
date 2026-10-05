@@ -92,6 +92,7 @@ type ResolutionResult struct {
 	Rationale string   `json:"rationale"`
 	Blocking  []string `json:"blocking"`
 	Risks     []string `json:"risks"`
+	Attempt   int      `json:"attempt,omitempty"` // #95 Temporal activity attempt provenance
 }
 
 // resolutionSystem is the authoritative resolution-agent instruction block
@@ -247,6 +248,7 @@ func ValidateResolution(r ResolutionResult) error {
 // cannot mutate GitHub (§23); Temporal applies the action via policy and the
 // human-required escalation is a deterministic decision.
 func RunResolution(ctx context.Context, in ResolutionRequest) (ResolutionResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	prompt := resolutionPrompt(in)
 
 	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
@@ -262,6 +264,7 @@ func RunResolution(ctx context.Context, in ResolutionRequest) (ResolutionResult,
 	if err != nil {
 		return ResolutionResult{}, err
 	}
+	r.Attempt = activityAttempt(ctx)
 	if err := ValidateResolution(r); err != nil {
 		return ResolutionResult{}, fmt.Errorf("agent resolution invalid: %w", err)
 	}

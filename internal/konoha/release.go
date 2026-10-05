@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -323,13 +322,7 @@ func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
 	if !ReleaseEnabled(in.Lifecycle) && !DeployEnabled(in.Lifecycle) && !PropagationEnabled(in.Lifecycle) {
 		return nil
 	}
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout: appCfg.Worker.startToClose(),
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
 
 	// §54: propagate the merged change to configured downstream repos first so a
 	// later release/deploy problem never blocks it. Disabled config is a no-op.
@@ -386,13 +379,8 @@ func PostMergeWorkflow(ctx workflow.Context, in PostMergeInput) error {
 	}
 
 	// The verify poll can span the full maxWait; give it a window that outlives
-	// the bounded poll (mirrors the §49 CI gate).
-	vctx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: DeployMaxWait(in.Lifecycle) + time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: int32(appCfg.Worker.RetryMaxAttempts),
-		},
-	})
+	// the bounded poll (mirrors the §49 CI gate). §95: verification class.
+	vctx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryVerification, DeployMaxWait(in.Lifecycle)+time.Minute))
 	var ver VerifyResult
 	if err := workflow.ExecuteActivity(vctx, VerifyDeployment, VerifyRequest{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath, Tag: tag,

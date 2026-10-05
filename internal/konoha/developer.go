@@ -74,6 +74,7 @@ type DevelopResult struct {
 	ValidationSkipped   bool           `json:"validationSkipped"`
 	ValidationOutput    string         `json:"validationOutput"`
 	VerificationMutated bool           `json:"verificationMutated,omitempty"` // #94: a §26 gate dirtied the worktree (evidence only)
+	Attempt             int            `json:"attempt,omitempty"`             // #95 Temporal activity attempt provenance
 	Evidence            *AgentEvidence `json:"evidence,omitempty"`            // #83 raw prompt/streams (redacted on write)
 	Usage               HarnessUsage   `json:"usage,omitempty"`               // #87 best-effort tokens/cost (zero = not reported)
 }
@@ -363,6 +364,7 @@ func cleanupWorktree(ctx context.Context, repoPath, dir, workflowID string) {
 // (§25). A worktree left with uncommitted changes means the agent violated its
 // contract and the attempt fails closed (bounded retry in the workflow).
 func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt string) (DevelopResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95: cover worktree setup, the child, and §26 validation
 	repoPath := filepath.Clean(in.RepoPath)
 	dir := worktreeDir(repoPath, in.Repo, in.IssueNum)
 
@@ -419,6 +421,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	if rep.Blocked {
 		return DevelopResult{
 			BaseSHA: baseSHA, Blocked: true, BlockedReason: rep.BlockedReason,
+			Attempt:  activityAttempt(ctx),
 			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
 			Usage:    parseHarnessUsage(combined),
 		}, nil
@@ -441,6 +444,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		ChangedFiles: changedFiles(ctx, dir, baseSHA),
 		Summary:      rep.Summary,
 		Concerns:     rep.Concerns,
+		Attempt:      activityAttempt(ctx),
 		Evidence:     &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
 		Usage:        parseHarnessUsage(combined),
 	}

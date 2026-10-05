@@ -33,6 +33,7 @@ type SplitTicket struct {
 type SplitResult struct {
 	Tickets       []SplitTicket `json:"tickets"`
 	OpenQuestions []string      `json:"openQuestions"`
+	Attempt       int           `json:"attempt,omitempty"` // #95 Temporal activity attempt provenance
 }
 
 // splitterSystem is the authoritative splitter instruction block (§4.3/§11).
@@ -174,6 +175,7 @@ func containsKey(tickets []SplitTicket, key string) bool {
 // creates any child issues via the idempotent Ensure* activities, so an
 // unvalidated split can never mutate GitHub (§16 invariant).
 func RunSplit(ctx context.Context, in IssueInput, a IssueAnalysis, e EstimateResult) (SplitResult, error) {
+	defer startAgentHeartbeat(ctx)() // #95
 	prompt := splitterPrompt(in, a, e)
 
 	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
@@ -189,6 +191,7 @@ func RunSplit(ctx context.Context, in IssueInput, a IssueAnalysis, e EstimateRes
 	if err != nil {
 		return SplitResult{}, err
 	}
+	s.Attempt = activityAttempt(ctx)
 	if err := ValidateSplit(in.Lifecycle, s); err != nil {
 		return SplitResult{}, fmt.Errorf("agent split invalid: %w", err)
 	}
