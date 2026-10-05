@@ -114,21 +114,22 @@ type CycleOutcome struct {
 	VerificationOutcome VerificationOutcome `json:"verificationOutcome,omitempty"`
 	// #94: true when a §26 validation gate dirtied the worktree after the agent
 	// committed. Evidence only (never changes the delivered SHA or the state).
-	VerificationMutated bool           `json:"verificationMutated,omitempty"`
-	Conditions          []Condition    `json:"conditions,omitempty"`
-	EscalationReason    string         `json:"escalationReason,omitempty"` // §18 trigger, if any
-	Route               string         `json:"route,omitempty"`            // SMALL|LARGE
-	Complexity          int            `json:"complexity,omitempty"`
-	Confidence          string         `json:"confidence,omitempty"`
-	Attempts            int            `json:"attempts,omitempty"`
-	ReviewRounds        int            `json:"reviewRounds,omitempty"`
-	Disagreements       int            `json:"disagreements,omitempty"`
-	POInterventions     int            `json:"poInterventions,omitempty"`
-	DurationSeconds     float64        `json:"durationSeconds,omitempty"`
-	Usage               HarnessUsage   `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
-	EvidenceError       string         `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
-	PolicyDigest        string         `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
-	Cleanup             *CleanupResult `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
+	VerificationMutated bool              `json:"verificationMutated,omitempty"`
+	Conditions          []Condition       `json:"conditions,omitempty"`
+	EscalationReason    string            `json:"escalationReason,omitempty"` // §18 trigger, if any
+	Route               string            `json:"route,omitempty"`            // SMALL|LARGE
+	Complexity          int               `json:"complexity,omitempty"`
+	Confidence          string            `json:"confidence,omitempty"`
+	Attempts            int               `json:"attempts,omitempty"`
+	ReviewRounds        int               `json:"reviewRounds,omitempty"`
+	Disagreements       int               `json:"disagreements,omitempty"`
+	POInterventions     int               `json:"poInterventions,omitempty"`
+	DurationSeconds     float64           `json:"durationSeconds,omitempty"`
+	Usage               HarnessUsage      `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
+	EvidenceError       string            `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
+	PolicyDigest        string            `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
+	Resources           *ResourceEvidence `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
+	Cleanup             *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the

@@ -150,6 +150,21 @@ without restarting a completed workflow. Deliveries with an invalid
   (`WORKER_MAX_CONCURRENT_ACTIVITIES`, `KONOHA_TASK_QUEUE`); policy/timeouts are
   NOT — a host env must not fork deterministic behavior. Contract/invariant
   strings (markers, `VERDICT:` parser, §6 states) are never config-driven.
+- **Resource catalogs (`resources.go`, §98)**: `defaults.agents.models:<name>
+  {provider, model, baseUrl?, apiKeyEnv?}` and `defaults.agents.budgets:<name>
+  {maxCostUsd?, maxTokens?, maxWallClock?}`. A repo/stage selects by NAME
+  (`lifecycle.models.<stage>` for analyst/estimator/developer/reviewer/repair/
+  completion, `lifecycle.budget`), falling back to the legacy `lifecycle.model`
+  raw id. The resolved provider/model + a content `Digest` land in
+  `outcome.json` (`CycleOutcome.Resources`) and each develop/repair activation
+  records `Stage`/`ModelDigest` in lineage; unknown names and unknown stage keys
+  fail at load (`loadReposConfigWithResources` / `validateResourceRefs`) and
+  again closed at resolve time. `apiKeyEnv` is a NAME only — a credential value
+  is never read or recorded. Budget crossings are computed from #87 usage +
+  elapsed time and are EVIDENCE ONLY: they never rewrite a verdict or shorten a
+  configured timeout (§40). Egress policies and workspaces are deliberately not
+  modeled — there is no sandbox (docs/security.md), so they are documented as
+  not-applicable, never stubbed.
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are

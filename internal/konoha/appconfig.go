@@ -101,6 +101,7 @@ const defaultEvidenceDir = ".konoha/evidence"
 // DefaultsConfig is the `defaults:` block.
 type DefaultsConfig struct {
 	Lifecycle LifecycleDefaults `yaml:"lifecycle"`
+	Agents    AgentsConfig      `yaml:"agents"` // §98 named model + budget catalog
 }
 
 // defaultAppConfig returns the code-level defaults (#48: these are the bundled
@@ -342,6 +343,9 @@ func (c AppConfig) validate() error {
 		return fmt.Errorf("defaults.lifecycle.harness: unknown harness %q", h)
 	}
 	if err := c.Harness.validate(); err != nil {
+		return err
+	}
+	if err := c.Defaults.Agents.validate(); err != nil {
 		return err
 	}
 	d := c.Defaults.Lifecycle

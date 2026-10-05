@@ -35,14 +35,16 @@ const (
 // under a distinct WorkflowID (the cycle id suffixed with the attempt) so a
 // develop + repair are two ordered activations, not one.
 type LineageActivation struct {
-	Attempt    int    `json:"attempt"`
-	WorkflowID string `json:"workflowId"`
-	Reason     string `json:"reason"` // initial|repair
-	Harness    string `json:"harness,omitempty"`
-	Model      string `json:"model,omitempty"`
-	BaseSHA    string `json:"baseSha,omitempty"`
-	CommitSHA  string `json:"commitSha,omitempty"`
-	Result     string `json:"result,omitempty"` // AgentOutcome (SUCCESS|BLOCKED|...)
+	Attempt     int    `json:"attempt"`
+	WorkflowID  string `json:"workflowId"`
+	Reason      string `json:"reason"`          // initial|repair
+	Stage       string `json:"stage,omitempty"` // §98: model-selectable stage (developer|repair)
+	Harness     string `json:"harness,omitempty"`
+	Model       string `json:"model,omitempty"`
+	ModelDigest string `json:"modelDigest,omitempty"` // §98: digest of the resolved named model
+	BaseSHA     string `json:"baseSha,omitempty"`
+	CommitSHA   string `json:"commitSha,omitempty"`
+	Result      string `json:"result,omitempty"` // AgentOutcome (SUCCESS|BLOCKED|...)
 	// #97: the rework instruction carried onto this activation from a rejected
 	// review (empty for the initial develop).
 	ReworkNote string `json:"reworkNote,omitempty"`
