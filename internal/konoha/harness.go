@@ -2,9 +2,13 @@ package konoha
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -16,9 +20,62 @@ import (
 
 // Prompt transport modes a harness can declare.
 const (
-	promptModeArg   = "arg"
-	promptModeStdin = "stdin"
+	promptModeArg       = "arg"
+	promptModeStdin     = "stdin"
+	promptModeStdinFile = "stdin_file"
 )
+
+// Optional harness capability statuses (#96). A capability the selected harness
+// does not implement/configure is recorded SKIPPED — never a false success
+// (§40). FAILED fails the run closed.
+const (
+	capabilityApplied = "APPLIED"
+	capabilitySkipped = "SKIPPED"
+	capabilityFailed  = "FAILED"
+)
+
+// CapabilityOutcome is the recorded result of one optional harness capability
+// (#96), surfaced in the cycle's provisioning.json evidence.
+type CapabilityOutcome struct {
+	Capability string `json:"capability"`
+	Status     string `json:"status"`
+	Detail     string `json:"detail,omitempty"`
+}
+
+// Optional harness capabilities (#96), detected by type assertion. Every path
+// (binary/catalog) is operator configuration (konoha.yaml); a caller can never
+// supply a path. A harness that does not implement an interface — or declares
+// it disabled via capabilityDeclarer — records SKIPPED.
+type Provisioner interface {
+	// Provision stages the operator-supplied standalone binary into the agent's
+	// PATH and verifies its sha256 before use. A mismatch fails closed. Returns
+	// the staged absolute executable path.
+	Provision(ctx context.Context, dir string) (executable, detail string, err error)
+}
+
+type CatalogCacher interface {
+	// StageCatalog stages the model catalog so resolution is offline,
+	// returning the staged path.
+	StageCatalog(ctx context.Context, dir string) (catalogPath string, err error)
+}
+
+type Versioner interface {
+	// Version captures "<executable> --version" best-effort ("" on any failure).
+	Version(ctx context.Context, dir string) string
+}
+
+type MCPConfigurer interface {
+	// WriteMCPConfig writes the operator-declared MCP server config into the
+	// harness's expected location before the agent runs.
+	WriteMCPConfig(ctx context.Context, dir string) error
+}
+
+// capabilityDeclarer lets a harness declare which optional capabilities its
+// current operator configuration enables. A harness without it (opencode) has
+// none, so every optional capability is SKIPPED.
+type capabilityDeclarer interface {
+	capabilities() map[string]bool
+}
 
 // defaultHarnessName is the built-in harness used when a repo leaves
 // lifecycle.harness unset.
@@ -163,25 +220,242 @@ func effectiveHarnessName(repoName string) string {
 	return defaultHarnessName
 }
 
+// provisionedAgent is the result of preparing one agent run: the optional
+// capability outcomes (for evidence) plus the resolved executable (staged
+// pinned binary or the harness default) and staged catalog path.
+type provisionedAgent struct {
+	Outcomes    []CapabilityOutcome
+	Executable  string
+	CatalogPath string
+}
+
+// prepareAgent applies the harness's optional capabilities (#96) in a fixed
+// order. A capability the harness does not implement/configure records SKIPPED;
+// a provisioning failure (e.g. sha256 mismatch) fails closed with the FAILED
+// outcome already recorded.
+func prepareAgent(ctx context.Context, h Harness, dir string) (provisionedAgent, error) {
+	pa := provisionedAgent{}
+	enabled := map[string]bool{}
+	if cd, ok := h.(capabilityDeclarer); ok {
+		enabled = cd.capabilities()
+	}
+
+	if p, ok := h.(Provisioner); ok && enabled["provision"] {
+		exe, detail, err := p.Provision(ctx, dir)
+		if err != nil {
+			pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "provision", Status: capabilityFailed, Detail: err.Error()})
+			return pa, fmt.Errorf("harness provision: %w", err)
+		}
+		pa.Executable = exe
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "provision", Status: capabilityApplied, Detail: detail})
+	} else {
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "provision", Status: capabilitySkipped, Detail: "not configured"})
+	}
+
+	if c, ok := h.(CatalogCacher); ok && enabled["catalog"] {
+		path, err := c.StageCatalog(ctx, dir)
+		if err != nil {
+			pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "catalog", Status: capabilityFailed, Detail: err.Error()})
+			return pa, fmt.Errorf("harness catalog: %w", err)
+		}
+		pa.CatalogPath = path
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "catalog", Status: capabilityApplied, Detail: filepath.Base(path)})
+	} else {
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "catalog", Status: capabilitySkipped, Detail: "not configured"})
+	}
+
+	if v, ok := h.(Versioner); ok && enabled["version"] {
+		ver := v.Version(ctx, dir)
+		detail := ver
+		if detail == "" {
+			detail = "unavailable"
+		}
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "version", Status: capabilityApplied, Detail: detail})
+	} else {
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "version", Status: capabilitySkipped, Detail: "not configured"})
+	}
+
+	if m, ok := h.(MCPConfigurer); ok && enabled["mcp"] {
+		if err := m.WriteMCPConfig(ctx, dir); err != nil {
+			pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilityFailed, Detail: err.Error()})
+			return pa, fmt.Errorf("harness mcp: %w", err)
+		}
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilityApplied})
+	} else {
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilitySkipped, Detail: "not configured"})
+	}
+
+	return pa, nil
+}
+
 // agentCommand builds the child process for one agent run: the repo-selected
 // harness (name, never a path) plus an explicitly resolved model. A malformed
-// model is rejected rather than adopted silently.
-func agentCommand(ctx context.Context, prompt, model, harnessName, dir string) (*exec.Cmd, error) {
+// model is rejected rather than adopted silently. Optional capabilities run
+// first; their outcomes are returned for evidence.
+func agentCommand(ctx context.Context, prompt, model, harnessName, dir string) (*exec.Cmd, []CapabilityOutcome, error) {
 	h, err := harnessRegistryFor().Lookup(effectiveHarnessName(harnessName))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	rm, err := h.ResolveModel(model)
+	pa, err := prepareAgent(ctx, h, dir)
+	if err != nil {
+		return nil, pa.Outcomes, err
+	}
+	rm, err := resolveHarnessModel(h, model, pa.CatalogPath)
+	if err != nil {
+		return nil, pa.Outcomes, err
+	}
+	exe := pa.Executable
+	if strings.TrimSpace(exe) == "" {
+		exe = h.Executable()
+	}
+	cmd := exec.CommandContext(ctx, exe, h.Args(prompt, rm)...)
+	cmd.Dir = dir
+	cmd.Env = h.Env(dir) // §23: no GitHub write credential reaches the agent
+	if pa.Executable != "" {
+		cmd.Env = prependPath(cmd.Env, filepath.Dir(pa.Executable))
+	}
+	switch h.PromptMode() {
+	case promptModeStdin:
+		cmd.Stdin = strings.NewReader(prompt)
+	case promptModeStdinFile:
+		f, err := promptFileStdin(ctx, dir, prompt)
+		if err != nil {
+			return nil, pa.Outcomes, err
+		}
+		cmd.Stdin = f
+	}
+	return cmd, pa.Outcomes, nil
+}
+
+// resolveHarnessModel selects the model through the staged catalog when one was
+// provisioned (deterministic, offline), else delegates to the harness.
+func resolveHarnessModel(h Harness, model, catalogPath string) (string, error) {
+	if strings.TrimSpace(catalogPath) == "" {
+		return h.ResolveModel(model)
+	}
+	data, err := os.ReadFile(catalogPath)
+	if err != nil {
+		return "", fmt.Errorf("read staged model catalog: %w", err)
+	}
+	return resolveModelFromCatalog(data, model)
+}
+
+// resolveModelFromCatalog selects the model from a staged catalog so selection
+// is deterministic and never touches the network. A requested model must be
+// present; an empty request picks the lexicographically-first entry.
+func resolveModelFromCatalog(catalog []byte, requested string) (string, error) {
+	var raw []string
+	if err := json.Unmarshal(catalog, &raw); err != nil {
+		return "", fmt.Errorf("staged model catalog is not a JSON array of model ids: %w", err)
+	}
+	seen := map[string]bool{}
+	var models []string
+	for _, m := range raw {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		if _, err := validateAgentModel(m); err != nil {
+			return "", fmt.Errorf("staged model catalog entry %q: %w", m, err)
+		}
+		seen[m] = true
+		models = append(models, m)
+	}
+	if len(models) == 0 {
+		return "", fmt.Errorf("staged model catalog is empty")
+	}
+	sort.Strings(models)
+	req := strings.TrimSpace(requested)
+	if req == "" {
+		return models[0], nil
+	}
+	for _, m := range models {
+		if m == req {
+			return m, nil
+		}
+	}
+	return "", fmt.Errorf("model %q not in staged catalog (offline; available: %s)", req, strings.Join(models, ", "))
+}
+
+// stageRoot resolves the konoha-managed staging directory inside the agent's
+// git admin dir, so staged files (pinned binary/catalog/prompt) are usable but
+// can never dirty `git status` or be committed.
+func stageRoot(ctx context.Context, dir string) (string, error) {
+	out, err := execGit(ctx, dir, "rev-parse", "--git-path", "konoha-harness")
+	if err != nil {
+		return "", fmt.Errorf("resolve staging dir in %s: %w", dir, err)
+	}
+	p := strings.TrimSpace(out)
+	if p == "" {
+		return "", fmt.Errorf("empty staging path in %s", dir)
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return p, nil
+}
+
+// promptFileStdin writes the prompt to a konoha-managed file outside the tracked
+// tree (so it can never dirty status or be committed) and returns it opened for
+// the child's stdin. A fixed name means repeated runs overwrite, never accumulate.
+func promptFileStdin(ctx context.Context, dir, prompt string) (*os.File, error) {
+	root, err := stageRoot(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, h.Executable(), h.Args(prompt, rm)...)
-	cmd.Dir = dir
-	cmd.Env = h.Env(dir) // §23: no GitHub write credential reaches the agent
-	if h.PromptMode() == promptModeStdin {
-		cmd.Stdin = strings.NewReader(prompt)
+	p := filepath.Join(root, "prompt.txt")
+	if err := writeFileAtomic(p, []byte(prompt)); err != nil {
+		return nil, err
 	}
-	return cmd, nil
+	return os.Open(p)
+}
+
+// captureVersion runs "<executable> --version" best-effort and returns the
+// trimmed output ("" on any failure — version capture never fails a run).
+func captureVersion(ctx context.Context, dir string, env []string, executable string) string {
+	if strings.TrimSpace(executable) == "" {
+		return ""
+	}
+	cmd := exec.CommandContext(ctx, executable, "--version")
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// addGitExclude makes rel (worktree-relative, slash-separated) invisible to
+// `git status` for the agent's repo, so a capability-written config file can
+// never dirty the tree or be committed. Idempotent.
+func addGitExclude(ctx context.Context, dir, rel string) error {
+	out, err := execGit(ctx, dir, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	p := strings.TrimSpace(out)
+	if p == "" {
+		return nil
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	if cur, err := os.ReadFile(p); err == nil {
+		for _, l := range strings.Split(string(cur), "\n") {
+			if strings.TrimSpace(l) == rel {
+				return nil
+			}
+		}
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "\n# konoha harness staging (#96)\n%s\n", rel)
+	return err
 }
 
 // opencodeHarness preserves today's opencode behavior byte-for-byte.
@@ -211,6 +485,9 @@ func (genericHarness) Name() string         { return "generic" }
 func (g genericHarness) Executable() string { return g.cfg.Executable }
 
 func (g genericHarness) PromptMode() string {
+	if m := strings.ToLower(strings.TrimSpace(g.cfg.PromptMode)); m == promptModeStdin || m == promptModeStdinFile {
+		return m
+	}
 	if g.cfg.PromptOnStdin {
 		return promptModeStdin
 	}
@@ -282,6 +559,122 @@ func (g genericHarness) ResolveModel(model string) (string, error) {
 		return "", fmt.Errorf("harness generic cannot express model %q: modelFlag is unset", model)
 	}
 	return m, nil
+}
+
+// capabilities declares which optional capabilities this operator
+// configuration enables; anything else records SKIPPED (#96).
+func (g genericHarness) capabilities() map[string]bool {
+	return map[string]bool{
+		"provision": strings.TrimSpace(g.cfg.Binary) != "",
+		"catalog":   strings.TrimSpace(g.cfg.CatalogCache) != "",
+		"version":   strings.TrimSpace(g.cfg.Executable) != "",
+		"mcp":       g.cfg.MCP != nil,
+	}
+}
+
+// Provision stages the operator-supplied standalone binary into the agent's
+// git-admin staging dir and verifies binary_sha256 before use; a mismatch fails
+// closed (#96). Returns the staged absolute executable path.
+func (g genericHarness) Provision(ctx context.Context, dir string) (string, string, error) {
+	src := strings.TrimSpace(g.cfg.Binary)
+	if src == "" {
+		return "", "", fmt.Errorf("binary is unset")
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", "", fmt.Errorf("read pinned binary %s: %w", src, err)
+	}
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	want := strings.ToLower(strings.TrimSpace(g.cfg.BinarySHA256))
+	if got != want {
+		return "", "", fmt.Errorf("pinned binary sha256 mismatch: got %s want %s", got, want)
+	}
+	root, err := stageRoot(ctx, dir)
+	if err != nil {
+		return "", "", err
+	}
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		return "", "", err
+	}
+	dst := filepath.Join(binDir, filepath.Base(src))
+	if err := writeFileAtomic(dst, data); err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(dst, 0o755); err != nil {
+		return "", "", err
+	}
+	return dst, fmt.Sprintf("staged %s (sha256 verified)", filepath.Base(src)), nil
+}
+
+// StageCatalog copies catalog_cache into the agent's staging dir, returning the
+// staged path for offline model resolution (#96).
+func (g genericHarness) StageCatalog(ctx context.Context, dir string) (string, error) {
+	src := strings.TrimSpace(g.cfg.CatalogCache)
+	if src == "" {
+		return "", fmt.Errorf("catalog_cache is unset")
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("read catalog %s: %w", src, err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return "", fmt.Errorf("catalog %s is empty", src)
+	}
+	root, err := stageRoot(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(root, "catalog.json")
+	if err := writeFileAtomic(dst, data); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+// Version captures the pinned binary's version when one is configured, else the
+// declared executable's, best-effort (#96).
+func (g genericHarness) Version(ctx context.Context, dir string) string {
+	exe := strings.TrimSpace(g.cfg.Executable)
+	if strings.TrimSpace(g.cfg.Binary) != "" {
+		if root, err := stageRoot(ctx, dir); err == nil {
+			exe = filepath.Join(root, "bin", filepath.Base(g.cfg.Binary))
+		}
+	}
+	return captureVersion(ctx, dir, g.Env(dir), exe)
+}
+
+// WriteMCPConfig writes the operator-declared MCP server config into the
+// harness's expected worktree-relative location and excludes it from git so it
+// cannot dirty status or be committed (#96).
+func (g genericHarness) WriteMCPConfig(ctx context.Context, dir string) error {
+	if g.cfg.MCP == nil {
+		return fmt.Errorf("mcp is unset")
+	}
+	rel := strings.TrimSpace(g.cfg.MCP.Path)
+	if rel == "" {
+		return fmt.Errorf("mcp.path is unset")
+	}
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("mcp.path %q escapes the worktree", rel)
+	}
+	if err := writeFileAtomic(filepath.Join(dir, clean), []byte(g.cfg.MCP.Config)); err != nil {
+		return err
+	}
+	return addGitExclude(ctx, dir, filepath.ToSlash(clean))
+}
+
+// prependPath puts dir first on PATH in env (adding PATH when absent).
+func prependPath(env []string, dir string) []string {
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			env[i] = "PATH=" + dir + string(os.PathListSeparator) + strings.TrimPrefix(kv, "PATH=")
+			return env
+		}
+	}
+	return append(env, "PATH="+dir)
 }
 
 // validateAgentModel rejects a model that is not a provider/model id, so a

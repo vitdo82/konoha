@@ -20,13 +20,14 @@ import (
 
 // Artifact file names (byte-exact contract; tests and README reference them).
 const (
-	evidencePrompt     = "prompt.txt"
-	evidenceStdout     = "agent.stdout"
-	evidenceStderr     = "agent.stderr"
-	evidenceResult     = "result.json"
-	evidenceDiff       = "diff.patch"
-	evidenceValidation = "validation.txt"
-	evidenceOutcome    = "outcome.json"
+	evidencePrompt       = "prompt.txt"
+	evidenceStdout       = "agent.stdout"
+	evidenceStderr       = "agent.stderr"
+	evidenceResult       = "result.json"
+	evidenceDiff         = "diff.patch"
+	evidenceValidation   = "validation.txt"
+	evidenceOutcome      = "outcome.json"
+	evidenceProvisioning = "provisioning.json" // #96 optional capability outcomes
 )
 
 // evidenceArtifactNames is the full set every cycle directory carries (ensured
@@ -34,6 +35,7 @@ const (
 var evidenceArtifactNames = []string{
 	evidencePrompt, evidenceStdout, evidenceStderr,
 	evidenceResult, evidenceDiff, evidenceValidation, evidenceOutcome,
+	evidenceProvisioning,
 }
 
 // AgentEvidence is the raw artifact set an agent activity captures for the
@@ -42,6 +44,9 @@ type AgentEvidence struct {
 	Prompt string `json:"prompt,omitempty"`
 	Stdout string `json:"stdout,omitempty"`
 	Stderr string `json:"stderr,omitempty"`
+	// Provisioning is the #96 optional-capability outcome set (binary/catalog/
+	// version/mcp), each APPLIED or SKIPPED (never a false success, §40).
+	Provisioning []CapabilityOutcome `json:"provisioning,omitempty"`
 }
 
 // evidenceOf dereferences an optional AgentEvidence for a nil-safe read.
@@ -186,15 +191,16 @@ func writeFileAtomic(path string, data []byte) error {
 // Empty fields are skipped, so each phase contributes what it has and a later
 // phase never erases an earlier artifact.
 type EvidenceRequest struct {
-	CycleID    string `json:"cycleId"`
-	DryRun     bool   `json:"dryRun,omitempty"`
-	Prompt     string `json:"prompt,omitempty"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	Result     string `json:"result,omitempty"`
-	Diff       string `json:"diff,omitempty"`
-	Validation string `json:"validation,omitempty"`
-	Outcome    string `json:"outcome,omitempty"`
+	CycleID      string `json:"cycleId"`
+	DryRun       bool   `json:"dryRun,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
+	Stdout       string `json:"stdout,omitempty"`
+	Stderr       string `json:"stderr,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Diff         string `json:"diff,omitempty"`
+	Validation   string `json:"validation,omitempty"`
+	Outcome      string `json:"outcome,omitempty"`
+	Provisioning string `json:"provisioning,omitempty"` // #96 capability outcomes JSON
 }
 
 // WriteCycleEvidence is the single evidence I/O activity (#83): it writes the
@@ -212,6 +218,7 @@ func WriteCycleEvidence(_ context.Context, in EvidenceRequest) error {
 		{evidenceDiff, in.Diff},
 		{evidenceValidation, in.Validation},
 		{evidenceOutcome, in.Outcome},
+		{evidenceProvisioning, in.Provisioning},
 	} {
 		if a.content == "" {
 			continue
@@ -227,6 +234,11 @@ func WriteCycleEvidence(_ context.Context, in EvidenceRequest) error {
 // distinguish them) while callers that parse agent output still get the
 // combined stream.
 func runCapture(cmd *exec.Cmd) (stdout, stderr string, err error) {
+	// A harness in stdin_file mode opens the prompt file for the child's stdin;
+	// close it once the run finishes (never os.Stdin).
+	if f, ok := cmd.Stdin.(*os.File); ok && f != os.Stdin {
+		defer f.Close()
+	}
 	var ob, eb bytes.Buffer
 	cmd.Stdout = &ob
 	cmd.Stderr = &eb
@@ -266,8 +278,13 @@ func evidenceResultJSON(v any) string {
 // the develop/repair evidence points.
 func writeAgentEvidence(write func(EvidenceRequest), ev *AgentEvidence, result any, validation string) {
 	e := evidenceOf(ev)
+	provisioning := ""
+	if len(e.Provisioning) > 0 {
+		provisioning = evidenceJSON(e.Provisioning)
+	}
 	write(EvidenceRequest{
 		Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
 		Result: evidenceResultJSON(result), Validation: validation,
+		Provisioning: provisioning,
 	})
 }

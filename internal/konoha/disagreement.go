@@ -251,7 +251,7 @@ func RunResolution(ctx context.Context, in ResolutionRequest) (ResolutionResult,
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := resolutionPrompt(in)
 
-	cmd, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
 	if err != nil {
 		return ResolutionResult{}, err
 	}

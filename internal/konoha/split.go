@@ -178,7 +178,7 @@ func RunSplit(ctx context.Context, in IssueInput, a IssueAnalysis, e EstimateRes
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := splitterPrompt(in, a, e)
 
-	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
 	if err != nil {
 		return SplitResult{}, err
 	}

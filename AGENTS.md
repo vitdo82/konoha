@@ -122,6 +122,18 @@ without restarting a completed workflow. Deliveries with an invalid
   through `agentCommand`, which resolves the harness + an explicit model
   (malformed → clear error, never adopted silently). The registry is internal,
   so no exported activity/workflow func is renamed (Temporal type names).
+  **Optional provisioning capabilities (#96)**: `agentCommand` first runs
+  `prepareAgent`, which type-asserts optional interfaces (`Provisioner`/
+  `CatalogCacher`/`Versioner`/`MCPConfigurer`) plus a `capabilityDeclarer`
+  (`generic` enables them from config; `opencode` has none). `binary` +
+  `binary_sha256` stage the pinned binary into the agent's git-admin staging dir
+  after verifying the digest (mismatch fails closed); `catalog_cache` stages a
+  model catalog and `resolveModelFromCatalog` selects offline; `prompt_mode:
+  stdin_file` writes the prompt outside the tracked tree and redirects stdin
+  (never argv); an `mcp` block writes the worktree-relative config and
+  git-excludes it. Every capability records `APPLIED`/`SKIPPED`/`FAILED`
+  (`CapabilityOutcome`, never a false success §40) into `provisioning.json`
+  evidence; `--version` is best-effort and never fails a run.
 - **Config source of truth is `repos.yaml`.** `configs/repos.yaml` is loaded by
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values

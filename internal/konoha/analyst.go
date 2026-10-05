@@ -348,7 +348,7 @@ func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
 	}
 	prompt := analystPrompt(in, data, findSpecs(in.RepoPath))
 
-	cmd, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
 	if err != nil {
 		return IssueAnalysis{}, err
 	}

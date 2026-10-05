@@ -199,7 +199,7 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := reviewPrompt(req, req.Diff)
 
-	cmd, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath)
+	cmd, caps, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath)
 	if err != nil {
 		return ReviewResult{}, err
 	}
@@ -213,7 +213,7 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	r := ReviewResult{Verdict: verdict, Summary: summary, PRNumber: req.PRNumber,
 		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits,
 		Attempt:  activityAttempt(ctx),
-		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr},
+		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr, Provisioning: caps},
 		Usage:    parseHarnessUsage(combined)}
 	if err := ValidateReview(r); err != nil {
 		return ReviewResult{}, fmt.Errorf("agent review invalid: %w", err)

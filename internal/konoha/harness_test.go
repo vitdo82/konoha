@@ -2,12 +2,285 @@ package konoha
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+// #96 AC: a pinned binary is staged into the agent's PATH only after its sha256
+// is verified; a mismatch fails closed.
+func TestProvisionStagesAndVerifiesSHA256(t *testing.T) {
+	repoPath, _ := initGitRepo(t)
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "pinned-agent")
+	body := "#!/bin/sh\necho pinned\n"
+	if err := os.WriteFile(src, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	goodSHA := hex.EncodeToString(sum[:])
+
+	g := genericHarness{cfg: GenericHarnessConfig{
+		Executable: "pinned-agent", Binary: src, BinarySHA256: goodSHA,
+	}}
+	pa, err := prepareAgent(context.Background(), g, repoPath)
+	if err != nil {
+		t.Fatalf("provision with correct sha256: %v", err)
+	}
+	if pa.Executable == "" {
+		t.Fatal("expected a staged executable path")
+	}
+	if got, _ := os.ReadFile(pa.Executable); string(got) != body {
+		t.Fatalf("staged binary content mismatch: %q", got)
+	}
+	if info, err := os.Stat(pa.Executable); err != nil || info.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("staged binary must be executable: %v %v", info, err)
+	}
+	if !strings.HasPrefix(pa.Executable, repoPath) {
+		t.Fatalf("staged binary must live under the agent dir %s: %s", repoPath, pa.Executable)
+	}
+	if o := outcomeFor(t, pa.Outcomes, "provision"); o.Status != capabilityApplied {
+		t.Fatalf("provision outcome = %+v, want APPLIED", o)
+	}
+
+	// A mismatched digest fails closed and records FAILED (never a false success).
+	g.cfg.BinarySHA256 = strings.Repeat("0", 64)
+	pa, err = prepareAgent(context.Background(), g, repoPath)
+	if err == nil {
+		t.Fatal("sha256 mismatch must fail closed")
+	}
+	if o := outcomeFor(t, pa.Outcomes, "provision"); o.Status != capabilityFailed {
+		t.Fatalf("mismatch outcome = %+v, want FAILED", o)
+	}
+}
+
+// #96 AC: version capture is best-effort — a working binary reports its version,
+// a failing one contributes nothing and never fails the run.
+func TestVersionCaptureBestEffort(t *testing.T) {
+	repoPath, _ := initGitRepo(t)
+	stubDir := t.TempDir()
+	writeTestFile(t, stubDir, "v-good", "#!/bin/sh\necho 'agent 1.2.3'\n")
+	writeTestFile(t, stubDir, "v-bad", "#!/bin/sh\nexit 7\n")
+	for _, n := range []string{"v-good", "v-bad"} {
+		if err := os.Chmod(filepath.Join(stubDir, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if got := (genericHarness{cfg: GenericHarnessConfig{Executable: "v-good"}}).Version(context.Background(), repoPath); got != "agent 1.2.3" {
+		t.Fatalf("version = %q, want %q", got, "agent 1.2.3")
+	}
+	if got := (genericHarness{cfg: GenericHarnessConfig{Executable: "v-bad"}}).Version(context.Background(), repoPath); got != "" {
+		t.Fatalf("a failing --version must contribute nothing, got %q", got)
+	}
+
+	// prepareAgent records version APPLIED either way and never errors on it.
+	pa, err := prepareAgent(context.Background(), genericHarness{cfg: GenericHarnessConfig{Executable: "v-bad"}}, repoPath)
+	if err != nil {
+		t.Fatalf("a failing version capture must not fail the run: %v", err)
+	}
+	if o := outcomeFor(t, pa.Outcomes, "version"); o.Status != capabilityApplied {
+		t.Fatalf("version outcome = %+v, want APPLIED", o)
+	}
+}
+
+// #96 AC: stdin_file delivers the prompt over stdin and never puts it in argv,
+// writing it outside the tracked tree so it cannot dirty status.
+func TestStdinFileKeepsPromptOutOfArgv(t *testing.T) {
+	repoPath, _ := initGitRepo(t)
+	stubDir := t.TempDir()
+	writeTestFile(t, stubDir, "fake-agent", "#!/bin/sh\necho \"ARGV:$@\"\necho STREAM\ncat\n")
+	if err := os.Chmod(filepath.Join(stubDir, "fake-agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	old := appCfg
+	defer func() { appCfg = old }()
+	appCfg = defaultAppConfig()
+	appCfg.Harness = GenericHarnessConfig{
+		Executable: "fake-agent",
+		Args:       []string{"run", "{{model_args}}"},
+		ModelFlag:  "--model",
+		PromptMode: promptModeStdinFile,
+	}
+
+	const secret = "PROMPT-MUST-NOT-APPEAR-IN-ARGV"
+	cmd, _, err := agentCommand(context.Background(), secret, "provider/model", "generic", repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runCapture(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.SplitN(out, "STREAM", 2)[0], secret) {
+		t.Fatalf("prompt leaked into argv: %q", out)
+	}
+	if !strings.Contains(out, "STREAM\n"+secret) {
+		t.Fatalf("prompt not delivered over stdin: %q", out)
+	}
+	if status := strings.TrimSpace(runOut(t, context.Background(), repoPath, "git", "status", "--porcelain")); status != "" {
+		t.Fatalf("stdin_file must not dirty the worktree: %q", status)
+	}
+}
+
+// #96 AC: a harness that does not implement/declare a capability records
+// SKIPPED — never a false success (§40).
+func TestCapabilitiesSkippedWhenAbsent(t *testing.T) {
+	pa, err := prepareAgent(context.Background(), opencodeHarness{}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"provision", "catalog", "version", "mcp"} {
+		if o := outcomeFor(t, pa.Outcomes, name); o.Status != capabilitySkipped {
+			t.Fatalf("%s outcome = %+v, want SKIPPED", name, o)
+		}
+	}
+	// A generic harness with nothing configured is likewise all-SKIPPED.
+	pa, err = prepareAgent(context.Background(), genericHarness{cfg: GenericHarnessConfig{Executable: "agent"}}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"provision", "catalog", "mcp"} {
+		if o := outcomeFor(t, pa.Outcomes, name); o.Status != capabilitySkipped {
+			t.Fatalf("unconfigured %s = %+v, want SKIPPED", name, o)
+		}
+	}
+}
+
+// #96 AC: MCP config is written for a supporting harness and excluded from git;
+// a harness without the capability records SKIPPED.
+func TestMCPConfigWrittenOrSkipped(t *testing.T) {
+	repoPath, _ := initGitRepo(t)
+	g := genericHarness{cfg: GenericHarnessConfig{
+		Executable: "agent",
+		MCP:        &MCPConfig{Path: ".mcp.json", Config: `{"servers":{}}`},
+	}}
+	pa, err := prepareAgent(context.Background(), g, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := outcomeFor(t, pa.Outcomes, "mcp"); o.Status != capabilityApplied {
+		t.Fatalf("mcp outcome = %+v, want APPLIED", o)
+	}
+	got, err := os.ReadFile(filepath.Join(repoPath, ".mcp.json"))
+	if err != nil || string(got) != `{"servers":{}}` {
+		t.Fatalf("mcp config not written: %q err=%v", got, err)
+	}
+	if status := strings.TrimSpace(runOut(t, context.Background(), repoPath, "git", "status", "--porcelain")); status != "" {
+		t.Fatalf("mcp config must be git-excluded: %q", status)
+	}
+
+	pa, err = prepareAgent(context.Background(), opencodeHarness{}, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := outcomeFor(t, pa.Outcomes, "mcp"); o.Status != capabilitySkipped {
+		t.Fatalf("opencode mcp outcome = %+v, want SKIPPED", o)
+	}
+}
+
+// #96 AC: with a staged catalog, model selection is deterministic and offline.
+func TestCatalogOfflineModelResolution(t *testing.T) {
+	repoPath, _ := initGitRepo(t)
+	catDir := t.TempDir()
+	catPath := filepath.Join(catDir, "catalog.json")
+	if err := os.WriteFile(catPath, []byte(`["openai/gpt-4","anthropic/claude-3"]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := genericHarness{cfg: GenericHarnessConfig{Executable: "agent", ModelFlag: "--model", CatalogCache: catPath}}
+	pa, err := prepareAgent(context.Background(), g, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := outcomeFor(t, pa.Outcomes, "catalog"); o.Status != capabilityApplied {
+		t.Fatalf("catalog outcome = %+v, want APPLIED", o)
+	}
+	if m, err := resolveHarnessModel(g, "anthropic/claude-3", pa.CatalogPath); err != nil || m != "anthropic/claude-3" {
+		t.Fatalf("catalog resolve = %q, %v", m, err)
+	}
+	// Empty request selects the lexicographically-first entry (deterministic).
+	if m, err := resolveHarnessModel(g, "", pa.CatalogPath); err != nil || m != "anthropic/claude-3" {
+		t.Fatalf("empty model resolve = %q, %v", m, err)
+	}
+	// A model absent from the catalog fails closed rather than going to the network.
+	if _, err := resolveHarnessModel(g, "vendor/unknown", pa.CatalogPath); err == nil {
+		t.Fatal("model absent from staged catalog must fail closed")
+	}
+	// A malformed catalog fails closed too.
+	if _, err := resolveModelFromCatalog([]byte("not json"), "a/b"); err == nil {
+		t.Fatal("malformed catalog must fail closed")
+	}
+}
+
+// #96 AC: config validation gates the new provisioning fields at load.
+func TestHarnessProvisionConfigValidation(t *testing.T) {
+	write := func(body string) string {
+		p := filepath.Join(t.TempDir(), "konoha.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cases := []struct {
+		name, body, want string
+	}{
+		{"prompt mode", "harness:\n  prompt_mode: bogus\n", "prompt_mode"},
+		{"sha without binary", "harness:\n  binary_sha256: " + strings.Repeat("a", 64) + "\n", "without harness.generic.binary"},
+		{"binary without sha", "harness:\n  binary: /opt/agent\n", "binary_sha256"},
+		{"bad sha", "harness:\n  binary: /opt/agent\n  binary_sha256: deadbeef\n", "64-char hex"},
+		{"mcp traversal", "harness:\n  mcp:\n    path: ../escape.json\n    config: '{}'\n", "worktree-relative"},
+		{"mcp empty config", "harness:\n  mcp:\n    path: .mcp.json\n", "must not be empty"},
+		{"catalog without modelFlag", "harness:\n  catalog_cache: /opt/catalog.json\n", "requires harness.generic.modelFlag"},
+	}
+	for _, tc := range cases {
+		if _, err := loadAppConfig(write(tc.body)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: want error containing %q, got %v", tc.name, tc.want, err)
+		}
+	}
+	// A fully-specified block loads.
+	if _, err := loadAppConfig(write(
+		"harness:\n  executable: agent\n  modelFlag: --model\n  prompt_mode: stdin_file\n" +
+			"  binary: /opt/agent\n  binary_sha256: " + strings.Repeat("a", 64) + "\n" +
+			"  catalog_cache: /opt/catalog.json\n" +
+			"  mcp:\n    path: .mcp.json\n    config: '{}'\n")); err != nil {
+		t.Fatalf("valid provisioning block rejected: %v", err)
+	}
+}
+
+// #96: capability outcomes (incl. the version capture) land in the cycle's
+// provisioning.json evidence via the shared AgentEvidence path.
+func TestProvisioningEvidenceRecorded(t *testing.T) {
+	var got EvidenceRequest
+	ev := &AgentEvidence{
+		Prompt: "p",
+		Provisioning: []CapabilityOutcome{
+			{Capability: "version", Status: capabilityApplied, Detail: "agent 1.2.3"},
+			{Capability: "provision", Status: capabilitySkipped, Detail: "not configured"},
+		},
+	}
+	writeAgentEvidence(func(r EvidenceRequest) { got = r }, ev, ReviewResult{Verdict: "APPROVE"}, "")
+	if !strings.Contains(got.Provisioning, `"capability":"version"`) || !strings.Contains(got.Provisioning, `"status":"SKIPPED"`) {
+		t.Fatalf("provisioning not carried into evidence: %q", got.Provisioning)
+	}
+}
+
+func outcomeFor(t *testing.T, outs []CapabilityOutcome, name string) CapabilityOutcome {
+	t.Helper()
+	for _, o := range outs {
+		if o.Capability == name {
+			return o
+		}
+	}
+	t.Fatalf("no outcome for capability %q in %+v", name, outs)
+	return CapabilityOutcome{}
+}
 
 // AC #85: the opencode harness produces the exact argv and env of today's
 // agentArgs/cmdEnv (byte-equal argv, PWD present).
@@ -181,7 +454,7 @@ func TestGenericHarnessRunsFakeBinary(t *testing.T) {
 		ModelFlag:  "--model",
 	}
 
-	cmd, err := agentCommand(context.Background(), "PROMPT", "provider/model", "generic", stubDir)
+	cmd, _, err := agentCommand(context.Background(), "PROMPT", "provider/model", "generic", stubDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,10 +578,10 @@ func TestHarnessResolveModel(t *testing.T) {
 }
 
 func TestAgentCommandRejectsUnknownModelAndHarness(t *testing.T) {
-	if _, err := agentCommand(context.Background(), "p", "bad", "opencode", t.TempDir()); err == nil {
+	if _, _, err := agentCommand(context.Background(), "p", "bad", "opencode", t.TempDir()); err == nil {
 		t.Fatal("unknown model must be rejected before exec")
 	}
-	if _, err := agentCommand(context.Background(), "p", "provider/model", "nope", t.TempDir()); err == nil {
+	if _, _, err := agentCommand(context.Background(), "p", "provider/model", "nope", t.TempDir()); err == nil {
 		t.Fatal("unknown harness must be rejected before exec")
 	}
 }
