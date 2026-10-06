@@ -150,6 +150,20 @@ as a stronger guarantee than they are (§40: never a silent over-claim).
   [B1](#b1-host-resource-ceilings-cpumemdisktl--102),
   [B2](#b2-network-egress--103), and [B3](#b3-policy-tenancy--104) from
   advisory/best-effort to enforced.
+- **[#114] Per-cycle preview pane** — **deferred, not refused.** A
+  Vibe-Kanban-style dev-server + embedded browser preview is implementable only
+  once **execution isolation** ([#92]) is adopted. The preview serves a repo's
+  own bytes, so it needs the isolation boundary plus the [#102] ceilings and
+  [#103] egress policy promoted from advisory/best-effort to enforced
+  ([B1](#b1-host-resource-ceilings-cpumemdisktl--102)/
+  [B2](#b2-network-egress--103)). Until then **no preview code, route, or
+  dev-server lifecycle exists**: proxying host-served repo content to the console
+  would open a second, unpoliced execution surface, which
+  [A1](#a1-microvm--sandbox-execution-fabric)/
+  [A6](#a6-sandbox-execution) refuse. The intended bounds (operator-configured
+  command only — never caller-supplied; loopback-only + origin-checked;
+  origin-isolated from the console; torn down with the cycle, [#93]) are recorded
+  on the ticket.
 
 ## Consequences
 
@@ -166,3 +180,4 @@ as a stronger guarantee than they are (§40: never a silent over-claim).
 [#102]: https://github.com/vitdo82/konoha/issues/102
 [#103]: https://github.com/vitdo82/konoha/issues/103
 [#104]: https://github.com/vitdo82/konoha/issues/104
+[#114]: https://github.com/vitdo82/konoha/issues/114

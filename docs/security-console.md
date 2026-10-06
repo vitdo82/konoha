@@ -168,6 +168,13 @@ checklist** item.
   evidence store / §18 channel.
 - Konoha moves to a hosted/multi-operator worker (see `docs/non-goals.md` A2,
   #92 isolation).
+- A **preview proxy** ([#114]) is added — proxying a repo's dev-server bytes over
+  a console route. It is **deferred until execution isolation** ([#92]) and must
+  then be **default-closed, operator-configured, loopback-only and origin-checked**
+  like every console route, and **origin-isolated** from the console origin
+  (separate origin or sandboxed iframe) so served repo content is never trusted
+  console content. No proxy exists today — there is no dev-server lifecycle, no
+  preview route, and no additional listener.
 
 ## Tests
 
@@ -193,3 +200,5 @@ checklist** item.
 [#109]: https://github.com/vitdo82/konoha/issues/109
 [#110]: https://github.com/vitdo82/konoha/issues/110
 [#111]: https://github.com/vitdo82/konoha/issues/111
+[#114]: https://github.com/vitdo82/konoha/issues/114
+[#92]: https://github.com/vitdo82/konoha/issues/92
