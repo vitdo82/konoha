@@ -1,7 +1,6 @@
 package konoha
 
 import (
-	"encoding/json"
 	"math"
 	"path"
 	"sort"
@@ -300,22 +299,8 @@ func (d *consoleData) loadDiffView(id string) *DiffView {
 		return nil
 	}
 	files := parseUnifiedDiff(truncateConsole(patch))
-	comments := d.loadComments(id)
+	comments := d.store.readComments(id)
 	return &DiffView{Files: files, Threads: diffThreads(comments)}
-}
-
-// loadComments reads the optional recorded comments for one cycle (best-effort;
-// absent/malformed → none).
-func (d *consoleData) loadComments(id string) []DiffComment {
-	raw, ok := d.store.readArtifact(id, evidenceComments)
-	if !ok || strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	var cs []DiffComment
-	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
-		return nil
-	}
-	return cs
 }
 
 // loadValidationView builds the Validation tab: the deterministic outcome, the

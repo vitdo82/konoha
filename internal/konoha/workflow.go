@@ -652,7 +652,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 				ValidationCmd:      ValidationCommand(in.Lifecycle),
 				Limits:             in.Lifecycle.Limits,
 			},
-			Review:         ReviewResult{Verdict: "REQUEST_CHANGES", Blocking: feedbackLines(feedback)},
+			Review:         ReviewResult{Verdict: "REQUEST_CHANGES", Blocking: reworkBlocking(feedback, rw.Comments)},
 			PreviousCommit: dev.CommitSHA, // the commit the human reviewed
 		}).Get(ctx, &reworked); err != nil {
 			return err

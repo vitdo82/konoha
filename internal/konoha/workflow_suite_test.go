@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -665,7 +666,8 @@ func TestWorkflowApprovalGateRequestChangesReworksThenGrants(t *testing.T) {
 			gates++
 			if gates == 1 {
 				return ApprovalResult{Rework: true, Action: humanDecisionRequestChanges,
-					Feedback: "add a regression test\n", Attempts: 1}, nil
+					Feedback: "add a regression test\n", Attempts: 1,
+					Comments: []DiffComment{{File: "pkg/worker.go", Line: 12, Side: "new", SHA: "devsha", Body: "guard the nil case"}}}, nil
 			}
 			return ApprovalResult{Granted: true, Action: humanDecisionApprove, Attempts: 2}, nil
 		})
@@ -692,8 +694,11 @@ func TestWorkflowApprovalGateRequestChangesReworksThenGrants(t *testing.T) {
 	if gates != 2 || repairs != 1 {
 		t.Fatalf("gates/repairs = %d/%d, want 2/1", gates, repairs)
 	}
-	if len(repairReq.Review.Blocking) != 1 || repairReq.Review.Blocking[0] != "add a regression test" {
-		t.Fatalf("repair must carry the human feedback as blocking findings: %+v", repairReq.Review)
+	// The human feedback AND the diff-anchored comment are delivered to the repair
+	// agent as ordered, deterministic BLOCKING findings (#113).
+	wantBlocking := []string{"add a regression test", "pkg/worker.go:12 (new): guard the nil case"}
+	if !reflect.DeepEqual(repairReq.Review.Blocking, wantBlocking) {
+		t.Fatalf("repair blocking = %#v, want %#v", repairReq.Review.Blocking, wantBlocking)
 	}
 	if repairReq.PreviousCommit != "devsha" {
 		t.Fatalf("repair must build on the reviewed commit, got %q", repairReq.PreviousCommit)

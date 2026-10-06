@@ -2,9 +2,12 @@ package konoha
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -128,9 +131,21 @@ func ValidateDecisionRequest(in DecisionRequest) error {
 	return nil
 }
 
+// validCommentSide is the closed set of diff sides a comment may anchor to: the
+// new file (`new`), the old file (`old`), or unspecified. Anything else fails
+// closed (§36) so an unanchorable side can never be stored.
+func validCommentSide(side string) bool {
+	switch side {
+	case "", "new", "old":
+		return true
+	}
+	return false
+}
+
 // validateDiffComment checks one diff-anchored comment against the gate's
-// reviewed SHA: a comment anchored to any other (superseded) SHA is stale and
-// can never be re-submitted (§108).
+// reviewed SHA: the comment must be anchored to (sha, file, line, side), and a
+// comment anchored to any other (superseded) SHA is stale and can never be
+// re-submitted (§108/#113).
 func validateDiffComment(c DiffComment, reviewedSHA string) error {
 	body := strings.TrimSpace(c.Body)
 	if body == "" {
@@ -142,10 +157,102 @@ func validateDiffComment(c DiffComment, reviewedSHA string) error {
 	if strings.TrimSpace(c.File) == "" {
 		return fmt.Errorf("comment requires a file anchor")
 	}
+	if c.Line < 0 {
+		return fmt.Errorf("comment line %d must be non-negative", c.Line)
+	}
+	if !validCommentSide(c.Side) {
+		return fmt.Errorf("comment side %q not in the diff-side set {\"\", new, old}", c.Side)
+	}
 	if strings.TrimSpace(c.SHA) == "" || c.SHA != reviewedSHA {
 		return fmt.Errorf("comment anchored to %q is stale: the current gate is bound to %q", c.SHA, reviewedSHA)
 	}
 	return nil
+}
+
+// diffCommentID derives the stable, content-addressed id for one anchored
+// comment: the same (gate, anchor, body) submitted twice maps to the SAME id, so
+// carrying comments forward or replaying a submission is idempotent and never
+// duplicates (§24). Two byte-identical comments at one anchor are the same
+// comment; a distinct body yields a distinct id.
+func diffCommentID(in DecisionRequest, c DiffComment) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{
+		in.CycleID, strconv.Itoa(in.Attempt), c.SHA,
+		strings.TrimSpace(c.File), strconv.Itoa(c.Line), c.Side, strings.TrimSpace(c.Body),
+	}, "\x00")))
+	return fmt.Sprintf("%s/%d/%s/%s", in.CycleID, in.Attempt, c.SHA, hex.EncodeToString(h[:8]))
+}
+
+// sortCommentsForDelivery orders comments deterministically for delivery/display:
+// by file, then line, then side, preserving submission order for ties (§113).
+// Pure.
+func sortCommentsForDelivery(comments []DiffComment) []DiffComment {
+	out := append([]DiffComment(nil), comments...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return a.Side < b.Side
+	})
+	return out
+}
+
+// anchoredCommentLine renders one comment in the deterministic, parseable
+// `file:line (side): body` form the repair agent consumes (§35). Pure.
+func anchoredCommentLine(c DiffComment) string {
+	anchor := fmt.Sprintf("%s:%d", strings.TrimSpace(c.File), c.Line)
+	if s := strings.TrimSpace(c.Side); s != "" {
+		anchor += " (" + s + ")"
+	}
+	return anchor + ": " + strings.TrimSpace(c.Body)
+}
+
+// anchoredCommentLines renders a bundle of anchored comments in deterministic
+// order for the repair/rework input; entries missing a file/body are dropped
+// (they would render nothing parseable). Pure, unit-tested without Temporal.
+func anchoredCommentLines(comments []DiffComment) []string {
+	var out []string
+	for _, c := range sortCommentsForDelivery(comments) {
+		if strings.TrimSpace(c.File) == "" || strings.TrimSpace(c.Body) == "" {
+			continue
+		}
+		out = append(out, anchoredCommentLine(c))
+	}
+	return out
+}
+
+// reworkBlocking projects a §108 request-changes rework into the ordered BLOCKING
+// findings the repair agent consumes: the human's freeform feedback lines first,
+// then the diff-anchored comments in deterministic `file:line (side): body` form.
+// Pure and unit-tested without a browser or Temporal.
+func reworkBlocking(feedback string, comments []DiffComment) []string {
+	out := feedbackLines(feedback)
+	return append(out, anchoredCommentLines(comments)...)
+}
+
+// mergeComments appends incoming comments to the existing list, REPLACING any
+// entry with the same stable id in place (order preserved) — idempotent under
+// retry and carry-forward (§24). Existing (earlier-revision) comments are kept,
+// never dropped, so the full thread is retained across revisions.
+func mergeComments(existing, incoming []DiffComment) []DiffComment {
+	out := append([]DiffComment(nil), existing...)
+	for _, c := range incoming {
+		replaced := false
+		for i := range out {
+			if out[i].ID == c.ID {
+				out[i] = c
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // decisionPayload is the machine-readable body of a decision comment (base64
@@ -281,6 +388,24 @@ func applyDecisionEvidence(store *EvidenceStore, in DecisionRequest) error {
 	if store == nil || in.Action != humanDecisionRequestChanges || in.DryRun {
 		return nil
 	}
+	// Enrich the submitted comments with their cycle/attempt/SHA identity and a
+	// stable content-addressed id BEFORE recording, so both the change thread and
+	// comments.json agree on one identity.
+	now := time.Now().UTC()
+	comments := make([]DiffComment, 0, len(in.Comments))
+	for _, c := range in.Comments {
+		c.ID = diffCommentID(in, c)
+		c.CycleID = in.CycleID
+		c.Attempt = in.Attempt
+		if c.Author == "" {
+			c.Author = in.Actor
+		}
+		if c.CreatedAt.IsZero() {
+			c.CreatedAt = now
+		}
+		comments = append(comments, c)
+	}
+
 	// #97: a distinct rework activation (attempt+1) so develop + rework are two
 	// ordered activations. Idempotent by WorkflowID.
 	act := LineageActivation{
@@ -297,35 +422,37 @@ func applyDecisionEvidence(store *EvidenceStore, in DecisionRequest) error {
 		return fmt.Errorf("decision rework activation: %w", err)
 	}
 	// #97: carry the feedback onto the change record + ordered feedback thread
-	// (status returns to OPEN: the working path).
+	// (status returns to OPEN: the working path). Each anchored comment is its own
+	// entry, keyed by the stable comment id, so the full thread is retained across
+	// revisions and a replay replaces in place (§24).
 	key := fmt.Sprintf("%s/human-rework/%d", in.CycleID, in.Attempt)
+	feedback := []ChangeFeedback{{
+		Key: key, Kind: feedbackKindReworkNote, Author: in.Actor, Body: in.Feedback, At: now,
+	}}
+	for _, c := range comments {
+		feedback = append(feedback, ChangeFeedback{
+			Key:    in.CycleID + "/review-comment/" + c.ID,
+			Kind:   feedbackKindReviewComment,
+			Author: c.Author,
+			Body:   anchoredCommentLine(c),
+			At:     c.CreatedAt,
+		})
+	}
 	if err := store.recordChange(ChangeRequest{
 		Owner: in.Owner, Repo: in.Repo, Issue: in.Issue, WorkflowID: in.CycleID,
 		State:      stateChangesRequested,
 		ReworkNote: in.Feedback,
-		Feedback: []ChangeFeedback{{
-			Key: key, Kind: feedbackKindReworkNote, Author: in.Actor, Body: in.Feedback, At: time.Now().UTC(),
-		}},
+		Feedback:   feedback,
 	}); err != nil {
 		return fmt.Errorf("decision change feedback: %w", err)
 	}
 	// #108/#113: persist the diff-anchored comments so the next attempt's diff
-	// view shows them. Enriched with the cycle/attempt/SHA identity for display.
-	if len(in.Comments) > 0 {
-		comments := make([]DiffComment, 0, len(in.Comments))
-		for i, c := range in.Comments {
-			c.ID = fmt.Sprintf("%s/%d/%s/%d", in.CycleID, in.Attempt, c.SHA, i)
-			c.CycleID = in.CycleID
-			c.Attempt = in.Attempt
-			if c.Author == "" {
-				c.Author = in.Actor
-			}
-			if c.CreatedAt.IsZero() {
-				c.CreatedAt = time.Now().UTC()
-			}
-			comments = append(comments, c)
-		}
-		b, err := json.Marshal(comments)
+	// view shows them, MERGING with any carried-over comments by stable id (so the
+	// thread is retained across revisions and never duplicated). Bodies are
+	// redacted by the evidence store Write (§82).
+	if len(comments) > 0 {
+		merged := mergeComments(store.readComments(in.CycleID), comments)
+		b, err := json.Marshal(merged)
 		if err != nil {
 			return err
 		}
@@ -334,6 +461,20 @@ func applyDecisionEvidence(store *EvidenceStore, in DecisionRequest) error {
 		}
 	}
 	return nil
+}
+
+// readComments reads the optional recorded comments.json for one cycle,
+// best-effort: absent/malformed yields none (never an error to the caller).
+func (s *EvidenceStore) readComments(id string) []DiffComment {
+	raw, ok := s.readArtifact(id, evidenceComments)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var cs []DiffComment
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		return nil
+	}
+	return cs
 }
 
 // feedbackLines splits a request-changes feedback body into bounded, non-empty

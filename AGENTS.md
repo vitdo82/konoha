@@ -807,14 +807,25 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   parses the payload back into `HumanDecision.Feedback`/`Comments`.
   `ValidateDecisionRequest` enforces the §108 rules (action set
   `approve|request-changes|deny`, non-empty size-bounded request-changes
-  feedback, diff-anchored comments bound to the reviewed SHA — a comment on any
-  other SHA is stale). `consoleData.submitDecision` binds the submission to the
+  feedback, diff-anchored comments bound to `(sha, file, line, side)` — a
+  comment on any other SHA, an unknown side, or a negative line is stale/
+  malformed and fails closed). `consoleData.submitDecision` binds the submission
+  to the
   LIVE gate (`gateSnapshot`: owner from `repos.yaml`/outcome, attempt+SHA from
   the #88 lineage, `Open` iff the running status is `PENDING_APPROVAL`) — a
   superseded attempt/SHA or a closed gate is `409`. `applyDecisionEvidence`
   records the derived records for request-changes: a #97 rework activation
-  carrying the feedback, the change feedback thread (status back to OPEN), and
-  the cycle's `comments.json` (rendered on the next review). Audit still goes
+  carrying the feedback, the change feedback thread (status back to OPEN) with
+  one entry per anchored comment, and the cycle's `comments.json` (rendered on
+  the next review), REDACTED (#82) and MERGED by the content-addressed stable id
+  `diffCommentID` so carry-forward/replay never duplicates (§24). The #113
+  delivery path is the PURE `reworkBlocking(feedback, comments)` projection —
+  freeform feedback lines then `file:line (side): body` anchored findings,
+  deterministic order — threaded into the repair `Review.Blocking` by
+  `IssueCycleWorkflow`. Stale comments (superseded SHA) are retained and rendered
+  but refused as a re-submission; the capture UI lives in the console Diff tab
+  (`consoleassets/app.js`: staged drafts submitted with request-changes). Audit
+  still goes
   through `RecordAuditEvent` (`auditDecisionForAction`: allow/deny/request_changes).
   A `POST` never proceeds on a fail-closed path; the §6 state stays authoritative
   (§44 #20).

@@ -663,8 +663,11 @@ Endpoints:
   - **Result** — terminal §6 state, `agentOutcome`, `verificationOutcome`, and the
     ordered condition list (#84).
   - **Diff** — changed files + the patch (from `diff.patch`), with line-anchored
-    comment threads (an optional `comments.json`, captured by the review-comment
-    ticket #113; absent → the diff renders with no threads).
+    comment threads (an optional `comments.json`; absent → the diff renders with
+    no threads). When a gate is open the reviewer anchors a comment to a
+    `file:line` (a staged draft, submitted with request-changes, #113); carried
+    comments from an earlier revision are rendered and marked **stale** when
+    their SHA is not the current reviewed SHA.
   - **Validation** — the deterministic verification outcome, the combined
     `validation.txt`, and each §26 gate's captured stdout/stderr.
   - **Artifacts** — every evidence artifact with size/type; **Preview** (text up
@@ -716,6 +719,17 @@ truth:
   diff-anchored comments are persisted as the cycle's `comments.json` and shown
   on the next review. At the publish gate the workflow runs a bounded repair
   with the feedback and re-gates (capped by `maxDevReviewAttempts`).
+- **Diff-anchored comments (#113):** a comment is stored anchored to
+  `(sha, file, line, side)`; its body is redacted (#82) before persistence. The
+  bundle is delivered to the repair agent as deterministic, parseable BLOCKING
+  findings — `file:line (side): body`, ordered by file/line/side — appended
+  after the freeform feedback (`reworkBlocking`). Comments carry forward across
+  revisions through the #97 feedback thread and `comments.json` (merged by a
+  content-addressed stable id, so a replay/overlap never duplicates, §24); a
+  comment bound to a superseded SHA is **stale** — retained and visibly marked,
+  but the server refuses it as a re-submission. The comment→feedback projection
+  is pure and unit-tested without a browser or Temporal (§44 #20: no new source
+  of truth — everything flows through the existing decision/feedback channel).
 - **Authority + idempotency:** only the **current** gate may be actioned — a
   superseded attempt/SHA is refused with `409`, and a repeated submit is a no-op
   (one decision per gate, keyed by a byte-exact id marker). Diff-anchored
