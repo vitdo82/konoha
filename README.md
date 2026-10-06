@@ -425,6 +425,7 @@ internal/konoha/         # ALL logic + tests (single package konoha): workflows,
 configs/repos.yaml       # per-repo lifecycle policy (source of truth; KONOHA_CONFIG_DIR overrides)
 scripts/apply.sh         # schedule creation
 docs/new-design-v2.md    # design authority
+docs/non-goals.md        # ESF-vs-Konoha non-goals + caveated features (decision record, #101)
 ```
 
 ## Run
