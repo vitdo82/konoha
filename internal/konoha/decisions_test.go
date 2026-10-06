@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -208,8 +209,13 @@ func TestWriteConsoleDecisionRequestChangesEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.ReworkNote != "please add a test" || len(c.Feedback) != 1 || c.Feedback[0].Author != "carol" {
+	// The feedback thread carries the freeform rework note AND each anchored
+	// comment (retained across revisions, #97/#113).
+	if c.ReworkNote != "please add a test" || len(c.Feedback) != 2 || c.Feedback[0].Author != "carol" {
 		t.Fatalf("change = %+v", c)
+	}
+	if c.Feedback[1].Kind != feedbackKindReviewComment || c.Feedback[1].Body != "a.go:9: guard this" {
+		t.Fatalf("anchored feedback = %+v", c.Feedback[1])
 	}
 	if c.Status != changeStatusOpen {
 		t.Fatalf("request-changes must return the change to the working path (OPEN), got %q", c.Status)
@@ -446,6 +452,154 @@ func TestLoopbackOriginRule(t *testing.T) {
 		if got != tc.ok {
 			t.Fatalf("origin %q loopback = %v, want %v", tc.origin, got, tc.ok)
 		}
+	}
+}
+
+// #113: the pure comment→feedback projection is deterministic and parseable:
+// comments render `file:line (side): body`, ordered by file/line/side, and
+// malformed entries (no file/body) are dropped. The rework BLOCKING lines put
+// the human's freeform feedback first, then the anchored comments.
+func TestAnchoredCommentProjection(t *testing.T) {
+	comments := []DiffComment{
+		{File: "b.go", Line: 5, Side: "new", Body: "second"},
+		{File: "a.go", Line: 3, Side: "new", Body: "first"},
+		{File: "a.go", Line: 3, Body: "no side"},
+		{File: "", Line: 1, Body: "drop: no file"},
+		{File: "c.go", Line: 2, Body: "   "},
+	}
+	want := []string{
+		"a.go:3: no side",
+		"a.go:3 (new): first",
+		"b.go:5 (new): second",
+	}
+	if got := anchoredCommentLines(comments); !reflect.DeepEqual(got, want) {
+		t.Fatalf("anchoredCommentLines = %#v, want %#v", got, want)
+	}
+	// Order independence: a shuffled input yields the same deterministic output.
+	shuffled := append([]DiffComment(nil), comments...)
+	shuffled[0], shuffled[2] = shuffled[2], shuffled[0]
+	if got := anchoredCommentLines(shuffled); !reflect.DeepEqual(got, want) {
+		t.Fatalf("anchoredCommentLines (shuffled) = %#v, want %#v", got, want)
+	}
+	got := reworkBlocking("fix the leak\n\nand add a test", comments)
+	wantBlocking := append([]string{"fix the leak", "and add a test"}, want...)
+	if !reflect.DeepEqual(got, wantBlocking) {
+		t.Fatalf("reworkBlocking = %#v, want %#v", got, wantBlocking)
+	}
+}
+
+// #113/§36: a comment is anchored to (sha, file, line, side); an unknown side,
+// a negative line, or a superseded SHA fails closed.
+func TestValidateDiffCommentAnchoring(t *testing.T) {
+	ok := DiffComment{File: "a.go", Line: 3, Side: "new", SHA: "s1", Body: "guard this"}
+	if err := validateDiffComment(ok, "s1"); err != nil {
+		t.Fatalf("valid anchored comment: %v", err)
+	}
+	badSide := ok
+	badSide.Side = "sideways"
+	if err := validateDiffComment(badSide, "s1"); err == nil {
+		t.Fatal("unknown side must fail closed")
+	}
+	negLine := ok
+	negLine.Line = -1
+	if err := validateDiffComment(negLine, "s1"); err == nil {
+		t.Fatal("negative line must fail closed")
+	}
+	stale := ok
+	stale.SHA = "old"
+	if err := validateDiffComment(stale, "s1"); err == nil {
+		t.Fatal("a superseded SHA must be rejected as stale")
+	}
+}
+
+// #113/§24: the comment id is content-addressed and stable — the same comment
+// maps to the same id; a different body maps to a different id.
+func TestDiffCommentIDStable(t *testing.T) {
+	in := DecisionRequest{CycleID: "r-issue-7", Attempt: 2, SHA: "sha2"}
+	a := DiffComment{File: "a.go", Line: 3, Side: "new", SHA: "sha2", Body: "nit"}
+	if diffCommentID(in, a) != diffCommentID(in, a) {
+		t.Fatal("identical comments must share a stable id")
+	}
+	b := a
+	b.Body = "other"
+	if diffCommentID(in, a) == diffCommentID(in, b) {
+		t.Fatal("distinct bodies must get distinct ids")
+	}
+}
+
+// #113: comments are retained across revisions and a replay is idempotent — no
+// duplicates, and every comment lands on the #97 feedback thread.
+func TestCommentCarryForwardIdempotent(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := DecisionRequest{
+		Owner: "o", Repo: "r", Issue: 7, CycleID: "r-issue-7",
+		Action: humanDecisionRequestChanges,
+	}
+	in1 := base
+	in1.Attempt, in1.SHA, in1.Feedback = 1, "sha1", "first"
+	in1.Comments = []DiffComment{{File: "a.go", Line: 1, SHA: "sha1", Body: "one"}}
+	if err := applyDecisionEvidence(store, in1); err != nil {
+		t.Fatal(err)
+	}
+	in2 := base
+	in2.Attempt, in2.SHA, in2.Feedback = 2, "sha2", "second"
+	in2.Comments = []DiffComment{{File: "b.go", Line: 2, SHA: "sha2", Body: "two"}}
+	if err := applyDecisionEvidence(store, in2); err != nil {
+		t.Fatal(err)
+	}
+	if cs := store.readComments("r-issue-7"); len(cs) != 2 {
+		t.Fatalf("carry-forward retained %d comments, want 2: %+v", len(cs), cs)
+	}
+	// Replaying the first submission replaces by id, never appends.
+	if err := applyDecisionEvidence(store, in1); err != nil {
+		t.Fatal(err)
+	}
+	if cs := store.readComments("r-issue-7"); len(cs) != 2 {
+		t.Fatalf("replay duplicated comments: %+v", cs)
+	}
+	// The full thread (both revisions) is retained on the #97 change record.
+	c, err := store.loadChange("r", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchors := 0
+	for _, f := range c.Feedback {
+		if f.Kind == feedbackKindReviewComment {
+			anchors++
+		}
+	}
+	if anchors != 2 {
+		t.Fatalf("change feedback anchors = %d, want 2: %+v", anchors, c.Feedback)
+	}
+}
+
+// #113/#82: comment bodies are redacted before they are persisted.
+func TestDiffCommentRedacted(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := DecisionRequest{
+		Owner: "o", Repo: "r", Issue: 7, CycleID: "r-issue-7",
+		Action: humanDecisionRequestChanges, Feedback: "fix",
+		Attempt: 1, SHA: "s1",
+		Comments: []DiffComment{{File: "a.go", Line: 1, SHA: "s1", Body: "API_TOKEN=supersecretvalue"}},
+	}
+	if err := applyDecisionEvidence(store, in); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := store.readArtifact("r-issue-7", evidenceComments)
+	if !ok {
+		t.Fatal("comments.json missing")
+	}
+	if strings.Contains(raw, "supersecretvalue") {
+		t.Fatalf("comment body not redacted: %s", raw)
+	}
+	if !strings.Contains(raw, redacted) {
+		t.Fatalf("redaction marker missing: %s", raw)
 	}
 }
 

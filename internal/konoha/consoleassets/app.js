@@ -10,7 +10,7 @@
 // outcomes are separate fields. A conflict (agent SUCCESS while verification
 // FAILED/ERROR) is highlighted and never collapsed into the agent's prose.
 
-const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, queue: false, selected: "", tab: "result", detail: null };
+const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, queue: false, selected: "", tab: "result", detail: null, commentDraft: [] };
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -240,6 +240,7 @@ function card(c) {
 async function selectCycle(id) {
   state.selected = id;
   state.tab = "result";
+  state.commentDraft = [];
   await refreshBoard();
   const detail = document.getElementById("detail");
   detail.replaceChildren(el("p", "empty", "Loading…"));
@@ -355,6 +356,11 @@ function decisionPanel(root, d) {
   feedback.placeholder = "Required for request changes";
   box.append(feedback);
 
+  if (state.commentDraft.length) {
+    box.append(el("p", "muted",
+      state.commentDraft.length + " anchored comment(s) staged (see the Diff tab)"));
+  }
+
   const status = el("p", "decision-status", "");
   const submit = async (action) => {
     if (action === "request-changes" && !feedback.value.trim()) {
@@ -362,11 +368,16 @@ function decisionPanel(root, d) {
       return;
     }
     status.textContent = "submitting…";
+    const comments = action === "request-changes" && state.commentDraft.length
+      ? state.commentDraft.map((c) => ({ file: c.file, line: c.line, side: c.side, sha: gate.sha, body: c.body }))
+      : undefined;
     try {
       await apiPost("/api/v1/cycles/" + encodeURIComponent(d.id) + "/decisions", {
         action, attempt: gate.attempt, sha: gate.sha,
         feedback: action === "request-changes" ? feedback.value : undefined,
+        comments,
       });
+      if (action === "request-changes") state.commentDraft = [];
       status.textContent = "submitted";
       await selectCycle(d.id);
     } catch (err) {
@@ -385,16 +396,29 @@ function decisionPanel(root, d) {
   root.append(box);
 }
 
-// Diff tab: changed files + patch, with line-anchored comment threads.
+// Diff tab: changed files + patch, with line-anchored comment threads and the
+// #113 capture control. When a gate is open, a reviewer can attach a comment to
+// any added/context line; staged drafts are submitted with a request-changes
+// decision and anchored to the gate's reviewed SHA (never a parallel store).
 function tabDiff(root, d) {
   const view = d.diff;
   if (!view) {
     root.append(el("p", "empty", "No diff recorded."));
     return;
   }
+  const gate = d.gate || {};
+  const canComment = !!(state.decisions && gate.open);
   const threads = {};
   for (const t of view.threads || []) {
     (threads[t.file + "|" + t.line] ||= []).push(t);
+  }
+  const drafts = {};
+  for (const c of state.commentDraft) {
+    (drafts[c.file + "|" + c.line] ||= []).push(c);
+  }
+  if (canComment) {
+    root.append(el("p", "muted",
+      "Click “＋ comment” on a line to anchor feedback to the reviewed revision."));
   }
   if (!view.files || view.files.length === 0) {
     root.append(el("p", "empty", "No changed files."));
@@ -415,38 +439,96 @@ function tabDiff(root, d) {
         pre.append(el("div", "patch-line hunk", line));
         continue;
       }
+      const removed = line.startsWith("-");
       let cls = "patch-line";
       if (line.startsWith("+")) cls += " add";
-      else if (line.startsWith("-")) cls += " del";
+      else if (removed) cls += " del";
       pre.append(el("div", cls, line));
       const anchor = newLine;
-      if (!line.startsWith("-")) newLine++;
+      if (!removed) newLine++;
       const key = f.path + "|" + anchor;
       if (threads[key]) {
         for (const t of threads[key]) pre.append(threadBox(t));
         delete threads[key];
       }
+      if (drafts[key]) {
+        for (const c of drafts[key]) pre.append(draftBox(c));
+        delete drafts[key];
+      }
+      // Only added/context lines have a new-side anchor; a removed line has none.
+      if (canComment && !removed) {
+        pre.append(addCommentControl(f.path, anchor));
+      }
     }
     box.append(pre);
     root.append(box);
   }
-  // Any thread whose line did not resolve is still shown (never silently lost).
-  const leftover = Object.keys(threads);
+  // Any thread/draft whose line did not resolve is still shown (never silently lost).
+  const leftover = Object.keys(threads).concat(Object.keys(drafts).filter((k) => !threads[k]));
   if (leftover.length) {
     const box = el("section", "difffile");
     box.append(el("div", "difffile-head", "Unanchored comments"));
-    for (const k of leftover) for (const t of threads[k]) box.append(threadBox(t));
+    for (const k of leftover) {
+      for (const t of threads[k] || []) box.append(threadBox(t));
+      for (const c of drafts[k] || []) box.append(draftBox(c));
+    }
     root.append(box);
   }
+}
+
+// addCommentControl is the #113 capture affordance: it stages a draft comment for
+// this file:line in state.commentDraft (nothing is persisted until a
+// request-changes submission). Drafts are plain data, never a second store.
+function addCommentControl(file, line) {
+  const wrap = el("div", "comment-add");
+  const btn = el("button", "comment-add-btn", "＋ comment");
+  btn.type = "button";
+  btn.addEventListener("click", () => {
+    if (wrap.querySelector("textarea")) return;
+    const ta = document.createElement("textarea");
+    ta.rows = 2;
+    ta.placeholder = "Comment on " + file + ":" + line;
+    const save = el("button", "comment-save", "Add");
+    save.type = "button";
+    save.addEventListener("click", () => {
+      const body = ta.value.trim();
+      if (!body) return;
+      state.commentDraft.push({ file, line, side: "new", body });
+      renderDetail();
+    });
+    const cancel = el("button", "comment-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => wrap.replaceChildren(btn));
+    wrap.append(ta, save, cancel);
+    ta.focus();
+  });
+  wrap.append(btn);
+  return wrap;
+}
+
+// draftBox renders one staged (not-yet-submitted) comment.
+function draftBox(c) {
+  const box = el("div", "thread draft");
+  box.append(el("div", "thread-anchor", c.file + ":" + c.line + " (draft)"));
+  const item = el("div", "comment");
+  item.append(el("span", "comment-author", "you"));
+  item.append(el("span", "comment-body", c.body || ""));
+  box.append(item);
+  return box;
 }
 
 function threadBox(t) {
   const box = el("div", "thread");
   box.append(el("div", "thread-anchor", t.file + ":" + t.line + (t.side ? " (" + t.side + ")" : "")));
+  const current = state.detail && state.detail.gate && state.detail.gate.sha;
   for (const c of t.comments || []) {
-    const item = el("div", "comment");
+    // A comment anchored to a superseded SHA is stale: it is retained for the
+    // record but visibly marked and cannot be re-submitted (server refuses it).
+    const stale = !!(current && c.sha && c.sha !== current);
+    const item = el("div", "comment" + (stale ? " stale" : ""));
     item.append(el("span", "comment-author", c.author || "reviewer"));
     item.append(el("span", "comment-body", c.body || ""));
+    if (stale) item.append(el("span", "comment-stale", "stale"));
     box.append(item);
   }
   return box;

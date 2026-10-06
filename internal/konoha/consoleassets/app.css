@@ -175,9 +175,15 @@ body {
 .patch-line.del { color: var(--bad); background: #2a1718; }
 .patch-line.hunk { color: var(--accent); }
 .thread { border-left: 3px solid var(--warn); background: #1f1b12; margin: 4px 8px; padding: 4px 8px; white-space: normal; }
+.thread.draft { border-left-style: dashed; }
 .thread-anchor { color: var(--muted); font-size: 11px; }
 .comment { margin-top: 3px; }
 .comment-author { color: var(--accent); margin-right: 6px; }
+.comment.stale { opacity: 0.6; }
+.comment-stale { color: var(--warn); font-size: 11px; margin-left: 6px; text-transform: uppercase; }
+.comment-add { padding: 2px 8px; white-space: normal; }
+.comment-add-btn, .comment-save, .comment-cancel { cursor: pointer; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; margin: 2px 4px 2px 0; background: #12151b; color: inherit; font: inherit; }
+.comment-add textarea { display: block; width: 100%; box-sizing: border-box; background: #12151b; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 4px; font: inherit; }
 
 /* Validation. */
 .validation { margin: 0 0 10px; padding: 6px 8px; background: #12151b; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
