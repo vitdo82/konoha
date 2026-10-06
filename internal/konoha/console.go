@@ -49,7 +49,7 @@ const (
 	// consoleCSP is the strict baseline: no inline script/style, no external
 	// origins, no framing, no form submission.
 	consoleCSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
-		"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+		"img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; " +
 		"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
@@ -252,6 +252,8 @@ func (s *ConsoleServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/cycles", s.requireAuth(s.handleCycles))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}", s.requireAuth(s.handleCycleDetail))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts", s.requireAuth(s.handleArtifacts))
+	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts/{name...}", s.requireAuth(s.handleArtifactPreview))
+	s.mux.HandleFunc("GET /api/v1/cycles/{id}/download/{name...}", s.requireAuth(s.handleArtifactDownload))
 
 	sub, err := fs.Sub(consoleAssets, "consoleassets")
 	if err != nil {
@@ -329,23 +331,27 @@ func (s *ConsoleServer) handleCycleDetail(w http.ResponseWriter, r *http.Request
 	writeConsoleJSON(w, http.StatusOK, detail)
 }
 
-// handleArtifacts returns the artifact NAME list for one cycle.
+// handleArtifacts returns one cycle's artifacts with metadata (path, size,
+// content type, previewable), or 404 for an unknown cycle.
 func (s *ConsoleServer) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validConsoleCycleID(id) {
 		writeConsoleError(w, http.StatusBadRequest, "malformed cycle id")
 		return
 	}
-	detail, ok, err := s.data.cycleDetail(r.Context(), id)
-	if err != nil {
+	if _, ok, err := s.data.cycleDetail(r.Context(), id); err != nil {
 		writeConsoleError(w, http.StatusInternalServerError, "read cycle")
 		return
-	}
-	if !ok {
+	} else if !ok {
 		writeConsoleError(w, http.StatusNotFound, "unknown cycle")
 		return
 	}
-	writeConsoleJSON(w, http.StatusOK, map[string]any{"id": id, "artifacts": detail.Artifacts})
+	views, err := s.data.store.artifactViews(id)
+	if err != nil {
+		writeConsoleError(w, http.StatusInternalServerError, "list artifacts")
+		return
+	}
+	writeConsoleJSON(w, http.StatusOK, map[string]any{"id": id, "artifacts": views})
 }
 
 // requireAuth enforces a valid bearer token or CSRF token, else 401.

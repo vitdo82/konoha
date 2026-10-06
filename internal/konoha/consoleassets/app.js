@@ -35,11 +35,16 @@ function kv() {
 }
 
 async function api(path) {
+  const res = await apiRaw(path);
+  return res.json();
+}
+
+async function apiRaw(path) {
   const headers = {};
   if (state.csrf) headers[state.csrfHeader] = state.csrf;
   const res = await fetch(path, { headers, credentials: "same-origin" });
   if (!res.ok) throw new Error(path + " -> " + res.status);
-  return res.json();
+  return res;
 }
 
 async function bootstrap() {
@@ -121,7 +126,10 @@ function renderDetail() {
   renderTabs(d);
   const detail = document.getElementById("detail");
   detail.replaceChildren();
-  const tabs = { result: tabResult, diff: tabDiff, validation: tabValidation, metadata: tabMetadata };
+  const tabs = {
+    result: tabResult, diff: tabDiff, validation: tabValidation,
+    artifacts: tabArtifacts, metadata: tabMetadata,
+  };
   (tabs[state.tab] || tabResult)(detail, d);
 }
 
@@ -132,6 +140,7 @@ function renderTabs(d) {
     ["result", "Result", true],
     ["diff", "Diff", !!d.diff],
     ["validation", "Validation", !!d.validation],
+    ["artifacts", "Artifacts", true],
     ["metadata", "Metadata", true],
   ];
   for (const [id, label, show] of defs) {
@@ -291,6 +300,89 @@ function tabValidation(root, d) {
       gbox.append(el("span", "stream-label", "stderr"), pre);
     }
     root.append(gbox);
+  }
+}
+
+// Artifacts tab (#107): list every artifact with size/type; preview text (and
+// HTML, as TEXT — never innerHTML) up to the server cap; download anything.
+function artifactURL(id, name, download) {
+  const seg = String(name).split("/").map(encodeURIComponent).join("/");
+  return "/api/v1/cycles/" + encodeURIComponent(id) + "/" +
+    (download ? "download/" : "artifacts/") + seg;
+}
+
+function formatBytes(n) {
+  if (!n) return "0 B";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KiB";
+  return (n / (1024 * 1024)).toFixed(1) + " MiB";
+}
+
+async function tabArtifacts(root, d) {
+  root.append(el("h3", "", "Artifacts"));
+  const list = el("ul", "artifacts");
+  const preview = el("div", "artifact-preview");
+  root.append(list, preview);
+  let data;
+  try {
+    data = await api("/api/v1/cycles/" + encodeURIComponent(d.id) + "/artifacts");
+  } catch (err) {
+    list.append(el("li", "error", String(err.message || err)));
+    return;
+  }
+  const items = data.artifacts || [];
+  if (items.length === 0) list.append(el("li", "empty", "No artifacts recorded."));
+  for (const a of items) {
+    const li = el("li", "");
+    li.append(el("span", "artifact-path", a.path));
+    li.append(el("span", "artifact-size", formatBytes(a.size)));
+    li.append(el("span", "badge", a.kind));
+    if (a.previewable) {
+      const pv = el("button", "artifact-action", "Preview");
+      pv.addEventListener("click", () => previewArtifact(d.id, a, preview));
+      li.append(pv);
+    }
+    const dl = el("button", "artifact-action", "Download");
+    dl.addEventListener("click", () => downloadArtifact(d.id, a));
+    li.append(dl);
+    list.append(li);
+  }
+}
+
+async function previewArtifact(id, a, target) {
+  target.replaceChildren(el("p", "empty", "Loading…"));
+  try {
+    const res = await apiRaw(artifactURL(id, a.path, false));
+    if (a.kind === "image") {
+      const url = URL.createObjectURL(await res.blob());
+      const img = el("img", "artifact-image");
+      img.src = url;
+      img.alt = a.path;
+      target.replaceChildren(el("div", "artifact-head", a.path), img);
+      return;
+    }
+    const text = await res.text();
+    const pre = el("pre", "artifact-text");
+    pre.textContent = text; // untrusted content is text, never innerHTML
+    target.replaceChildren(el("div", "artifact-head", a.path), pre);
+  } catch (err) {
+    target.replaceChildren(el("p", "error", String(err.message || err)));
+  }
+}
+
+async function downloadArtifact(id, a) {
+  try {
+    const res = await apiRaw(artifactURL(id, a.path, true));
+    const url = URL.createObjectURL(await res.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = String(a.path).split("/").pop();
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("download failed", err);
   }
 }
 
