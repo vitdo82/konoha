@@ -34,6 +34,9 @@
 #     fail-closed on a write error
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
+# #104: a repo may name its tenancy scope explicitly with productLine (and an
+# optional department); otherwise it maps to the konoha.yaml scope that lists it
+# in `repositories`. Scopes are narrow-only policy, not execution isolation.
 # Unknown keys or out-of-range values make `./apply.sh` fail fast.
 repos:
   - repo: ducklambda

@@ -125,7 +125,10 @@ as a stronger guarantee than they are (§40: never a silent over-claim).
 - **Boundary:** **narrow-only** *policy* tenancy (a tenant may only narrow the
   effective policy, never widen it). It is **not** execution isolation and does
   **not** introduce per-tenant GitHub App credentials — the `GH_*` contract and
-  the single-App model are unchanged (§23).
+  the single-App model are unchanged (§23). Delivered by `scopes.go` (#104): a
+  `scopes:` block in `konoha.yaml` is resolved once at load against the global
+  allowlist; an out-of-allowlist reference fails closed, and scopes share the
+  host filesystem/process space.
 - **Upgrade condition:** if [#92] adopts a container executor, tenancy graduates
   from policy scoping to **execution isolation** (per-tenant boundary), at which
   point the credential model is revisited separately.
