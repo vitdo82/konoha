@@ -639,9 +639,10 @@ Endpoints:
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/v1/status` | `{version, readOnly, decisions, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
+| `GET /api/v1/status` | `{version, readOnly, decisions, queue, stream, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
 | `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) **and** the grouped `columns` |
 | `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, the Diff/Validation/Metadata projections, and the open `gate` identity |
+| `GET /api/v1/cycles/{id}/stream` | **live SSE** (#110): condition transitions (+ `?watch=1` for a bounded agent command/output tail); resumable via `Last-Event-ID` |
 | `GET /api/v1/cycles/{id}/artifacts` | artifact list with `{path, size, contentType, kind, previewable}` |
 | `GET /api/v1/cycles/{id}/artifacts/{name}` | **preview** (inline): text/HTML as `text/plain`, images as images; binary/oversize → 415 |
 | `GET /api/v1/cycles/{id}/download/{name}` | **download** any artifact (`Content-Disposition: attachment`, correct content type) |
@@ -770,6 +771,32 @@ there is no silent replay of external effects**:
   `NOOP`, never a second mutation (§24).
 - **DryRun (§42):** with the repo's `dryRun` set, retry/cancel render disabled
   and return a `PREVIEW` with **no mutation**.
+
+### Live progress stream (#110)
+
+`GET /api/v1/cycles/{id}/stream` is a read-only **server-sent events** stream so
+the console can show progress between §6 transitions without polling. Same bearer
+auth as every other route; it never mutates anything and it is not a second
+source of truth — the events are projections of the durable status/evidence
+records.
+
+- **Condition transitions** are always streamed: a `state` event per §6 state
+  change and a `condition` event per new ordered condition (#84). A terminal
+  cycle ends with an `end` event and the stream closes.
+- **Watch mode** (`?watch=1`) additionally tails the cycle's agent
+  command/output activity as `output` events, read from the recorded (redacted)
+  agent stdout artifact — so it is bounded and never bypasses the §23/§27
+  redaction layer. The tail is capped (`streamOutputCap`, 64 KiB) so a huge agent
+  log can never grow console memory; the full artifact stays in the evidence
+  store. The source is a seam (`consoleStreamSource`), so a redaction-aware live
+  environment tee can feed the same stream without changing the wire.
+- **Resumable:** every event carries a monotonic `id`; a reconnect sends
+  `Last-Event-ID` (or `?lastEventId=`) and the server replays only the buffered
+  events after that cursor — no duplicates. A client that falls behind is sent a
+  `reset` event and reconnects to resume.
+- **Bounds:** buffered output is capped by bytes and the replay buffer by event
+  count; heartbeats (`: ping`) keep idle connections alive; a
+  `PENDING_APPROVAL`/gate wait stays open (only true §6 terminal states close).
 
 ## Debug
 
