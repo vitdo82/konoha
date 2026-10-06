@@ -352,7 +352,7 @@ func AnalyzeIssue(ctx context.Context, in IssueInput) (IssueAnalysis, error) {
 	if err != nil {
 		return IssueAnalysis{}, err
 	}
-	cmd, _, err := agentCommand(ctx, prompt, model, in.Lifecycle.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, model, in.Lifecycle.Harness, in.RepoPath, EffectiveLimits(in.Lifecycle))
 	if err != nil {
 		return IssueAnalysis{}, err
 	}

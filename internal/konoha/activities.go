@@ -240,6 +240,7 @@ type ReviewResult struct {
 	Attempt   int            `json:"attempt,omitempty"`  // #95 Temporal activity attempt provenance
 	Evidence  *AgentEvidence `json:"evidence,omitempty"` // #83 raw prompt/streams (redacted on write)
 	Usage     HarnessUsage   `json:"usage,omitempty"`    // #87 best-effort tokens/cost (zero = not reported)
+	Limits    *LimitEvidence `json:"limits,omitempty"`   // #102 applied ceilings + enforcement status (evidence only)
 }
 
 // FetchDiff pulls the PR diff via the gh CLI.
@@ -273,13 +274,17 @@ CONCLUDE: one-line verdict sentence
 DIFF:
 %s`, in.PrNum, in.Owner, in.Repo, diff)
 
-	cmd, caps, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath)
+	lim := EffectiveLimits(in.Lifecycle)
+	cmd, caps, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath, lim)
 	if err != nil {
 		return ReviewResult{}, err
 	}
-	out, stderr, err := runCapture(cmd)
+	out, stderr, limEv, err := runCaptureWithLimits(cmd, lim)
 	combined := out + stderr
 	if err != nil {
+		if limEv != nil && limEv.Crossed {
+			return ReviewResult{}, fmt.Errorf("opencode run: host limit exceeded (%s): %s: %w", limEv.CrossedReason, Redact(strings.TrimSpace(combined)), err)
+		}
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(combined)), err)
 	}
 
@@ -289,7 +294,7 @@ DIFF:
 	return ReviewResult{Verdict: verdict, Summary: summary, PRNumber: in.PrNum,
 		Blocking: blocking, Nits: nits, Attempt: activityAttempt(ctx),
 		Evidence: &AgentEvidence{Prompt: prompt, Stdout: out, Stderr: stderr, Provisioning: caps},
-		Usage:    parseHarnessUsage(combined)}, nil
+		Usage:    parseHarnessUsage(combined), Limits: limEv}, nil
 }
 
 // selfReviewError reports whether gh refused a formal review because the App

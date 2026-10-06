@@ -111,7 +111,7 @@ func TestStdinFileKeepsPromptOutOfArgv(t *testing.T) {
 	}
 
 	const secret = "PROMPT-MUST-NOT-APPEAR-IN-ARGV"
-	cmd, _, err := agentCommand(context.Background(), secret, "provider/model", "generic", repoPath)
+	cmd, _, err := agentCommand(context.Background(), secret, "provider/model", "generic", repoPath, LimitsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ func TestGenericHarnessRunsFakeBinary(t *testing.T) {
 		ModelFlag:  "--model",
 	}
 
-	cmd, _, err := agentCommand(context.Background(), "PROMPT", "provider/model", "generic", stubDir)
+	cmd, _, err := agentCommand(context.Background(), "PROMPT", "provider/model", "generic", stubDir, LimitsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,10 +578,10 @@ func TestHarnessResolveModel(t *testing.T) {
 }
 
 func TestAgentCommandRejectsUnknownModelAndHarness(t *testing.T) {
-	if _, _, err := agentCommand(context.Background(), "p", "bad", "opencode", t.TempDir()); err == nil {
+	if _, _, err := agentCommand(context.Background(), "p", "bad", "opencode", t.TempDir(), LimitsConfig{}); err == nil {
 		t.Fatal("unknown model must be rejected before exec")
 	}
-	if _, _, err := agentCommand(context.Background(), "p", "provider/model", "nope", t.TempDir()); err == nil {
+	if _, _, err := agentCommand(context.Background(), "p", "provider/model", "nope", t.TempDir(), LimitsConfig{}); err == nil {
 		t.Fatal("unknown harness must be rejected before exec")
 	}
 }

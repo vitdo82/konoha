@@ -59,6 +59,7 @@ type AppConfig struct {
 	Worker   WorkerConfig         `yaml:"worker"`
 	Evidence EvidenceConfig       `yaml:"evidence"`
 	Harness  GenericHarnessConfig `yaml:"harness"`
+	Limits   LimitsConfig         `yaml:"limits"` // #102 global host resource ceilings (per-repo lifecycle.limits overrides)
 	Defaults DefaultsConfig       `yaml:"defaults"`
 }
 
@@ -341,6 +342,14 @@ func workerMaxConcurrentActivities() int {
 
 func (c AppConfig) validate() error {
 	if err := c.Evidence.validate(); err != nil {
+		return err
+	}
+	// #102: invalid ceilings fail fast; a wall-clock ceiling must not exceed the
+	// agent activity window it complements.
+	if err := c.Limits.validate("limits"); err != nil {
+		return err
+	}
+	if err := c.Limits.validateActivityWindow("limits", c.Worker.devWindow()); err != nil {
 		return err
 	}
 	if c.Worker.MaxConcurrentActivities < 1 {

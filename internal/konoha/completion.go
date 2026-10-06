@@ -51,24 +51,25 @@ func validCompletionRecommendation(r string) bool {
 // implementation/test/review artifacts — never the developer's or reviewer's
 // internal reasoning. All issue-derived text is untrusted data (§27).
 type CompletionRequest struct {
-	Owner              string   `json:"owner"`
-	Repo               string   `json:"repo"`
-	IssueNum           int      `json:"issue"`
-	PRNumber           int      `json:"pr"`
-	RepoPath           string   `json:"repoPath"`
-	Model              string   `json:"model,omitempty"`   // agent model for this repo (§4)
-	Harness            string   `json:"harness,omitempty"` // §85 harness by name; "" = process default
-	Title              string   `json:"title"`
-	Body               string   `json:"body"`
-	Spec               string   `json:"spec"`
-	Requirements       []string `json:"requirements"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria"`
-	Constraints        []string `json:"constraints"`
-	Assumptions        []string `json:"assumptions"`
-	ReviewSummary      string   `json:"reviewSummary"`    // reviewer verdict + findings (observed)
-	ReviewVerdict      string   `json:"reviewVerdict"`    // APPROVE | REQUEST_CHANGES
-	Diff               string   `json:"diff"`             // PR diff (observed artifact)
-	ValidationOutput   string   `json:"validationOutput"` // §26 tests/results (observed artifact)
+	Owner              string        `json:"owner"`
+	Repo               string        `json:"repo"`
+	IssueNum           int           `json:"issue"`
+	PRNumber           int           `json:"pr"`
+	RepoPath           string        `json:"repoPath"`
+	Model              string        `json:"model,omitempty"`   // agent model for this repo (§4)
+	Harness            string        `json:"harness,omitempty"` // §85 harness by name; "" = process default
+	Title              string        `json:"title"`
+	Body               string        `json:"body"`
+	Spec               string        `json:"spec"`
+	Requirements       []string      `json:"requirements"`
+	AcceptanceCriteria []string      `json:"acceptanceCriteria"`
+	Constraints        []string      `json:"constraints"`
+	Assumptions        []string      `json:"assumptions"`
+	ReviewSummary      string        `json:"reviewSummary"`    // reviewer verdict + findings (observed)
+	ReviewVerdict      string        `json:"reviewVerdict"`    // APPROVE | REQUEST_CHANGES
+	Diff               string        `json:"diff"`             // PR diff (observed artifact)
+	ValidationOutput   string        `json:"validationOutput"` // §26 tests/results (observed artifact)
+	Limits             *LimitsConfig `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
 }
 
 // completionSystem is the authoritative completion-agent instruction block
@@ -206,7 +207,7 @@ func RunCompletion(ctx context.Context, in CompletionRequest) (CompletionResult,
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := completionPrompt(in)
 
-	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits))
 	if err != nil {
 		return CompletionResult{}, err
 	}

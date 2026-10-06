@@ -155,7 +155,7 @@ func EstimateIssue(ctx context.Context, in IssueInput, a IssueAnalysis) (Estimat
 	if err != nil {
 		return EstimateResult{}, err
 	}
-	cmd, _, err := agentCommand(ctx, prompt, model, in.Lifecycle.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, model, in.Lifecycle.Harness, in.RepoPath, EffectiveLimits(in.Lifecycle))
 	if err != nil {
 		return EstimateResult{}, err
 	}

@@ -231,6 +231,10 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// #87: best-effort agent usage aggregated across the cycle's agent runs
 	// (develop/repair/review; zero when no harness reported any).
 	var usage HarnessUsage
+	// #102: latest observed host-limit enforcement evidence (from a develop/
+	// repair/review result). Terminals default to the effective configured
+	// ceilings so outcome.json always records applied+status (never a silent gap).
+	var limitsEv *LimitEvidence
 
 	// #93: worktree teardown is owned by the workflow, not the activity, so it
 	// runs on EVERY exit path — success, failure, timeout, and cancellation. The
@@ -285,6 +289,16 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		out.VerificationMutated = out.VerificationMutated || verificationMutated
 		if out.EvidenceError == "" {
 			out.EvidenceError = evidenceErr
+		}
+		// #102: record the applied ceilings + enforcement status. A result that
+		// observed a crossed ceiling wins; otherwise the effective configured
+		// limits are recorded (evidence only, never state-changing).
+		if out.Limits == nil {
+			if limitsEv != nil {
+				out.Limits = limitsEv
+			} else {
+				out.Limits = limitsEvidence(EffectiveLimits(in.Lifecycle))
+			}
 		}
 		// §98: record the resolved catalog + budget crossings as evidence. A
 		// crossing NEVER rewrites the verdict/state or shortens a timeout — it is
@@ -492,10 +506,14 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// §26: structured gates / legacy command resolved from lifecycle.
 		Validation:    ValidationGates(in.Lifecycle),
 		ValidationCmd: ValidationCommand(in.Lifecycle),
+		Limits:        in.Lifecycle.Limits, // #102
 	}).Get(ctx, &dev); err != nil {
 		return err
 	}
 	lastAttempts++
+	if dev.Limits != nil {
+		limitsEv = dev.Limits
+	}
 	agentOut, verifOut = agentOutcomeOf(dev), verificationOutcomeOf(dev)
 	verificationMutated = dev.VerificationMutated // #94
 	status.recordAgent(agentOut, agentConditionReason(dev), dev.BlockedReason, workflow.Now(ctx))
@@ -590,10 +608,14 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			AcceptanceCriteria: a.AcceptanceCriteria,
 			Constraints:        a.Constraints,
 			Assumptions:        a.Assumptions,
+			Limits:             in.Lifecycle.Limits, // #102
 		}).Get(agentCtx, &rev); err != nil {
 			return err
 		}
 		lastReviewRounds++
+		if rev.Limits != nil {
+			limitsEv = rev.Limits
+		}
 		usage.add(rev.Usage) // #87
 		e := evidenceOf(rev.Evidence)
 		writeEvidence(EvidenceRequest{Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
@@ -650,6 +672,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 				// §26: structured gates / legacy command resolved from lifecycle.
 				Validation:    ValidationGates(in.Lifecycle),
 				ValidationCmd: ValidationCommand(in.Lifecycle),
+				Limits:        in.Lifecycle.Limits, // #102
 			},
 			Review:         rev,
 			PreviousCommit: reviewedSHA, // the SHA the reviewer actually saw (§15)
@@ -658,6 +681,9 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		}
 		writeAgentEvidence(writeEvidence, repaired.Evidence, repaired, repaired.ValidationOutput)
 		usage.add(repaired.Usage) // #87
+		if repaired.Limits != nil {
+			limitsEv = repaired.Limits
+		}
 		agentOut, verifOut = agentOutcomeOf(repaired), verificationOutcomeOf(repaired)
 		verificationMutated = repaired.VerificationMutated // #94
 		status.recordAgent(agentOut, agentConditionReason(repaired), repaired.BlockedReason, workflow.Now(ctx))
@@ -1126,5 +1152,6 @@ func failedChildOutcome(in IssueInput) CycleOutcome {
 		AgentOutcome:        agentOutcomeFailed,
 		VerificationOutcome: verificationSkipped,
 		EscalationReason:    reasonAgentFailure,
+		Limits:              limitsEvidence(EffectiveLimits(in.Lifecycle)), // #102: applied ceilings + status
 	}
 }

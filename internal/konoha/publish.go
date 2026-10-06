@@ -31,6 +31,7 @@ type PublishInput struct {
 	ValidationCmd  string           `json:"validationCmd"`        // repo validation command (§26); "" = none
 	Validation     []ValidationGate `json:"validation,omitempty"` // §26 structured argv gates; mutually exclusive with ValidationCmd
 	CycleID        string           `json:"cycleId,omitempty"`    // evidence store scope for per-gate output (§26)
+	Limits         *LimitsConfig    `json:"limits,omitempty"`     // #102 host resource ceilings for gate processes (nil = global)
 	AllowOnFailure bool             `json:"allowOnFailure"`       // explicit policy permission to publish despite failing validation (§26)
 	DryRun         bool             `json:"dryRun,omitempty"`
 }
@@ -67,9 +68,8 @@ func validateRepo(in PublishInput) (ok, skipped bool, output string, err error) 
 	if cmd == "" {
 		return false, true, "", nil
 	}
-	c := exec.Command("sh", "-c", cmd)
-	c.Dir = in.RepoPath
-	c.Env = cmdEnv(in.RepoPath) // §23: never expose GH_* to repo validation
+	// #102: best-effort host ceilings on the legacy shell-string path too.
+	c, _ := enforceCommand(context.Background(), limitsForOverride(in.Limits), "sh", []string{"-c", cmd}, in.RepoPath, cmdEnv(in.RepoPath))
 	out, runErr := c.CombinedOutput()
 	return runErr == nil, false, string(out), nil
 }
@@ -167,7 +167,7 @@ func (r gateRun) status() string {
 func runGates(in PublishInput) []gateRun {
 	results := make([]gateRun, 0, len(in.Validation))
 	for _, g := range in.Validation {
-		r := runGate(in.RepoPath, g)
+		r := runGate(in, g)
 		persistGateEvidence(in.CycleID, r, in.DryRun)
 		results = append(results, r)
 	}
@@ -189,13 +189,15 @@ func gatesPassed(results []gateRun) bool {
 }
 
 // runGate executes one structured-argv gate. argv is used verbatim (never a
-// shell), dir is relative to repoPath and must not escape it.
-func runGate(repoPath string, g ValidationGate) gateRun {
+// shell), dir is relative to repoPath and must not escape it. #102 host ceilings
+// are applied best-effort to the gate process.
+func runGate(in PublishInput, g ValidationGate) gateRun {
 	r := gateRun{ID: g.ID, Mandatory: g.isMandatory()}
 	if len(g.Argv) == 0 {
 		r.Err = "empty argv"
 		return r
 	}
+	repoPath := in.RepoPath
 	dir := repoPath
 	if d := strings.TrimSpace(g.Dir); d != "" {
 		dir = filepath.Join(repoPath, d)
@@ -208,9 +210,7 @@ func runGate(repoPath string, g ValidationGate) gateRun {
 
 	ctx, cancel := context.WithTimeout(context.Background(), g.timeout())
 	defer cancel()
-	c := exec.CommandContext(ctx, g.Argv[0], g.Argv[1:]...)
-	c.Dir = dir
-	c.Env = cmdEnv(dir)
+	c, _ := enforceCommand(ctx, limitsForOverride(in.Limits), g.Argv[0], g.Argv[1:], dir, cmdEnv(dir))
 	stdout, stderr, err := runCapture(c)
 	r.Stdout, r.Stderr = stdout, stderr
 	if err == nil {
