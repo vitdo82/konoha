@@ -2,6 +2,7 @@ package konoha
 
 import (
 	"encoding/json"
+	"math"
 	"path"
 	"sort"
 	"strings"
@@ -360,4 +361,168 @@ func (d *consoleData) loadValidationView(id string, out VerificationOutcome) *Va
 		return nil
 	}
 	return v
+}
+
+// MetricView is one metrics-dashboard tile (#112). Value is nil when no data has
+// been observed — the dashboard renders "no data", NEVER a fabricated zero
+// (the §87 rule: a missing number is better than an invented one).
+type MetricView struct {
+	Key   string   `json:"key"`
+	Label string   `json:"label"`
+	Value *float64 `json:"value"` // null = no data
+	Unit  string   `json:"unit,omitempty"`
+}
+
+// MetricsView is the read-only console metrics dashboard (#112): the existing
+// §39 rate gauges plus throughput and #87 cost/token figures. It is a PURE
+// projection over a registry snapshot + the recorded cycle outcomes — no new
+// instrumentation and nothing here mutates state.
+type MetricsView struct {
+	Metrics    []MetricView `json:"metrics"`
+	Completed  int          `json:"completed"`
+	WindowDays int          `json:"windowDays,omitempty"`
+}
+
+// floatPtr is a small helper so an "optional value" can be built inline.
+func floatPtr(v float64) *float64 { return &v }
+
+// buildMetricsView projects the dashboard from a §39 registry snapshot (may be
+// nil/empty, e.g. a standalone console with no worker) and the evidence
+// outcomes. Registry gauges/counters take precedence when present; otherwise the
+// same figures are derived from the durable outcomes so the view still works
+// offline. Every figure degrades to "no data" (nil) rather than zero.
+func buildMetricsView(snapshot map[string]float64, outcomes []CycleOutcome) MetricsView {
+	var (
+		closed, autonomous                  int
+		small, large, rounds, disagreements int
+		humanEsc                            int
+	)
+	var times []time.Time
+	var evTokensIn, evTokensOut int64
+	var evCost float64
+	for _, o := range outcomes {
+		switch o.Route {
+		case stateSmall:
+			small++
+		case stateLarge:
+			large++
+		}
+		rounds += o.ReviewRounds
+		disagreements += o.Disagreements
+		if o.HumanRequired || o.EscalationReason != "" {
+			humanEsc++
+		}
+		if o.TerminalState == stateClosed {
+			closed++
+			if o.AutonomousClose {
+				autonomous++
+			}
+			if t := latestConditionTime(o.Conditions); !t.IsZero() {
+				times = append(times, t)
+			}
+		}
+		if o.Usage.TokensIn > 0 {
+			evTokensIn += o.Usage.TokensIn
+		}
+		if o.Usage.TokensOut > 0 {
+			evTokensOut += o.Usage.TokensOut
+		}
+		if o.Usage.CostUSD > 0 {
+			evCost += o.Usage.CostUSD
+		}
+	}
+
+	// registryValue prefers the live registry figure when the name was set, else
+	// the evidence-derived fallback (nil = no data).
+	registryValue := func(name string, fallback *float64) *float64 {
+		if v, ok := snapshot[name]; ok {
+			return floatPtr(v)
+		}
+		return fallback
+	}
+	ratio := func(num, denom int) *float64 {
+		if denom <= 0 {
+			return nil
+		}
+		return floatPtr(float64(num) / float64(denom))
+	}
+
+	completed := closed
+	if v, ok := snapshot[mCyclesCompleted]; ok {
+		completed = int(v)
+	}
+	throughput, windowDays := throughputPerDay(times)
+
+	// #87 counters: registry whenever reported, else the summed evidence usage.
+	counter := func(name string, evidence float64) (float64, bool) {
+		if v, ok := snapshot[name]; ok {
+			return v, true
+		}
+		if evidence > 0 {
+			return evidence, true
+		}
+		return 0, false
+	}
+	tokensIn, tokensInOK := counter(mAgentTokensIn, float64(evTokensIn))
+	tokensOut, tokensOutOK := counter(mAgentTokensOut, float64(evTokensOut))
+	cost, costOK := counter(mAgentCostUSD, evCost)
+	// A per-issue figure exists only when the total was reported AND something
+	// completed. A total of zero with completes is "no data", never a 0 tile.
+	perIssue := func(total float64, ok bool) *float64 {
+		if !ok || completed <= 0 {
+			return nil
+		}
+		return floatPtr(total / float64(completed))
+	}
+
+	mv := MetricsView{Completed: completed, WindowDays: windowDays}
+	add := func(key, label, unit string, v *float64) {
+		mv.Metrics = append(mv.Metrics, MetricView{Key: key, Label: label, Value: v, Unit: unit})
+	}
+	add(mAutonomousRate, "Autonomous completion rate", "ratio",
+		registryValue(mAutonomousRate, ratio(autonomous, closed)))
+	add(mDidHumanEscalationRate, "Human escalation rate", "ratio",
+		registryValue(mDidHumanEscalationRate, ratio(humanEsc, len(outcomes))))
+	add(mSplitRate, "Split rate", "ratio",
+		registryValue(mSplitRate, ratio(large, small+large)))
+	add(mReviewDisagreementRate, "Review disagreement rate", "ratio",
+		registryValue(mReviewDisagreementRate, ratio(disagreements, rounds)))
+	add("throughput_per_day", "Throughput", "cycles/day", throughput)
+	add(mCostPerCompletedIssue, "Cost per completed issue", "usd", perIssue(cost, costOK))
+	add("tokens_in_per_completed_issue", "Tokens in per completed issue", "tokens", perIssue(tokensIn, tokensInOK))
+	add("tokens_out_per_completed_issue", "Tokens out per completed issue", "tokens", perIssue(tokensOut, tokensOutOK))
+	add(mAgentTokensIn, "Total tokens in", "tokens", optionalValue(tokensIn, tokensInOK))
+	add(mAgentTokensOut, "Total tokens out", "tokens", optionalValue(tokensOut, tokensOutOK))
+	add(mAgentCostUSD, "Total agent cost", "usd", optionalValue(cost, costOK))
+	return mv
+}
+
+// optionalValue returns a pointer only when the figure was reported.
+func optionalValue(v float64, ok bool) *float64 {
+	if !ok {
+		return nil
+	}
+	return floatPtr(v)
+}
+
+// throughputPerDay is the completed-cycles/day average over the observed window
+// (min one day), and the window in whole days. No timestamps → no data.
+func throughputPerDay(times []time.Time) (*float64, int) {
+	if len(times) == 0 {
+		return nil, 0
+	}
+	earliest, latest := times[0], times[0]
+	for _, t := range times[1:] {
+		if t.Before(earliest) {
+			earliest = t
+		}
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	days := int(math.Ceil(latest.Sub(earliest).Hours() / 24))
+	if days < 1 {
+		days = 1
+	}
+	return floatPtr(float64(len(times)) / float64(days)), days
 }

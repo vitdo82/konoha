@@ -570,6 +570,114 @@ func TestConsoleDetailProjections(t *testing.T) {
 	}
 }
 
+// #112 AC1/AC2: the metrics dashboard projection renders the §39 gauges,
+// throughput, and #87 cost/tokens from evidence; absent data is nil ("no data"),
+// never a fabricated zero, and a registry snapshot takes precedence when present.
+func TestBuildMetricsView(t *testing.T) {
+	find := func(mv MetricsView, key string) *MetricView {
+		for i := range mv.Metrics {
+			if mv.Metrics[i].Key == key {
+				return &mv.Metrics[i]
+			}
+		}
+		t.Fatalf("metric %q missing from %+v", key, mv.Metrics)
+		return nil
+	}
+	now := time.Now().UTC()
+	outcomes := []CycleOutcome{
+		{TerminalState: stateClosed, AutonomousClose: true, Route: stateSmall,
+			ReviewRounds: 2, Disagreements: 1,
+			Conditions: []Condition{{At: now.Add(-48 * time.Hour)}}},
+		{TerminalState: stateClosed, Route: stateLarge, ReviewRounds: 2,
+			Usage:      HarnessUsage{TokensIn: 100, TokensOut: 50, CostUSD: 2},
+			Conditions: []Condition{{At: now}}},
+		{TerminalState: stateBlocked, HumanRequired: true},
+	}
+	mv := buildMetricsView(nil, outcomes)
+	if mv.Completed != 2 || mv.WindowDays != 2 {
+		t.Fatalf("completed=%d windowDays=%d, want 2/2", mv.Completed, mv.WindowDays)
+	}
+	check := func(key string, want float64) {
+		v := find(mv, key).Value
+		if v == nil || *v != want {
+			t.Fatalf("%s = %v, want %v", key, v, want)
+		}
+	}
+	check(mAutonomousRate, 0.5)          // 1 autonomous / 2 closed
+	check(mSplitRate, 0.5)               // 1 large / 2 routed
+	check(mReviewDisagreementRate, 0.25) // 1 / 4 rounds
+	check("throughput_per_day", 1)       // 2 closed over 2 days
+	check("tokens_in_per_completed_issue", 50)
+	check("tokens_out_per_completed_issue", 25)
+	check(mCostPerCompletedIssue, 1)
+	check(mAgentCostUSD, 2)
+	// human_escalation_rate = 1 / 3 outcomes
+	check(mDidHumanEscalationRate, 1.0/3.0)
+
+	// AC2: no reports → no data (nil), never zero.
+	empty := buildMetricsView(nil, nil)
+	for _, key := range []string{mCostPerCompletedIssue, mAgentCostUSD, mAgentTokensIn, "throughput_per_day"} {
+		if v := find(empty, key).Value; v != nil {
+			t.Fatalf("%s = %v, want nil (no data)", key, *v)
+		}
+	}
+
+	// The registry snapshot takes precedence for the §39 gauges + #87 counters.
+	snap := map[string]float64{mAutonomousRate: 0.9, mCyclesCompleted: 4, mAgentCostUSD: 10}
+	mv2 := buildMetricsView(snap, nil)
+	if v := find(mv2, mAutonomousRate).Value; v == nil || *v != 0.9 {
+		t.Fatalf("autonomous rate = %v, want the registry value 0.9", v)
+	}
+	if v := find(mv2, mCostPerCompletedIssue).Value; v == nil || *v != 2.5 {
+		t.Fatalf("cost/issue = %v, want 10/4 = 2.5", v)
+	}
+}
+
+// #112 AC3: the dashboard endpoint is read-only and renders over an evidence
+// store with no Temporal server.
+func TestConsoleMetricsEndpoint(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, o := range []CycleOutcome{
+		{WorkflowID: "duck-issue-1", TerminalState: stateClosed, AutonomousClose: true,
+			Usage: HarnessUsage{TokensIn: 10, CostUSD: 1}, Conditions: []Condition{{At: now}}},
+		{WorkflowID: "duck-issue-2", TerminalState: stateClosed, Conditions: []Condition{{At: now}}},
+	} {
+		b, _ := json.Marshal(o)
+		if err := store.Write(o.WorkflowID, evidenceOutcome, string(b), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv, err := newConsoleServer(ConsoleConfig{Addr: "127.0.0.1:0", Token: "secret-token"}, &consoleData{store: store}, "test-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+
+	res := getURL(t, hs.URL+"/api/v1/metrics", "secret-token", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("metrics = %d, want 200", res.StatusCode)
+	}
+	var mv MetricsView
+	if err := json.NewDecoder(res.Body).Decode(&mv); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if mv.Completed != 2 || len(mv.Metrics) == 0 {
+		t.Fatalf("metrics = %+v, want 2 completed + metrics", mv)
+	}
+	// Unauthenticated is rejected like every other data route.
+	res = getURL(t, hs.URL+"/api/v1/metrics", "", "")
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated metrics = %d, want 401", res.StatusCode)
+	}
+	res.Body.Close()
+}
+
 func TestParseCycleID(t *testing.T) {
 	repo, issue, ok := parseCycleID("my-repo-issue-42")
 	if !ok || repo != "my-repo" || issue != 42 {

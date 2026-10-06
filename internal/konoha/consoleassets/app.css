@@ -194,3 +194,24 @@ body {
 .decision-btn.deny { border-color: var(--bad); }
 .decision-status { min-height: 1em; color: var(--muted); }
 .muted { color: var(--muted); }
+
+/* Metrics dashboard (#112). Spans the layout so it reads as an overview. */
+#metrics-panel { grid-column: 1 / -1; }
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  background: #12151b;
+}
+.metric-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.metric-value { font-size: 18px; font-weight: 700; }
+.metric-value.nodata { color: var(--muted); font-size: 13px; font-weight: 400; }
+.metric-unit { color: var(--muted); font-size: 11px; }

@@ -310,6 +310,9 @@ func newConsoleServer(cfg ConsoleConfig, data *consoleData, version string) (*Co
 // unsupported method a 405 without a handler.
 func (s *ConsoleServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/status", s.handleStatus)
+	// #112: read-only metrics dashboard (existing §39 gauges + throughput +
+	// #87 cost/tokens), projected from the registry snapshot + evidence.
+	s.mux.HandleFunc("GET /api/v1/metrics", s.requireAuth(s.handleMetrics))
 	s.mux.HandleFunc("GET /api/v1/cycles", s.requireAuth(s.handleCycles))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}", s.requireAuth(s.handleCycleDetail))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts", s.requireAuth(s.handleArtifacts))
@@ -374,6 +377,16 @@ func (s *ConsoleServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		CSRFHeader: consoleCSRFHeader,
 		CSRFToken:  s.csrf,
 	})
+}
+
+// handleMetrics returns the #112 read-only metrics dashboard: the existing §39
+// rate gauges plus throughput and #87 cost/token figures. Never a mutation.
+func (s *ConsoleServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	if s.data == nil || s.data.store == nil {
+		writeConsoleJSON(w, http.StatusOK, buildMetricsView(nil, nil))
+		return
+	}
+	writeConsoleJSON(w, http.StatusOK, s.data.metricsView())
 }
 
 // handleCycles returns the board (finished + running best-effort).
@@ -659,6 +672,29 @@ func (d *consoleData) listCycles(ctx context.Context) ([]CycleSummary, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// metricsView builds the #112 dashboard from the in-process §39 registry
+// snapshot (may be empty for a standalone console) plus the recorded outcomes.
+// Pure projection; read-only.
+func (d *consoleData) metricsView() MetricsView {
+	return buildMetricsView(metricsSnapshot(), d.listOutcomes())
+}
+
+// listOutcomes reads every finished cycle's outcome.json (best-effort: a bad or
+// absent record is skipped, never fatal).
+func (d *consoleData) listOutcomes() []CycleOutcome {
+	ids, err := d.store.listCycleIDs()
+	if err != nil {
+		return nil
+	}
+	out := make([]CycleOutcome, 0, len(ids))
+	for _, id := range ids {
+		if o, ok, err := d.store.loadOutcomeOptional(id); err == nil && ok {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // cycleDetail returns a finished cycle (evidence) or a running one (Temporal

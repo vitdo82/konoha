@@ -71,7 +71,44 @@ async function bootstrap() {
   document.getElementById("meta").textContent =
     status.name + " " + status.version + (status.readOnly ? " · read-only" : "");
   if (state.queue) document.getElementById("queue-panel").hidden = false;
-  await Promise.all([refreshBoard(), refreshQueue()]);
+  await Promise.all([refreshMetrics(), refreshBoard(), refreshQueue()]);
+}
+
+// Metrics dashboard (#112): the existing §39 rate gauges plus throughput and #87
+// cost/token figures, projected server-side. A null value is "no data" — it is
+// never shown as zero (the server never fabricates one).
+async function refreshMetrics() {
+  const root = document.getElementById("metrics");
+  if (!root) return;
+  root.replaceChildren();
+  let data;
+  try {
+    data = await api("/api/v1/metrics");
+  } catch (err) {
+    root.append(el("p", "error", String(err.message || err)));
+    return;
+  }
+  const grid = el("div", "metric-grid");
+  for (const m of data.metrics || []) grid.append(metricCard(m));
+  root.append(grid);
+}
+
+function metricCard(m) {
+  const box = el("div", "metric");
+  box.append(el("span", "metric-label", m.label || m.key));
+  const has = m.value !== null && m.value !== undefined;
+  box.append(el("span", "metric-value" + (has ? "" : " nodata"), has ? formatMetric(m) : "no data"));
+  if (present(m.unit)) {
+    box.append(el("span", "metric-unit", has ? m.unit : ""));
+  }
+  return box;
+}
+
+function formatMetric(m) {
+  const v = Number(m.value);
+  if (m.unit === "ratio") return (v * 100).toFixed(1) + "%";
+  if (m.unit === "usd") return "$" + v.toFixed(2);
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
 // Needs-attention queue (#109): everything waiting on a human. retry/cancel go
