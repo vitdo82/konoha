@@ -10,7 +10,7 @@
 // outcomes are separate fields. A conflict (agent SUCCESS while verification
 // FAILED/ERROR) is highlighted and never collapsed into the agent's prose.
 
-const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", selected: "", tab: "result", detail: null };
+const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, selected: "", tab: "result", detail: null };
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -47,10 +47,26 @@ async function apiRaw(path) {
   return res;
 }
 
+// apiPost writes a mutation (only used by the #108 decision panel). The CSRF
+// header is required for the browser; the server also checks the Origin.
+async function apiPost(path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (state.csrf) headers[state.csrfHeader] = state.csrf;
+  const res = await fetch(path, {
+    method: "POST", headers, credentials: "same-origin", body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = { error: text }; }
+  if (!res.ok) throw new Error((data && data.error) || (path + " -> " + res.status));
+  return data;
+}
+
 async function bootstrap() {
   const status = await api("/api/v1/status");
   state.csrf = status.csrfToken;
   state.csrfHeader = status.csrfHeader || state.csrfHeader;
+  state.decisions = !!status.decisions;
   document.getElementById("meta").textContent =
     status.name + " " + status.version + (status.readOnly ? " · read-only" : "");
   await refreshBoard();
@@ -201,6 +217,54 @@ function tabResult(root, d) {
     }
   }
   root.append(el("h3", "", "Conditions (in order)"), list);
+  decisionPanel(root, d);
+}
+
+// Decision panel (#108): approve / request-changes / deny. It is shown ONLY for
+// an open gate bound to the exact attempt+SHA the detail view rendered, so a
+// stale submission cannot be made from a superseded view. Nothing here is a
+// second source of truth — the server writes the §18 decision channel.
+function decisionPanel(root, d) {
+  if (!state.decisions || !d.gate || !d.gate.open) return;
+  const gate = d.gate;
+  const box = el("section", "decisions");
+  box.append(el("h3", "", "Decision"));
+  box.append(el("p", "muted",
+    "Gate bound to attempt " + gate.attempt + " @ " + String(gate.sha || "").slice(0, 12)));
+
+  const feedback = document.createElement("textarea");
+  feedback.rows = 3;
+  feedback.placeholder = "Required for request changes";
+  box.append(feedback);
+
+  const status = el("p", "decision-status", "");
+  const submit = async (action) => {
+    if (action === "request-changes" && !feedback.value.trim()) {
+      status.textContent = "request-changes requires feedback";
+      return;
+    }
+    status.textContent = "submitting…";
+    try {
+      await apiPost("/api/v1/cycles/" + encodeURIComponent(d.id) + "/decisions", {
+        action, attempt: gate.attempt, sha: gate.sha,
+        feedback: action === "request-changes" ? feedback.value : undefined,
+      });
+      status.textContent = "submitted";
+      await selectCycle(d.id);
+    } catch (err) {
+      status.textContent = String(err.message || err);
+    }
+  };
+  const actions = el("div", "decision-actions");
+  for (const [action, label] of [
+    ["approve", "Approve"], ["request-changes", "Request changes"], ["deny", "Deny"],
+  ]) {
+    const b = el("button", "decision-btn " + action, label);
+    b.addEventListener("click", () => submit(action));
+    actions.append(b);
+  }
+  box.append(actions, status);
+  root.append(box);
 }
 
 // Diff tab: changed files + patch, with line-anchored comment threads.

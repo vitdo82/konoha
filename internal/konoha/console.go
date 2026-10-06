@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -23,6 +24,16 @@ import (
 
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+)
+
+// Console decision sentinels (#108). The HTTP handler maps each to a status:
+// stale/superseded gate → 409, unknown cycle → 404, malformed → 400, disabled
+// console → 501; anything else is a 500.
+var (
+	errStaleGate         = errors.New("stale gate: no open gate or a superseded attempt/sha")
+	errDecisionsDisabled = errors.New("console decisions are not enabled")
+	errUnknownCycle      = errors.New("unknown cycle")
+	errBadDecision       = errors.New("invalid decision")
 )
 
 // Local review console foundation (#105). An opt-in, LOOPBACK-ONLY, read-only
@@ -165,14 +176,27 @@ type CycleDetail struct {
 	Diff            *DiffView           `json:"diff,omitempty"`
 	Validation      *ValidationView     `json:"validation,omitempty"`
 	Activations     []LineageActivation `json:"activations,omitempty"`
+	// Gate is the #108 live-gate identity, present only while a decision can be
+	// actioned (the cycle is PENDING_APPROVAL). It lets the console bind a
+	// submission to the exact attempt/SHA the human saw.
+	Gate *GateView `json:"gate,omitempty"`
+}
+
+// GateView is the open-gate identity exposed to the console UI (#108).
+type GateView struct {
+	Open    bool   `json:"open"`
+	Attempt int    `json:"attempt"`
+	SHA     string `json:"sha"`
 }
 
 // consoleStatus is the GET /api/v1/status payload: version + the per-process
-// CSRF token the browser uses on every subsequent call.
+// CSRF token the browser uses on every subsequent call. Decisions reports
+// whether the #108 mutation surface is wired.
 type consoleStatus struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	ReadOnly   bool   `json:"readOnly"`
+	Decisions  bool   `json:"decisions"`
 	CSRFHeader string `json:"csrfHeader"`
 	CSRFToken  string `json:"csrfToken"`
 }
@@ -185,13 +209,22 @@ type consoleStatusQuery func(ctx context.Context, workflowID string) (StatusQuer
 // reports whether the lookup succeeded (false = best-effort miss, never fatal).
 type consoleRunningLister func(ctx context.Context) ([]CycleSummary, bool)
 
-// consoleData backs the read-only API. The evidence store is the source of
-// truth for finished cycles; the optional Temporal seams enrich the board and
-// detail with running cycles.
+// consoleDecisionSubmitter writes one #108 decision. nil means the console was
+// built without the decision surface (decisions disabled → 501).
+type consoleDecisionSubmitter func(ctx context.Context, in DecisionRequest) (DecisionResult, error)
+
+// consoleData backs the console API. The evidence store is the source of truth
+// for finished cycles; the optional Temporal seams enrich the board and detail
+// with running cycles, and the optional decision seam writes #108 decisions.
 type consoleData struct {
 	store   *EvidenceStore
 	status  consoleStatusQuery
 	running consoleRunningLister
+	// #108: repo -> repos.yaml config (owner + §55 audit). Nil when unavailable;
+	// a nil map disables owner resolution from config (outcome/lineage still work)
+	// and leaves the audit disabled.
+	repos  map[string]RepoConfig
+	decide consoleDecisionSubmitter
 }
 
 // ConsoleServer serves the read-only API + embedded SPA. Construct via
@@ -254,6 +287,8 @@ func (s *ConsoleServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts", s.requireAuth(s.handleArtifacts))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts/{name...}", s.requireAuth(s.handleArtifactPreview))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/download/{name...}", s.requireAuth(s.handleArtifactDownload))
+	// #108: the only mutation surface — approve / request-changes / deny.
+	s.mux.HandleFunc("POST /api/v1/cycles/{id}/decisions", s.requireMutation(s.handleDecision))
 
 	sub, err := fs.Sub(consoleAssets, "consoleassets")
 	if err != nil {
@@ -290,10 +325,12 @@ func (s *ConsoleServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // handleStatus is the unauthenticated bootstrap endpoint: it issues the CSRF
 // token the browser then presents on every API call.
 func (s *ConsoleServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	decisions := s.data != nil && s.data.decide != nil
 	writeConsoleJSON(w, http.StatusOK, consoleStatus{
 		Name:       "konoha",
 		Version:    s.version,
-		ReadOnly:   true,
+		ReadOnly:   !decisions,
+		Decisions:  decisions,
 		CSRFHeader: consoleCSRFHeader,
 		CSRFToken:  s.csrf,
 	})
@@ -360,6 +397,58 @@ func (s *ConsoleServer) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if !s.authorized(r) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="konoha-console"`)
 			writeConsoleError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// handleDecision is the #108 mutation endpoint: it accepts one
+// approve / request-changes / deny decision, validates it against the LIVE gate
+// (open + current attempt/SHA), and writes it to the §18 authoritative channel.
+// It is NOT a second source of truth: the marker is the decision.
+func (s *ConsoleServer) handleDecision(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validConsoleCycleID(id) {
+		writeConsoleError(w, http.StatusBadRequest, "malformed cycle id")
+		return
+	}
+	if s.data == nil || s.data.decide == nil {
+		writeConsoleError(w, http.StatusNotImplemented, "decisions disabled")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxDecisionBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var in DecisionRequest
+	if err := dec.Decode(&in); err != nil {
+		writeConsoleError(w, http.StatusBadRequest, "malformed decision body")
+		return
+	}
+	res, err := s.data.submitDecision(r.Context(), id, in)
+	switch {
+	case err == nil:
+		writeConsoleJSON(w, http.StatusOK, res)
+	case errors.Is(err, errBadDecision):
+		writeConsoleError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, errStaleGate):
+		writeConsoleError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, errUnknownCycle):
+		writeConsoleError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, errDecisionsDisabled):
+		writeConsoleError(w, http.StatusNotImplemented, "decisions disabled")
+	default:
+		writeConsoleError(w, http.StatusInternalServerError, "decision failed")
+	}
+}
+
+// requireMutation enforces the #105 mutation auth plumbing: a CLI/worker bearer
+// token, or the browser CSRF token plus a loopback Origin. Unlike requireAuth it
+// rejects a bare CSRF token with a foreign Origin on a mutating method.
+func (s *ConsoleServer) requireMutation(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.mutationAllowed(r) {
+			writeConsoleError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		next(w, r)
@@ -483,17 +572,33 @@ func (d *consoleData) cycleDetail(ctx context.Context, id string) (CycleDetail, 
 		return CycleDetail{}, false, err
 	} else if ok {
 		arts, _ := d.store.listArtifacts(id)
-		return d.buildDetail(summaryFromOutcome(id, o), arts, &o, nil,
-			o.AgentOutcome, o.VerificationOutcome), true, nil
+		det := d.buildDetail(summaryFromOutcome(id, o), arts, &o, nil,
+			o.AgentOutcome, o.VerificationOutcome)
+		d.attachGate(ctx, id, &det)
+		return det, true, nil
 	}
 	if d.status != nil {
 		if st, ok := d.status(ctx, id); ok {
 			arts, _ := d.store.listArtifacts(id)
 			sum := CycleSummary{ID: id, State: st.State, Running: true, At: latestConditionTime(st.Conditions)}
-			return d.buildDetail(sum, arts, nil, &st, st.AgentOutcome, st.VerificationOutcome), true, nil
+			det := d.buildDetail(sum, arts, nil, &st, st.AgentOutcome, st.VerificationOutcome)
+			d.attachGate(ctx, id, &det)
+			return det, true, nil
 		}
 	}
 	return CycleDetail{}, false, nil
+}
+
+// attachGate adds the #108 live-gate identity to a detail view when the console
+// has a decision writer and a gate is currently open. Best-effort: a snapshot
+// error simply leaves the field absent.
+func (d *consoleData) attachGate(ctx context.Context, id string, det *CycleDetail) {
+	if d.decide == nil {
+		return
+	}
+	if snap, ok, err := d.gateSnapshot(ctx, id); err == nil && ok && snap.Open {
+		det.Gate = &GateView{Open: true, Attempt: snap.Attempt, SHA: snap.SHA}
+	}
 }
 
 // buildDetail assembles the detail projection shared by the finished and
@@ -603,6 +708,114 @@ func (s *EvidenceStore) loadOutcomeOptional(id string) (CycleOutcome, bool, erro
 	return o, true, nil
 }
 
+// gateSnapshot resolves the current gate identity for one cycle: the owner (from
+// repos.yaml, else the finished outcome), whether a gate is open (the running
+// status is PENDING_APPROVAL), and the live attempt + reviewed SHA (from the
+// recorded #88 lineage). ok=false when neither config nor outcome identifies the
+// owner, so the handler reports an unknown cycle.
+func (d *consoleData) gateSnapshot(ctx context.Context, id string) (GateSnapshot, bool, error) {
+	repo, issue, ok := parseCycleID(id)
+	if !ok {
+		return GateSnapshot{}, false, nil
+	}
+	snap := GateSnapshot{Repo: repo, Issue: issue}
+	if rc, ok := d.repos[repo]; ok {
+		snap.Owner = rc.Owner
+	}
+	if o, ok, err := d.store.loadOutcomeOptional(id); err != nil {
+		return GateSnapshot{}, false, err
+	} else if ok && o.Owner != "" {
+		snap.Owner = o.Owner
+	}
+	if snap.Owner == "" {
+		return GateSnapshot{}, false, nil
+	}
+	if l, err := d.store.loadLineage(snap.Owner, repo, issue, false); err == nil {
+		snap.Attempt, snap.SHA = currentAttemptSHA(l.Activations)
+	}
+	if d.status != nil {
+		if st, ok := d.status(ctx, id); ok {
+			snap.Open = st.State == statePendingApproval
+		}
+	}
+	return snap, true, nil
+}
+
+// submitDecision validates a decision against the live gate and delegates to the
+// wired writer. Owner/repo/issue/cycleId and the actor default are filled here,
+// so the browser only supplies the action + gate identity + feedback.
+func (d *consoleData) submitDecision(ctx context.Context, id string, in DecisionRequest) (DecisionResult, error) {
+	if d.decide == nil {
+		return DecisionResult{}, errDecisionsDisabled
+	}
+	snap, ok, err := d.gateSnapshot(ctx, id)
+	if err != nil {
+		return DecisionResult{}, err
+	}
+	if !ok {
+		return DecisionResult{}, errUnknownCycle
+	}
+	if !snap.Open {
+		return DecisionResult{}, fmt.Errorf("%w: cycle is not waiting at a gate", errStaleGate)
+	}
+	if in.Attempt != snap.Attempt || in.SHA != snap.SHA {
+		return DecisionResult{}, fmt.Errorf("%w: attempt %d/%s is superseded by %d/%s",
+			errStaleGate, in.Attempt, shortSHA(in.SHA), snap.Attempt, shortSHA(snap.SHA))
+	}
+	in.Owner, in.Repo, in.Issue, in.CycleID = snap.Owner, snap.Repo, snap.Issue, id
+	if strings.TrimSpace(in.Actor) == "" {
+		in.Actor = "console"
+	}
+	if err := ValidateDecisionRequest(in); err != nil {
+		return DecisionResult{}, fmt.Errorf("%w: %v", errBadDecision, err)
+	}
+	return d.decide(ctx, in)
+}
+
+// shortSHA renders an abbreviated SHA for error messages (never a secret).
+func shortSHA(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
+
+// consoleDecisionWriter builds the real #108 writer: it resolves the repo's §55
+// audit config from repos.yaml (disabled when absent) and writes the decision to
+// the §18 channel + the derived #97 evidence.
+func consoleDecisionWriter(d *consoleData) consoleDecisionSubmitter {
+	return func(ctx context.Context, in DecisionRequest) (DecisionResult, error) {
+		var audit AuditConfig
+		if rc, ok := d.repos[in.Repo]; ok && rc.Lifecycle != nil {
+			audit = rc.Lifecycle.Audit
+		}
+		return WriteConsoleDecision(ctx, d.store, audit, in)
+	}
+}
+
+// repoConfigMap keys repos.yaml entries by repo name. A load failure yields nil
+// (owner resolution then falls back to the outcome; the audit stays disabled).
+func repoConfigMap(repos []RepoConfig) map[string]RepoConfig {
+	if len(repos) == 0 {
+		return nil
+	}
+	m := make(map[string]RepoConfig, len(repos))
+	for _, r := range repos {
+		m[r.Repo] = r
+	}
+	return m
+}
+
+// consoleRepos best-effort loads repos.yaml for owner/audit resolution. The
+// console process still reads no GitHub credential (repos.yaml is policy only).
+func consoleRepos() map[string]RepoConfig {
+	repos, err := loadReposConfigWithResources(defaultReposPath())
+	if err != nil {
+		return nil
+	}
+	return repoConfigMap(repos)
+}
+
 // StartConsoleServer starts the console when KONOHA_CONSOLE_ADDR is set, else a
 // no-op (nil, nil). A non-loopback address fails fast. The listener is
 // best-effort (bind errors surface via net/http), mirroring StartWebhookServer.
@@ -611,7 +824,8 @@ func StartConsoleServer(c client.Client, store *EvidenceStore, version string) (
 	if !cfg.enabled() {
 		return nil, nil
 	}
-	data := &consoleData{store: store}
+	data := &consoleData{store: store, repos: consoleRepos()}
+	data.decide = consoleDecisionWriter(data)
 	if c != nil {
 		data.status = temporalStatusQuery(c)
 		data.running = temporalRunningLister(c)
@@ -628,7 +842,7 @@ func StartConsoleServer(c client.Client, store *EvidenceStore, version string) (
 			log.Printf("console server: %v", err)
 		}
 	}()
-	log.Printf("console listening on %s (loopback, read-only)", cfg.Addr)
+	log.Printf("console listening on %s (loopback; decisions via the §18 channel)", cfg.Addr)
 	return srv.server, nil
 }
 
@@ -708,7 +922,8 @@ func runConsole() error {
 	if err != nil {
 		return err
 	}
-	data := &consoleData{store: store}
+	data := &consoleData{store: store, repos: consoleRepos()}
+	data.decide = consoleDecisionWriter(data)
 	addr := os.Getenv("TEMPORAL_ADDRESS")
 	if addr == "" {
 		addr = "127.0.0.1:7233"
@@ -727,7 +942,7 @@ func runConsole() error {
 	if srv.generatedToken {
 		log.Printf("console: generated bearer token: %s", srv.token)
 	}
-	log.Printf("console listening on %s (loopback, read-only)", cfg.Addr)
+	log.Printf("console listening on %s (loopback; decisions via the §18 channel)", cfg.Addr)
 	return srv.server.ListenAndServe()
 }
 

@@ -70,13 +70,15 @@ const (
 	humanDecisionClose       = "close"
 	humanDecisionApprove     = "approve" // §55: grant the pre-execution approval gate
 	humanDecisionDeny        = "deny"    // §55: refuse the pre-execution approval gate
+	// humanDecisionRequestChanges (§108) rejects the current gate and sends the
+	// work back for a bounded rework. Declared in decisions.go; membership here.
 )
 
 func validHumanDecision(a string) bool {
 	switch a {
 	case humanDecisionResume, humanDecisionReestimate, humanDecisionRepartition,
 		humanDecisionRetry, humanDecisionBlock, humanDecisionCancel, humanDecisionClose,
-		humanDecisionApprove, humanDecisionDeny:
+		humanDecisionApprove, humanDecisionDeny, humanDecisionRequestChanges:
 		return true
 	}
 	return false
@@ -86,7 +88,7 @@ func validHumanDecision(a string) bool {
 // malformed decision can never drive a transition.
 func ValidateHumanDecision(a string) error {
 	if !validHumanDecision(a) {
-		return fmt.Errorf("decision %q not in the §18 set {resume, reestimate, repartition, retry, block, cancel, close, approve, deny}", a)
+		return fmt.Errorf("decision %q not in the §18 set {resume, reestimate, repartition, retry, block, cancel, close, approve, deny, request-changes}", a)
 	}
 	return nil
 }
@@ -104,11 +106,14 @@ func HumanRequiredLabels() []string { return []string{labelHumanRequired} }
 func BlockedLabels() []string { return []string{labelHumanRequired, labelBlocked} }
 
 // HumanDecision is a validated human response (§18). Present is false when no
-// decision signal exists yet; the workflow keeps waiting.
+// decision signal exists yet; the workflow keeps waiting. Feedback/Comments
+// carry the #108 request-changes payload (empty for the other actions).
 type HumanDecision struct {
-	Action  string `json:"action"`
-	Reason  string `json:"reason,omitempty"` // optional note recorded with the signal (§39)
-	Present bool   `json:"present"`
+	Action   string        `json:"action"`
+	Reason   string        `json:"reason,omitempty"` // optional note recorded with the signal (§39)
+	Feedback string        `json:"feedback,omitempty"`
+	Comments []DiffComment `json:"comments,omitempty"`
+	Present  bool          `json:"present"`
 }
 
 // decisionMarkerOpen is the deterministic HTML-comment marker carrying the human
@@ -161,18 +166,25 @@ func ReadHumanDecision(ctx context.Context, in HumanDecisionInput) (HumanDecisio
 	}
 	for i := len(comments) - 1; i >= 0; i-- {
 		if a, ok := parseHumanDecisionMarker(comments[i].Body); ok {
-			return humanDecisionFromAction(a)
+			return humanDecisionFromBody(a, comments[i].Body)
 		}
 	}
 	if bodyOK {
-		return humanDecisionFromAction(bodyAction)
+		return humanDecisionFromBody(bodyAction, it.Body)
 	}
 	return HumanDecision{}, nil
 }
 
-func humanDecisionFromAction(a string) (HumanDecision, error) {
-	if err := ValidateHumanDecision(a); err != nil {
+// humanDecisionFromBody validates the action and attaches the #108 payload
+// (feedback + diff-anchored comments) when present.
+func humanDecisionFromBody(action, body string) (HumanDecision, error) {
+	if err := ValidateHumanDecision(action); err != nil {
 		return HumanDecision{}, err
 	}
-	return HumanDecision{Action: a, Present: true}, nil
+	d := HumanDecision{Action: action, Present: true}
+	if p, ok := parseDecisionPayload(body); ok {
+		d.Feedback = p.Feedback
+		d.Comments = p.Comments
+	}
+	return d, nil
 }

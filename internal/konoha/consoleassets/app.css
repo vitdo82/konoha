@@ -167,3 +167,13 @@ body {
 .gate { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 6px; }
 .stream-label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
 .models { margin: 0; padding-left: 18px; color: var(--muted); }
+
+/* Decision panel (#108). */
+.decisions { border: 1px solid var(--accent); border-radius: 6px; padding: 8px; margin-top: 10px; }
+.decisions textarea { width: 100%; box-sizing: border-box; background: #12151b; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 6px; font: inherit; }
+.decision-actions { display: flex; gap: 8px; margin-top: 6px; }
+.decision-btn { cursor: pointer; border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; background: #12151b; color: inherit; }
+.decision-btn.approve { border-color: var(--ok); }
+.decision-btn.deny { border-color: var(--bad); }
+.decision-status { min-height: 1em; color: var(--muted); }
+.muted { color: var(--muted); }

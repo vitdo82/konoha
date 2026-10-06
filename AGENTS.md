@@ -348,9 +348,14 @@ without restarting a completed workflow. Deliveries with an invalid
   (and the legacy `resume`) grants, any other valid decision denies, and a
   timeout returns `TimedOut` with no error so the workflow **blocks, never
   proceeds** (§40/§44 #17). `approve`/`deny` were added to the bounded §18 action
-  set. The gate is approve-once (the marker is not step-scoped): `requiredSteps`
-  selects which steps wait, and one sign-off then lets the gated pipeline
-  proceed — per-step sign-off would need an `approve:<step>` marker. `awaitApprovalGate` is the shared workflow-side helper (used before
+  set; #108 adds `request-changes` (`EvaluateApproval` → `approvalRework`,
+  `ApprovalResult.Rework`/`Feedback`), which `IssueCycleWorkflow` handles at the
+  publish gate by running a bounded `RunRepair` carrying the human feedback and
+  re-gating, and fails closed (HUMAN_REQUIRED) at merge/deploy where there is no
+  in-place repair path. The gate is approve-once (the marker is not step-scoped):
+  `requiredSteps` selects which steps wait, and one sign-off then lets the gated
+  pipeline proceed — per-step sign-off would need an `approve:<step>` marker.
+  `awaitApprovalGate` is the shared workflow-side helper (used before
   publish/merge in `IssueCycleWorkflow`, before deploy in `PostMergeWorkflow`).
   `RecordAuditEvent` appends one JSONL line (subject, step, actor, decision) to
   the append-only `audit.sink`; `audit.enabled` without a sink, or a pre-gate
@@ -764,17 +769,17 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   <repo> <issue>` (joins change + recomputed lineage via pure
   `buildChangeView`/`changeViewJSON`, no Temporal). Never call
   `activity.GetLogger` in `RecordChange` (non-Temporal ctx panics).
-- `console.go` owns the #105 local review console: an opt-in, **loopback-only,
-  read-only** HTTP server + embedded SPA. `StartConsoleServer` (worker; no-op
-  when `KONOHA_CONSOLE_ADDR` is unset) and the `prbot console` entrypoint
-  (`runConsole`) share `newConsoleServer`; a non-loopback bind address
+- `console.go` owns the #105/#108 local review console: an opt-in, **loopback-only**
+  HTTP server + embedded SPA (read + the #108 decisions mutation). `StartConsoleServer`
+  (worker; no-op when `KONOHA_CONSOLE_ADDR` is unset) and the `prbot console`
+  entrypoint (`runConsole`) share `newConsoleServer`; a non-loopback bind address
   (`validateLoopbackAddr`/`isLoopbackHost`) **fails fast**, and disabling by
   default is explicit (`ConsoleConfig.enabled`). Auth is `authorized`: a
   constant-time bearer token (`KONOHA_CONSOLE_TOKEN`, random+logged when unset)
   for CLI/worker, or the per-process CSRF token issued by `GET /api/v1/status`
-  for browsers; `mutationAllowed` (CSRF + loopback `Origin`) is the dormant
-  plumbing for the decisions ticket — **there is no mutation endpoint in #105**.
-  Read-only routes: `GET /api/v1/status|cycles|cycles/{id}|cycles/{id}/artifacts`
+  for browsers; `mutationAllowed` (CSRF + loopback `Origin`) guards the single
+  mutation route `POST /api/v1/cycles/{id}/decisions` (#108).
+  Read routes: `GET /api/v1/status|cycles|cycles/{id}|cycles/{id}/artifacts`
   (method-qualified; unknown id → 404 via `validConsoleCycleID`, malformed → 400;
   `http.Server` timeouts bound every handler). `consoleData` reads finished
   cycles from the evidence store (`listCycleIDs`/`loadOutcomeOptional`/
@@ -782,10 +787,30 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   #89 status query (`temporalStatusQuery`/`temporalRunningLister`, nil client ⇒
   evidence-only). The SPA (`consoleassets/`, `//go:embed`) is served with a
   strict CSP (`consoleCSP`, no inline script) and never executes artifact
-  content. Env-only config (`consoleConfigFromEnv`, reads **only**
-  `KONOHA_CONSOLE_*`) means the console process touches **no GitHub credential**
-  and makes no outbound calls beyond the optional Temporal status query. Adding
-  the console renames no exported activity/workflow func (no Temporal type
-  change).
+  content. `consoleConfigFromEnv` reads **only** `KONOHA_CONSOLE_*`; the console
+  still reads no GitHub credential env, but a #108 decision shells `gh` (the
+  operator's auth) to post the §18 comment — the read-only paths stay
+  credential-free and make no outbound calls beyond the optional Temporal status
+  query. Adding the console renames no exported activity/workflow func (no
+  Temporal type change).
+- `decisions.go` owns the #108 console decision surface, built on the §55 gate
+  and #97 change record. **It is not a second source of truth**: `SubmitHumanDecision`
+  writes the byte-exact `<!-- konoha-decision: <action> -->` marker (plus a
+  base64 `decision-id`/`payload` marker) as ONE issue comment via `ghRunner`,
+  search-before-create so a repeated submit is a no-op (§24); `ReadHumanDecision`
+  parses the payload back into `HumanDecision.Feedback`/`Comments`.
+  `ValidateDecisionRequest` enforces the §108 rules (action set
+  `approve|request-changes|deny`, non-empty size-bounded request-changes
+  feedback, diff-anchored comments bound to the reviewed SHA — a comment on any
+  other SHA is stale). `consoleData.submitDecision` binds the submission to the
+  LIVE gate (`gateSnapshot`: owner from `repos.yaml`/outcome, attempt+SHA from
+  the #88 lineage, `Open` iff the running status is `PENDING_APPROVAL`) — a
+  superseded attempt/SHA or a closed gate is `409`. `applyDecisionEvidence`
+  records the derived records for request-changes: a #97 rework activation
+  carrying the feedback, the change feedback thread (status back to OPEN), and
+  the cycle's `comments.json` (rendered on the next review). Audit still goes
+  through `RecordAuditEvent` (`auditDecisionForAction`: allow/deny/request_changes).
+  A `POST` never proceeds on a fail-closed path; the §6 state stays authoritative
+  (§44 #20).
 
 
