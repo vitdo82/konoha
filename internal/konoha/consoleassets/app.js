@@ -10,7 +10,7 @@
 // outcomes are separate fields. A conflict (agent SUCCESS while verification
 // FAILED/ERROR) is highlighted and never collapsed into the agent's prose.
 
-const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, selected: "", tab: "result", detail: null };
+const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, queue: false, selected: "", tab: "result", detail: null };
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -67,9 +67,90 @@ async function bootstrap() {
   state.csrf = status.csrfToken;
   state.csrfHeader = status.csrfHeader || state.csrfHeader;
   state.decisions = !!status.decisions;
+  state.queue = !!status.queue;
   document.getElementById("meta").textContent =
     status.name + " " + status.version + (status.readOnly ? " · read-only" : "");
-  await refreshBoard();
+  if (state.queue) document.getElementById("queue-panel").hidden = false;
+  await Promise.all([refreshBoard(), refreshQueue()]);
+}
+
+// Needs-attention queue (#109): everything waiting on a human. retry/cancel go
+// through the authoritative channel; attach/pause/resume are disabled without a
+// session provider; an interrupted cycle needs an explicit stopped confirmation.
+async function refreshQueue() {
+  if (!state.queue) return;
+  const root = document.getElementById("queue");
+  root.replaceChildren();
+  let data;
+  try {
+    data = await api("/api/v1/queue");
+  } catch (err) {
+    root.append(el("p", "error", String(err.message || err)));
+    return;
+  }
+  const items = data.items || [];
+  if (items.length === 0) {
+    root.append(el("p", "empty", "Nothing needs attention."));
+    return;
+  }
+  for (const it of items) root.append(queueItem(it));
+}
+
+function queueItem(it) {
+  const box = el("article", "queue-item queue-" + (it.reason || ""));
+  const head = el("div", "queue-head");
+  head.append(el("span", "id", it.id));
+  head.append(el("span", "badge reason", it.reason || ""));
+  if (present(it.state)) head.append(el("span", "state " + it.state, it.state));
+  if (it.attempt) head.append(el("span", "muted", "attempt " + it.attempt));
+  if (it.dryRun) head.append(el("span", "badge dry", "dry-run"));
+  box.append(head);
+  if (it.interrupted) {
+    box.append(el("p", "warn",
+      "Interrupted: the worker/lease was lost. Confirm the old process stopped before retrying."));
+  }
+  const confirm = el("label", "queue-confirm");
+  if (it.requiresConfirmation) {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "confirm-stopped";
+    confirm.append(cb, el("span", "", "process stopped"));
+    box.append(confirm);
+  }
+  const status = el("p", "queue-status", "");
+  const actions = el("div", "queue-actions");
+  for (const a of it.actions || []) {
+    const btn = el("button", "queue-btn " + a.action, a.action);
+    if (!a.enabled || it.dryRun) {
+      btn.disabled = true;
+      if (a.reason) btn.title = a.reason;
+      if (it.dryRun) btn.title = "dry run: preview only";
+    }
+    btn.addEventListener("click", () => submitQueueAction(it, a, confirm, status));
+    actions.append(btn);
+  }
+  box.append(actions, status);
+  return box;
+}
+
+async function submitQueueAction(it, action, confirmBox, status) {
+  const cb = confirmBox.querySelector(".confirm-stopped");
+  if (it.requiresConfirmation && cb && !cb.checked) {
+    status.textContent = "confirm the old process stopped first";
+    return;
+  }
+  status.textContent = "submitting…";
+  try {
+    const res = await apiPost("/api/v1/cycles/" + encodeURIComponent(it.id) + "/actions", {
+      action: action.action,
+      confirmStopped: !!(cb && cb.checked),
+    });
+    status.textContent = (res && res.outcome) ? res.outcome + (res.reason ? ": " + res.reason : "") : "submitted";
+    await refreshQueue();
+    await refreshBoard();
+  } catch (err) {
+    status.textContent = String(err.message || err);
+  }
 }
 
 async function refreshBoard() {

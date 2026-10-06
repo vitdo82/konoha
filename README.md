@@ -609,10 +609,11 @@ offline against `evidence.dir`:
                                    # outcomes, conditions, usage (no Temporal)
 ```
 
-## Local review console (#105, board + detail #106, decisions #108)
+## Local review console (#105, board + detail #106, decisions #108, queue #109)
 
-An opt-in, **loopback-only** HTTP console for the board, cycle detail, and the
-human decision gate (#108). Read-only except for the decisions endpoint. It is
+An opt-in, **loopback-only** HTTP console for the board, cycle detail, the human
+decision gate (#108), and the needs-attention queue + recovery actions (#109).
+Read-only except for the decisions and queue-action endpoints. It is
 **disabled by default** — no listener starts unless `KONOHA_CONSOLE_ADDR` is set
 — and start a dedicated process (or let the worker start it when the same env
 var is set):
@@ -645,6 +646,8 @@ Endpoints:
 | `GET /api/v1/cycles/{id}/artifacts/{name}` | **preview** (inline): text/HTML as `text/plain`, images as images; binary/oversize → 415 |
 | `GET /api/v1/cycles/{id}/download/{name}` | **download** any artifact (`Content-Disposition: attachment`, correct content type) |
 | `POST /api/v1/cycles/{id}/decisions` | **the only mutation** (#108): `approve` / `request-changes` / `deny` |
+| `GET /api/v1/queue` | the #109 needs-attention queue: awaiting-approval / blocked / failed / interrupted cycles with their available recovery actions |
+| `POST /api/v1/cycles/{id}/actions` | #109 recovery mutation: `retry` / `cancel` (session verbs `attach` / `pause` / `resume` report `SKIPPED` without a provider, #136/#144) |
 
 ### Board + cycle detail (#106)
 
@@ -735,6 +738,38 @@ without it). Malformed cycle ids are `400`, unknown cycles are `404`, a stale
 gate is `409`, and every handler is time-bounded. This is policy-read over the
 same evidence store the CLI reads; see `docs/non-goals.md` → A2.
 
+
+### Needs-attention queue + recovery (#109)
+
+The console surfaces a **Needs attention** queue of everything waiting on a
+human: **awaiting approval** (`PENDING_APPROVAL`), **blocked**, **failed**, and
+**interrupted** cycles. It is the same pure projection the tests exercise
+(`GET /api/v1/queue`), deterministic and newest-first.
+
+Recovery follows Machinist's rules — **retry preserves earlier attempts, and
+there is no silent replay of external effects**:
+
+- **Retry** re-runs the cycle as a **new attempt** (Temporal starts a fresh run
+  under the same deterministic `<repo>-issue-<n>` id, so prior runs and the #88
+  lineage / #97 change history are preserved). It does not discard successful
+  earlier work (the branch/PR are idempotent).
+- **Cancel** asks a running cycle to stop through the authoritative Temporal
+  lifecycle (the disconnect-safe worktree teardown still runs). The stopped
+  state is reflected before a retry is allowed — a cancel is idempotent (a
+  stopped cycle is a `NOOP`) and never auto-replays.
+- **Interrupted** (the worker/lease was lost) is never auto-queued for retry:
+  the operator must tick an explicit **"process stopped"** confirmation, and the
+  retry best-effort stops any still-registered execution before starting a new
+  run.
+- **Attach / pause / resume** are session verbs (#136/#144). With no session
+  provider wired they render **disabled** and report `SKIPPED` — never a false
+  success (§40).
+- **Authoritative + audited + idempotent:** every accepted retry/cancel goes
+  through the authoritative channel and is appended to the §55 audit sink with
+  the actor and step (`queue-retry` / `queue-cancel`); a repeated action is a
+  `NOOP`, never a second mutation (§24).
+- **DryRun (§42):** with the repo's `dryRun` set, retry/cancel render disabled
+  and return a `PREVIEW` with **no mutation**.
 
 ## Debug
 

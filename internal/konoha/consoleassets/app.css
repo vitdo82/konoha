@@ -130,6 +130,23 @@ body {
 .artifact-image { max-width: 100%; }
 .error { color: var(--bad); }
 
+/* Needs-attention queue (#109). */
+#queue-panel { grid-column: 1 / -1; }
+.queue { display: flex; flex-direction: column; gap: 6px; }
+.queue-item { border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: #12151b; }
+.queue-item.queue-interrupted { border-color: var(--warn); }
+.queue-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.queue-head .id { word-break: break-all; }
+.badge.reason { color: var(--warn); }
+.badge.dry { color: var(--accent); }
+.queue-confirm { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); margin: 6px 0; }
+.queue-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.queue-btn { cursor: pointer; border: 1px solid var(--line); border-radius: 4px; padding: 4px 9px; background: var(--panel); color: inherit; text-transform: capitalize; }
+.queue-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.queue-btn.cancel { border-color: var(--bad); }
+.queue-status { min-height: 1em; color: var(--muted); margin: 6px 0 0; }
+.warn { color: var(--warn); }
+
 /* Result: outcome separation + conflict. */
 .outcomes { display: flex; gap: 10px; }
 .outcome-field { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
