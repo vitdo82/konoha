@@ -114,6 +114,14 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "mcp":
+			// #116: loopback-only MCP surface (read-only by default). Dispatched
+			// BEFORE the worker bootstrap so this process reads no GitHub
+			// credential; runMCP loads konoha.yaml itself.
+			if err := runMCP(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -264,6 +272,12 @@ func Main() {
 	}
 	if _, err := StartConsoleServer(c, consoleStore, consoleVersion()); err != nil {
 		log.Fatalf("console: %v", err)
+	}
+
+	// #116 MCP surface (env KONOHA_MCP_ADDR; loopback-only, read-only by default;
+	// KONOHA_MCP_CONTROL opts into the single §18 decision control tool).
+	if _, err := StartMCPServer(c, consoleStore, consoleVersion()); err != nil {
+		log.Fatalf("mcp: %v", err)
 	}
 
 	// #93: recover worktrees stranded by a crashed worker. workflowAlive lets the
