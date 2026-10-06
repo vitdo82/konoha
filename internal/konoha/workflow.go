@@ -988,6 +988,12 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	if out.PolicyDigest == "" {
 		out.PolicyDigest = policyDigest(in.Lifecycle, taskHash(in.Owner, in.Repo, in.IssueNum))
 	}
+	// #104: record the resolved tenancy scope (already resolved at load and
+	// carried in the input) alongside the effective policy. No scope name is
+	// resolved here — the workflow only reads what apply.sh stamped.
+	if out.Scope == "" {
+		out.Scope = in.Lifecycle.Scope
+	}
 	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
 	// child ID for a sweep-escalated failure), so evidence is stable under retry.
 	cycleID := out.WorkflowID

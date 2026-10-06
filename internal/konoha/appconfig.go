@@ -59,8 +59,10 @@ type AppConfig struct {
 	Worker   WorkerConfig         `yaml:"worker"`
 	Evidence EvidenceConfig       `yaml:"evidence"`
 	Harness  GenericHarnessConfig `yaml:"harness"`
-	Limits   LimitsConfig         `yaml:"limits"` // #102 global host resource ceilings (per-repo lifecycle.limits overrides)
-	Egress   EgressConfig         `yaml:"egress"` // #103 advisory proxy allowlist (bypassable; NOT a boundary)
+	Limits   LimitsConfig         `yaml:"limits"`   // #102 global host resource ceilings (per-repo lifecycle.limits overrides)
+	Egress   EgressConfig         `yaml:"egress"`   // #103 advisory proxy allowlist (bypassable; NOT a boundary)
+	Facility string               `yaml:"facility"` // #104 tenancy Facility label (recorded; not an auth boundary — single-operator)
+	Scopes   ScopesConfig         `yaml:"scopes"`   // #104 narrow-only product-line scopes (Paddock Facility > Product Line > Department)
 	Defaults DefaultsConfig       `yaml:"defaults"`
 }
 
@@ -356,6 +358,11 @@ func (c AppConfig) validate() error {
 	// #103: advisory egress must be a well-formed http(s) proxy URL; absent is
 	// valid (= today's behavior).
 	if err := c.Egress.validate("egress"); err != nil {
+		return err
+	}
+	// #104: the tenancy scopes block is structurally validated here; its
+	// references are checked against repos.yaml + the catalogs by resolveScopes.
+	if err := c.Scopes.validate(); err != nil {
 		return err
 	}
 	if c.Worker.MaxConcurrentActivities < 1 {

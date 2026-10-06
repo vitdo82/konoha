@@ -53,6 +53,12 @@ type LifecycleConfig struct {
 	DryRun                        bool              `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int               `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
 	MaxConcurrentChildrenPerIssue int               `yaml:"maxConcurrentChildrenPerIssue" json:"maxConcurrentChildrenPerIssue,omitempty"`
+	// Scope is the resolved #104 tenancy scope name governing this repo
+	// (productLine or productLine/department). It is set ONCE at load by
+	// resolveScopes from konoha.yaml — never accepted from repos.yaml
+	// (yaml:"-") — travels in the schedule input, and is part of the #88 policy
+	// digest, so a change of scope is a visible diff. Empty = global baseline.
+	Scope string `yaml:"-" json:"scope,omitempty"`
 }
 
 // ValidationGate is one structured §26 verification gate: a bare argv run in a
@@ -153,11 +159,13 @@ func (lc LifecycleConfig) ConcurrentChildrenPerIssue() int {
 
 // RepoConfig is one `repos:` entry.
 type RepoConfig struct {
-	Owner     string           `yaml:"owner"`
-	Repo      string           `yaml:"repo"`
-	RepoPath  string           `yaml:"repoPath"`
-	Schedule  string           `yaml:"schedule"`
-	Lifecycle *LifecycleConfig `yaml:"lifecycle"`
+	Owner       string           `yaml:"owner"`
+	Repo        string           `yaml:"repo"`
+	RepoPath    string           `yaml:"repoPath"`
+	Schedule    string           `yaml:"schedule"`
+	ProductLine string           `yaml:"productLine"` // #104: explicit Product Line scope; default = match by repositories
+	Department  string           `yaml:"department"`  // #104: optional Department within the product line
+	Lifecycle   *LifecycleConfig `yaml:"lifecycle"`
 }
 
 type reposFile struct {
@@ -207,6 +215,12 @@ func loadReposConfigWithResources(path string) ([]RepoConfig, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := validateResourceRefs(repos, cfg.Defaults.Agents); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// #104: resolve the narrow-only tenancy scopes once at load, so the emitted
+	// schedule input carries the resolved scope + effective policy (the workflow
+	// never resolves a scope name).
+	if err := resolveScopes(repos, cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// #102: a per-repo wall-clock ceiling must not exceed the agent activity

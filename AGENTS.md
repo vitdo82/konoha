@@ -171,6 +171,24 @@ without restarting a completed workflow. Deliveries with an invalid
   configured timeout (§40). Egress policies and workspaces are deliberately not
   modeled — there is no sandbox (docs/security.md), so they are documented as
   not-applicable, never stubbed.
+- **Policy tenancy scopes (`scopes.go`, #104)**: an optional `scopes:` block in
+  `konoha.yaml` (Product Line → Department, plus a top-level `facility:` label)
+  is a **narrow-only** policy layer, resolved **once at load** by
+  `resolveScopes` inside `loadReposConfigWithResources` (`prbot config` /
+  `apply.sh` / worker bootstrap). A scope may only reference repos already in
+  `repos.yaml`, built-in harness names, and `defaults.agents` model/budget
+  names — an unknown reference fails at load; `closePolicy` may only become more
+  human-gated and `approval` may only turn the §55 gate ON (which still requires
+  `lifecycle.audit.enabled`). A `repos.yaml` entry is mapped by its
+  `productLine`/`department` or, by default, by repository membership in the
+  scopes' `repositories` lists. The resolved scope name lands on
+  `LifecycleConfig.Scope` (yaml-only-resolved, `yaml:"-"`), travels in the
+  schedule input (no workflow ever resolves a scope name), is recorded in
+  `outcome.json` (`CycleOutcome.Scope`), and is part of the #88 policy digest, so
+  a scope change is a visible diff. This is **policy** tenancy, **not execution
+  isolation**, and introduces no per-tenant GitHub App credential — `GH_*` is
+  unchanged (§23); see `docs/non-goals.md` → B3 (#101). `scopes.go` adds no
+  exported activity/workflow func, so no Temporal type name changes.
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are

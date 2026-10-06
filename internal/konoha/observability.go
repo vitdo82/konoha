@@ -129,6 +129,7 @@ type CycleOutcome struct {
 	EvidenceError       string            `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
 	PolicyDigest        string            `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
 	Resources           *ResourceEvidence `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
+	Scope               string            `json:"scope,omitempty"`         // #104: resolved tenancy scope (policy tenancy, not isolation)
 	Cleanup             *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
 	Limits              *LimitEvidence    `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
 	Egress              *EgressEvidence   `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)

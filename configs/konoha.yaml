@@ -26,6 +26,29 @@ evidence:
 #   proxy: http://127.0.0.1:8888
 #   allowOut: ["api.anthropic.com", "registry.npmjs.org"]
 
+# #104 narrow-only policy tenancy (Paddock Facility > Product Line >
+# Department). A scope may only NARROW the global policy: it may reference only
+# repos already in repos.yaml, built-in harness names, and defaults.agents
+# model/budget names (an unknown ref fails at load); closePolicy may only become
+# more human-gated; approval may only turn the §55 gate ON (and still needs
+# lifecycle.audit.enabled). This is POLICY tenancy, NOT execution isolation —
+# scopes share the host and there is NO per-tenant GitHub App credential
+# (`GH_*` is unchanged, §23). See docs/non-goals.md B3. Resolution runs once at
+# load; repos.yaml maps a repo by productLine/department or, by default, by
+# membership in the scopes' repositories lists.
+# scopes:
+#   payments:                       # Product Line
+#     repositories: ["acme/payments", "acme/payments-infra"]
+#     harnesses: ["opencode"]
+#     models: ["cheap", "strong"]
+#     budgets: ["small"]
+#     approval: true                # may only turn the gate ON
+#     closePolicy: risk-based       # may only narrow (risk-based or stricter)
+#     departments:                  # optional; may only narrow further
+#       checkout:
+#         repositories: ["acme/payments-checkout"]
+#         models: ["strong"]
+
 worker:
   taskQueue: review-queue
   maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES

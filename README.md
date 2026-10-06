@@ -120,6 +120,19 @@ evidence:
 # egress:                         # #103 ADVISORY proxy allowlist (bypassable; NOT a security boundary)
 #   proxy: http://127.0.0.1:8888  # sets HTTPS_PROXY/HTTP_PROXY/NO_PROXY on agent + validation children
 #   allowOut: ["api.anthropic.com", "registry.npmjs.org"]  # recorded in outcome.json only
+# facility: acme                  # #104 Facility label (recorded; not an auth boundary — single-operator)
+# scopes:                         # #104 narrow-only policy tenancy (NOT execution isolation; see below)
+#   payments:                     # Product Line
+#     repositories: ["acme/payments", "acme/payments-infra"]  # the repos this scope covers
+#     harnesses: ["opencode"]     # allowlists may only reference names already in the global catalogs
+#     models: ["cheap", "strong"]
+#     budgets: ["small"]
+#     approval: true              # may only turn the §55 gate ON
+#     closePolicy: risk-based     # may only narrow (risk-based or stricter — never autonomous)
+#     departments:                # optional functional areas that may only narrow further
+#       checkout:
+#         repositories: ["acme/payments-checkout"]
+#         models: ["strong"]
 harness:                          # §85 generic harness (used when a repo selects `generic`)
   executable: ""                  # bare executable NAME (no path separators)
   args: ["run", "{{model_args}}", "{{prompt}}"]  # {{model_args}}/{{prompt}} expand
@@ -368,6 +381,60 @@ behavior). Enforced egress (deny-by-default + L7 header injection) belongs to th
 container/microVM executor ([#92](https://github.com/vitdo82/konoha/issues/92)),
 where it becomes mandatory; see
 [`docs/non-goals.md`](docs/non-goals.md) → A4/B2.
+
+### Policy tenancy / scopes — narrow-only, not isolation (#104)
+
+Several teams can share one Konoha worker by assigning repositories to **scopes**.
+The tenancy shape is Paddock's **Facility → Product Line → Department**: the
+Facility is the whole `scopes:` block (the optional top-level `facility:` label),
+a **Product Line** groups repositories for one product, and an optional
+**Department** is a functional area within it.
+
+```yaml
+facility: acme
+scopes:
+  payments:                       # Product Line
+    repositories: ["acme/payments", "acme/payments-infra"]
+    harnesses: ["opencode"]
+    models: ["cheap", "strong"]
+    budgets: ["small"]
+    approval: true                # optional per-scope gate override (may only turn it ON)
+    closePolicy: risk-based       # optional; may only narrow
+    departments:                  # optional; may only narrow the product line
+      checkout:
+        repositories: ["acme/payments-checkout"]
+        models: ["strong"]
+```
+
+A `repos.yaml` entry maps to a Product Line **by default** (the scope whose
+`repositories` lists it); it may name one explicitly with `productLine:` and an
+optional `department:`. Resolution runs **exactly once at load**
+(`prbot config` / `apply.sh` / worker bootstrap): the resolved scope name and the
+narrowed effective policy travel in the schedule input, so **no workflow ever
+resolves a scope name** and replay stays deterministic. The resolved scope is
+recorded in `outcome.json` and folded into the #88 policy digest, so a change of
+scope is a visible diff.
+
+A scope can only ever **narrow**:
+
+- a **repository**, **harness**, **model**, or **budget** reference not covered
+  by the global allowlist (repos.yaml entries, the built-in harness names, the
+  `defaults.agents` catalog) **fails at load** — never a silent drop;
+- `closePolicy` may only become **more** human-gated (`risk-based` or
+  `human-required`; never `autonomous`);
+- `approval: true` may only turn the §55 gate **on** (and still requires
+  `lifecycle.audit.enabled`, since every gated decision must be recorded);
+- a department's lists must be subsets of its product line's, and its
+  `closePolicy` at least as strict.
+
+> **This is policy tenancy, not execution isolation.** Scopes constrain what a
+> `repos.yaml` entry is *allowed* to do; they share the host filesystem and
+> process space. There is **no per-tenant GitHub App credential** — Konoha still
+> uses one App via `GH_APP_ID`/`GH_INSTALL_ID`/`GH_APP_PEM`, and `GH_*` remains a
+> non-configurable contract (§23). A credential-shaped key in a scope is
+> rejected at load. Execution isolation (per-tenant boundary) is the sandbox
+> path ([#92](https://github.com/vitdo82/konoha/issues/92)); see
+> [`docs/non-goals.md`](docs/non-goals.md) → B3.
 
 ### Agent token/cost accounting (§39)
 
