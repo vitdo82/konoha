@@ -202,6 +202,7 @@ type consoleStatus struct {
 	ReadOnly   bool   `json:"readOnly"`
 	Decisions  bool   `json:"decisions"`
 	Queue      bool   `json:"queue"`
+	Stream     bool   `json:"stream"`
 	CSRFHeader string `json:"csrfHeader"`
 	CSRFToken  string `json:"csrfToken"`
 }
@@ -236,6 +237,9 @@ type consoleData struct {
 	decide consoleDecisionSubmitter
 	// #109: needs-attention queue recovery actions.
 	queue consoleQueueAction
+	// #110: live SSE source. Nil resolves the default evidence/status source;
+	// tests inject a simulated source.
+	stream consoleStreamSource
 	// Authoritative Temporal lifecycle seams (nil without a Temporal client, so
 	// retry/cancel fail closed with 501 rather than pretending).
 	cancelWorkflow func(ctx context.Context, workflowID string) error
@@ -253,6 +257,8 @@ type ConsoleServer struct {
 	data           *consoleData
 	mux            *http.ServeMux
 	server         *http.Server
+	hub            *streamHub
+	stream         consoleStreamSource
 }
 
 // newConsoleServer builds the server (disabled → nil, nil). A non-loopback bind
@@ -280,7 +286,13 @@ func newConsoleServer(cfg ConsoleConfig, data *consoleData, version string) (*Co
 	if version == "" {
 		version = "dev"
 	}
-	s := &ConsoleServer{token: token, csrf: csrf, version: version, generatedToken: generated, data: data}
+	s := &ConsoleServer{token: token, csrf: csrf, version: version, generatedToken: generated, data: data, hub: newStreamHub()}
+	if data != nil {
+		s.stream = data.stream
+		if s.stream == nil {
+			s.stream = data.streamSource()
+		}
+	}
 	s.mux = http.NewServeMux()
 	s.routes()
 	s.server = &http.Server{
@@ -301,6 +313,9 @@ func (s *ConsoleServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/cycles", s.requireAuth(s.handleCycles))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}", s.requireAuth(s.handleCycleDetail))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts", s.requireAuth(s.handleArtifacts))
+	// #110: live progress stream (SSE): condition transitions + a bounded,
+	// resumable agent-output tail (?watch=1).
+	s.mux.HandleFunc("GET /api/v1/cycles/{id}/stream", s.requireAuth(s.handleCycleStream))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts/{name...}", s.requireAuth(s.handleArtifactPreview))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/download/{name...}", s.requireAuth(s.handleArtifactDownload))
 	// #109: the needs-attention queue (awaiting approval / blocked / failed /
@@ -348,12 +363,14 @@ func (s *ConsoleServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *ConsoleServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	decisions := s.data != nil && s.data.decide != nil
 	queue := s.data != nil && s.data.queue != nil
+	stream := s.data != nil && s.stream != nil
 	writeConsoleJSON(w, http.StatusOK, consoleStatus{
 		Name:       "konoha",
 		Version:    s.version,
 		ReadOnly:   !decisions && !queue,
 		Decisions:  decisions,
 		Queue:      queue,
+		Stream:     stream,
 		CSRFHeader: consoleCSRFHeader,
 		CSRFToken:  s.csrf,
 	})

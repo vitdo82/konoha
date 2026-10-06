@@ -837,3 +837,20 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   name changes).
 
 
+- `stream.go` owns the #110 live progress streaming (SSE) endpoint on the
+  console: `GET /api/v1/cycles/{id}/stream` (same bearer/CSRF auth as every
+  route, read-only). `consoleStreamSource` is the seam — production resolves a
+  bounded snapshot from the #89 status query (running) or `outcome.json`
+  (finished) plus a bounded tail of the recorded `agent.stdout`; tests inject a
+  simulated environment. `streamHub` is the process-local fan-out: a per-cycle
+  producer polls the source and publishes monotonic-id `state`/`condition`/
+  `output`/`end` events; `?watch=1` adds the command/output tail (bounded by
+  `streamOutputCap`, 64 KiB) and a non-watch subscriber never sees output. Replay
+  is bounded by `streamOutputCap` bytes + `streamBufferEvents`, so memory is
+  O(cap) regardless of stream length. A reconnect's `Last-Event-ID` (or
+  `?lastEventId=`) replays only buffered events after the cursor — no duplicates;
+  a lagged subscriber gets a `reset` and resumes. A true §6 terminal state emits
+  `end` and closes; a `PENDING_APPROVAL`/gate wait stays open. The events are
+  PROJECTIONS of the durable status/evidence records — the §6 state stays
+  authoritative (§44 #20) and no live output is ever buffered unbounded. This
+  file adds no exported activity/workflow func (no Temporal type name changes).
