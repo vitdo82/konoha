@@ -131,27 +131,40 @@ func consoleVersion() string {
 	return "dev"
 }
 
-// CycleSummary is one row of the board: a finished cycle (from outcome.json) or
-// a running one (from the Temporal status query).
+// CycleSummary is one board CARD: a finished cycle (from outcome.json) or a
+// running one (from the Temporal status query). At is the latest observed
+// condition timestamp (deterministic newest-first board ordering); Priority and
+// Assignee are projected from recorded issue intent when present and omitted
+// otherwise (cards degrade gracefully).
 type CycleSummary struct {
-	ID         string `json:"id"`
-	Owner      string `json:"owner,omitempty"`
-	Repo       string `json:"repo,omitempty"`
-	Issue      int    `json:"issue,omitempty"`
-	State      string `json:"state"`
-	Running    bool   `json:"running,omitempty"`
-	Route      string `json:"route,omitempty"`
-	Complexity int    `json:"complexity,omitempty"`
+	ID         string    `json:"id"`
+	Owner      string    `json:"owner,omitempty"`
+	Repo       string    `json:"repo,omitempty"`
+	Issue      int       `json:"issue,omitempty"`
+	State      string    `json:"state"`
+	Running    bool      `json:"running,omitempty"`
+	Route      string    `json:"route,omitempty"`
+	Complexity int       `json:"complexity,omitempty"`
+	Priority   string    `json:"priority,omitempty"`
+	Assignee   string    `json:"assignee,omitempty"`
+	At         time.Time `json:"at,omitempty"`
 }
 
-// CycleDetail is the cycle detail view: the board row plus the full outcome
-// (finished) or status snapshot (running) and the artifact name list. Artifact
-// CONTENT is deliberately not served here (preview is a later ticket).
+// CycleDetail is the cycle detail view. It carries the board card plus the full
+// outcome (finished) or status snapshot (running), the artifact name list, and
+// the Diff/Validation tabs' projections. OutcomeConflict is the deterministic
+// "summaries are not proof" flag (agent SUCCESS while verification failed) —
+// the UI must never collapse it. Activations is the #88 lineage (harness/model/
+// digest/usage) for the Metadata tab, when recorded.
 type CycleDetail struct {
 	CycleSummary
-	Outcome   *CycleOutcome `json:"outcome,omitempty"`
-	Status    *StatusQuery  `json:"status,omitempty"`
-	Artifacts []string      `json:"artifacts"`
+	Outcome         *CycleOutcome       `json:"outcome,omitempty"`
+	Status          *StatusQuery        `json:"status,omitempty"`
+	Artifacts       []string            `json:"artifacts"`
+	OutcomeConflict bool                `json:"outcomeConflict,omitempty"`
+	Diff            *DiffView           `json:"diff,omitempty"`
+	Validation      *ValidationView     `json:"validation,omitempty"`
+	Activations     []LineageActivation `json:"activations,omitempty"`
 }
 
 // consoleStatus is the GET /api/v1/status payload: version + the per-process
@@ -291,7 +304,10 @@ func (s *ConsoleServer) handleCycles(w http.ResponseWriter, r *http.Request) {
 		writeConsoleError(w, http.StatusInternalServerError, "read cycles")
 		return
 	}
-	writeConsoleJSON(w, http.StatusOK, map[string]any{"cycles": cycles})
+	writeConsoleJSON(w, http.StatusOK, map[string]any{
+		"cycles":  cycles,
+		"columns": boardColumns(cycles),
+	})
 }
 
 // handleCycleDetail returns one cycle's detail; malformed id → 400, unknown → 404.
@@ -461,25 +477,41 @@ func (d *consoleData) cycleDetail(ctx context.Context, id string) (CycleDetail, 
 		return CycleDetail{}, false, err
 	} else if ok {
 		arts, _ := d.store.listArtifacts(id)
-		if arts == nil {
-			arts = []string{}
-		}
-		return CycleDetail{CycleSummary: summaryFromOutcome(id, o), Outcome: &o, Artifacts: arts}, true, nil
+		return d.buildDetail(summaryFromOutcome(id, o), arts, &o, nil,
+			o.AgentOutcome, o.VerificationOutcome), true, nil
 	}
 	if d.status != nil {
 		if st, ok := d.status(ctx, id); ok {
 			arts, _ := d.store.listArtifacts(id)
-			if arts == nil {
-				arts = []string{}
-			}
-			return CycleDetail{
-				CycleSummary: CycleSummary{ID: id, State: st.State, Running: true},
-				Status:       &st,
-				Artifacts:    arts,
-			}, true, nil
+			sum := CycleSummary{ID: id, State: st.State, Running: true, At: latestConditionTime(st.Conditions)}
+			return d.buildDetail(sum, arts, nil, &st, st.AgentOutcome, st.VerificationOutcome), true, nil
 		}
 	}
 	return CycleDetail{}, false, nil
+}
+
+// buildDetail assembles the detail projection shared by the finished and
+// running paths: outcome/status, ordered conditions, the deterministic
+// outcome-conflict flag, and the Diff/Validation/Metadata tabs.
+func (d *consoleData) buildDetail(sum CycleSummary, arts []string, out *CycleOutcome, st *StatusQuery, agent AgentOutcome, ver VerificationOutcome) CycleDetail {
+	if arts == nil {
+		arts = []string{}
+	}
+	det := CycleDetail{
+		CycleSummary:    sum,
+		Outcome:         out,
+		Status:          st,
+		Artifacts:       arts,
+		OutcomeConflict: outcomesConflict(agent, ver),
+		Diff:            d.loadDiffView(sum.ID),
+		Validation:      d.loadValidationView(sum.ID, ver),
+	}
+	if out != nil && out.Owner != "" && out.Repo != "" {
+		if l, err := d.store.loadLineage(out.Owner, out.Repo, out.Issue, false); err == nil {
+			det.Activations = l.Activations
+		}
+	}
+	return det
 }
 
 // summaryFromOutcome projects a terminal outcome to a board row.
@@ -496,6 +528,9 @@ func summaryFromOutcome(id string, o CycleOutcome) CycleSummary {
 		State:      state,
 		Route:      o.Route,
 		Complexity: o.Complexity,
+		Priority:   o.Priority,
+		Assignee:   o.Assignee,
+		At:         latestConditionTime(o.Conditions),
 	}
 }
 

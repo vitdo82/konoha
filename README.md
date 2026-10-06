@@ -609,7 +609,7 @@ offline against `evidence.dir`:
                                    # outcomes, conditions, usage (no Temporal)
 ```
 
-## Local review console (#105)
+## Local review console (#105, board + detail #106)
 
 An opt-in, **loopback-only, read-only** HTTP console for the board and cycle
 detail. It is **disabled by default** — no listener starts unless
@@ -633,14 +633,38 @@ Auth:
   send it on every API call; browser **mutations** (a later ticket) additionally
   require a loopback `Origin`. All token comparisons are constant-time.
 
-Read-only endpoints (there is **no mutation endpoint** in this ticket):
+Read-only endpoints (there is **no mutation endpoint**):
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/v1/status` | `{version, readOnly, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
-| `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) |
-| `GET /api/v1/cycles/{id}` | cycle detail (outcome/status + artifact names) |
-| `GET /api/v1/cycles/{id}/artifacts` | artifact **name** list (content is not served yet) |
+| `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) **and** the grouped `columns` |
+| `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, and the Diff/Validation/Metadata projections |
+| `GET /api/v1/cycles/{id}/artifacts` | artifact **name** list |
+
+### Board + cycle detail (#106)
+
+- **Board** groups cycles by the authoritative §6 state into five fixed columns —
+  **Running**, **Needs attention** (awaiting approval / blocked), **Human
+  required**, **Closed**, **Failed** — with a count per column and newest-first
+  (by latest condition timestamp, ties by descending id) ordering. A card shows
+  priority and assignee/owner when recorded on the outcome (projected from issue
+  intent) and simply omits them when absent.
+- **Cycle detail** has four tabs:
+  - **Result** — terminal §6 state, `agentOutcome`, `verificationOutcome`, and the
+    ordered condition list (#84).
+  - **Diff** — changed files + the patch (from `diff.patch`), with line-anchored
+    comment threads (an optional `comments.json`, captured by the review-comment
+    ticket #113; absent → the diff renders with no threads).
+  - **Validation** — the deterministic verification outcome, the combined
+    `validation.txt`, and each §26 gate's captured stdout/stderr.
+  - **Metadata** — repo/issue, harness/model + policy digest (#88), usage/cost
+    (#87), and attempt number (#95).
+- **"Summaries are not proof":** agent outcomes and deterministic verification
+  outcomes are separate, non-collapsible fields. A **conflict** (agent `SUCCESS`
+  while verification `FAILED`/`ERROR`) is highlighted and never masked by the
+  agent's prose. The board/outcome/diff/comments projections are pure and
+  unit-tested without a browser or Temporal.
 
 The SPA is served from embedded assets with a strict `Content-Security-Policy`
 (`default-src 'none'; script-src 'self'; …`), no inline script, and it never
