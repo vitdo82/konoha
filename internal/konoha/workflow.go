@@ -447,31 +447,42 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		})
 	}
 
+	// dev is the latest development/repair result; declared before gateStep so a
+	// §108 request-changes rework at the publish gate can repair on top of it and
+	// loop back to re-gate.
+	var dev DevelopResult
+
 	// gateStep enforces the §55 pre-execution approval gate before a mutating
-	// step. proceed=false with err=nil means the gate already recorded a terminal
-	// (deny → HUMAN_REQUIRED, timeout → BLOCKED) and the workflow must stop; a
-	// non-nil err is a genuine failure. With approval.preGate off it is a no-op,
-	// so the default pipeline is unchanged (AC #3).
-	gateStep := func(step string) (bool, error) {
+	// step. proceed=true means the gate passed; a non-nil rework result means a
+	// §108 request-changes decision returned the work to the working path (the
+	// caller decides how to rework). proceed=false with rework=nil and err=nil
+	// means the gate already recorded a terminal (deny → HUMAN_REQUIRED, timeout
+	// → BLOCKED) and the workflow must stop; a non-nil err is a genuine failure.
+	// With approval.preGate off it is a no-op, so the default pipeline is
+	// unchanged (AC #3).
+	gateStep := func(step string) (proceed bool, rework *ApprovalResult, err error) {
 		if !ApprovalRequired(in.Lifecycle, step) {
-			return true, nil
+			return true, nil, nil
 		}
 		transition(statePendingApproval)
 		projectLabels(statePendingApproval, est.Complexity)
 		recordChange(ChangeRequest{State: statePendingApproval}) // #97: IN_REVIEW while awaiting a human
 		res, err := awaitApprovalGate(ctx, in.Owner, in.Repo, in.IssueNum, step, in.Lifecycle)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		if res.Granted || res.Skipped {
-			return true, nil
+			return true, nil, nil
+		}
+		if res.Rework {
+			return false, &res, nil
 		}
 		if res.Denied {
 			// #97: carry the human's denial instruction forward as the rework note.
 			recordChange(ChangeRequest{ReworkNote: res.Detail})
 			transition(stateHumanRequired)
 			projectLabels(stateHumanRequired, est.Complexity)
-			return false, finish(CycleOutcome{
+			return false, nil, finish(CycleOutcome{
 				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 				Owner: in.Owner, Repo: in.Repo,
 				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -484,7 +495,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// Timed out: stay BLOCKED and never proceed (§40, no silent success).
 		transition(stateBlocked)
 		projectLabels(stateBlocked, est.Complexity)
-		return false, finish(CycleOutcome{
+		return false, nil, finish(CycleOutcome{
 			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
 			Owner: in.Owner, Repo: in.Repo,
 			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
@@ -495,7 +506,6 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 
 	// -- §4.4 DEVELOPING --
 	transition(stateDeveloping)
-	var dev DevelopResult
 	if err := workflow.ExecuteActivity(devCtx, RunDeveloper, DevelopRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
 		Model:              devModel.AgentModel(),
@@ -556,11 +566,98 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		})
 	}
 
-	// §55: publish is gated before any GitHub mutation when configured.
-	if ok, err := gateStep(approvalStepPublish); err != nil {
-		return err
-	} else if !ok {
-		return nil
+	// §55: publish is gated before any GitHub mutation when configured. A §108
+	// request-changes decision reworks the proposed commit with the human
+	// feedback (a bounded repair) and re-gates; deny/timeout terminate inside
+	// gateStep. The repair loop is capped by maxDevReviewAttempts (§16).
+	for {
+		ok, rw, err := gateStep(approvalStepPublish)
+		if err != nil {
+			return err
+		}
+		if ok {
+			break
+		}
+		if rw == nil {
+			return nil // deny/timeout already recorded a terminal
+		}
+		if rl := EvaluateRepairLoop(in.Lifecycle, lastAttempts); !rl.Allowed {
+			transition(stateBlocked)
+			projectLabels(stateBlocked, est.Complexity)
+			return finish(CycleOutcome{
+				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+				Owner: in.Owner, Repo: in.Repo,
+				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+				TerminalState: stateBlocked,
+				Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+			})
+		}
+		lastAttempts++
+		transition(stateChangesRequested)
+		projectLabels(stateChangesRequested, est.Complexity)
+		// #97: carry the human feedback onto the change + the next activation.
+		feedback := strings.TrimSpace(rw.Feedback)
+		if feedback == "" {
+			feedback = strings.TrimSpace(rw.Detail)
+		}
+		if feedback == "" {
+			feedback = "human requested changes at the publish gate"
+		}
+		recordChange(ChangeRequest{
+			ReworkNote: feedback,
+			Feedback: []ChangeFeedback{{
+				Key:    fmt.Sprintf("%s/human-rework/%d", info.WorkflowExecution.ID, lastAttempts),
+				Kind:   feedbackKindReworkNote,
+				Body:   feedback,
+				At:     workflow.Now(ctx),
+				Author: "human",
+			}},
+		})
+		var reworked DevelopResult
+		if err := workflow.ExecuteActivity(devCtx, RunRepair, RepairRequest{
+			Develop: DevelopRequest{
+				Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+				Model:              repairModel.AgentModel(),
+				Harness:            in.Lifecycle.Harness,
+				WorkflowID:         info.WorkflowExecution.ID,
+				Title:              a.Title,
+				Body:               a.Body,
+				Spec:               a.Spec,
+				Requirements:       a.Requirements,
+				AcceptanceCriteria: a.AcceptanceCriteria,
+				Constraints:        a.Constraints,
+				Assumptions:        a.Assumptions,
+				OpenQuestions:      a.OpenQuestions,
+				Validation:         ValidationGates(in.Lifecycle),
+				ValidationCmd:      ValidationCommand(in.Lifecycle),
+				Limits:             in.Lifecycle.Limits,
+			},
+			Review:         ReviewResult{Verdict: "REQUEST_CHANGES", Blocking: feedbackLines(feedback)},
+			PreviousCommit: dev.CommitSHA, // the commit the human reviewed
+		}).Get(ctx, &reworked); err != nil {
+			return err
+		}
+		writeAgentEvidence(writeEvidence, reworked.Evidence, reworked, reworked.ValidationOutput)
+		usage.add(reworked.Usage)
+		if reworked.Limits != nil {
+			limitsEv = reworked.Limits
+		}
+		agentOut, verifOut = agentOutcomeOf(reworked), verificationOutcomeOf(reworked)
+		verificationMutated = reworked.VerificationMutated
+		status.recordAgent(agentOut, agentConditionReason(reworked), reworked.BlockedReason, workflow.Now(ctx))
+		status.recordVerification(verifOut, workflow.Now(ctx))
+		recordActivation(LineageActivation{
+			Attempt: lastAttempts, WorkflowID: fmt.Sprintf("%s-repair-%d", info.WorkflowExecution.ID, lastAttempts),
+			Reason: activationReasonRepair, Stage: stageRepair, Harness: effHarness, Model: repairModel.AgentModel(),
+			ModelDigest: repairModel.Digest,
+			BaseSHA:     reworked.BaseSHA, CommitSHA: reworked.CommitSHA, Result: string(agentOut),
+			ReworkNote: feedback,
+			TokensIn:   reworked.Usage.TokensIn, TokensOut: reworked.Usage.TokensOut, CostUSD: reworked.Usage.CostUSD,
+		})
+		if reworked.Blocked {
+			return blockedTerminal(reworked.BlockedReason)
+		}
+		dev = reworked
 	}
 
 	// -- publish (idempotent PR, §25) — from the MAIN repo path + the dev commit
@@ -754,9 +851,14 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return escalateTerminal(reasonCIFailed)
 	}
 
-	// §55: merge is gated before the merge mutation when configured.
-	if ok, err := gateStep(approvalStepMerge); err != nil {
+	// §55: merge is gated before the merge mutation when configured. A §108
+	// request-changes decision here has no in-place repair path in this
+	// increment, so it fails closed to a human (never a silent proceed).
+	if ok, rw, err := gateStep(approvalStepMerge); err != nil {
 		return err
+	} else if rw != nil {
+		recordChange(ChangeRequest{ReworkNote: rw.Feedback})
+		return escalateTerminal(reasonApprovalDenied)
 	} else if !ok {
 		return nil
 	}
@@ -958,6 +1060,8 @@ func auditDecision(res ApprovalResult) string {
 	switch {
 	case res.Granted || res.Skipped:
 		return "allow"
+	case res.Rework:
+		return "request_changes"
 	case res.Denied:
 		return "deny"
 	default:
@@ -966,9 +1070,10 @@ func auditDecision(res ApprovalResult) string {
 }
 
 // auditActor names who caused the decision: a human for an explicit approval/
-// denial, the deterministic policy for a timeout (or a shadow-mode skip).
+// denial/request-changes, the deterministic policy for a timeout (or a
+// shadow-mode skip).
 func auditActor(res ApprovalResult) string {
-	if res.Granted || res.Denied {
+	if res.Granted || res.Denied || res.Rework {
 		return "human"
 	}
 	return "policy"

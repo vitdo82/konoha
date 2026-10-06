@@ -116,17 +116,22 @@ type ApprovalRequest struct {
 	DryRun  bool   `json:"dryRun,omitempty"`
 }
 
-// ApprovalResult is the §55 gate verdict. Exactly one of Granted/Denied/TimedOut
-// is set (Skipped covers DryRun, where there is no mutation to gate). Action is
-// the raw human decision that produced the verdict, for the audit record.
+// ApprovalResult is the §55 gate verdict. Exactly one of Granted/Denied/Rework/
+// TimedOut is set (Skipped covers DryRun, where there is no mutation to gate).
+// Action is the raw human decision that produced the verdict, for the audit
+// record; Feedback/Comments carry a request-changes decision (§108) back to the
+// workflow so it can re-enter the working path with the human's instructions.
 type ApprovalResult struct {
-	Granted  bool   `json:"granted,omitempty"`
-	Denied   bool   `json:"denied,omitempty"`
-	TimedOut bool   `json:"timedOut,omitempty"`
-	Skipped  bool   `json:"skipped,omitempty"`
-	Action   string `json:"action,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	Attempts int    `json:"attempts,omitempty"`
+	Granted  bool          `json:"granted,omitempty"`
+	Denied   bool          `json:"denied,omitempty"`
+	Rework   bool          `json:"rework,omitempty"`
+	TimedOut bool          `json:"timedOut,omitempty"`
+	Skipped  bool          `json:"skipped,omitempty"`
+	Action   string        `json:"action,omitempty"`
+	Detail   string        `json:"detail,omitempty"`
+	Feedback string        `json:"feedback,omitempty"`
+	Comments []DiffComment `json:"comments,omitempty"`
+	Attempts int           `json:"attempts,omitempty"`
 }
 
 // approvalVerdict is the pure gate policy's output.
@@ -136,14 +141,16 @@ const (
 	approvalPending approvalVerdict = iota
 	approvalGranted
 	approvalDenied
+	approvalRework
 )
 
 // EvaluateApproval maps a read §18 human decision to the gate verdict. Only
 // `approve` grants (the `resume` action is the older "continue" synonym and also
-// grants); every other decision — including `deny`, `block`, `cancel`, `close`
-// — denies, so a valid-but-inapplicable signal routes to HUMAN_REQUIRED rather
-// than silently proceeding. A malformed marker never reaches here: it already
-// fails closed in ReadHumanDecision (§36).
+// grants); `request-changes` returns the work to the working path (§108); every
+// other decision — including `deny`, `block`, `cancel`, `close` — denies, so a
+// valid-but-inapplicable signal routes to HUMAN_REQUIRED rather than silently
+// proceeding. A malformed marker never reaches here: it already fails closed in
+// ReadHumanDecision (§36).
 func EvaluateApproval(d HumanDecision) approvalVerdict {
 	if !d.Present {
 		return approvalPending
@@ -151,6 +158,8 @@ func EvaluateApproval(d HumanDecision) approvalVerdict {
 	switch d.Action {
 	case humanDecisionApprove, humanDecisionResume:
 		return approvalGranted
+	case humanDecisionRequestChanges:
+		return approvalRework
 	default:
 		return approvalDenied
 	}
@@ -189,6 +198,9 @@ func AwaitApproval(ctx context.Context, in ApprovalRequest) (ApprovalResult, err
 		switch EvaluateApproval(d) {
 		case approvalGranted:
 			return ApprovalResult{Granted: true, Action: d.Action, Attempts: attempts}, nil
+		case approvalRework:
+			return ApprovalResult{Rework: true, Action: d.Action,
+				Detail: d.Feedback, Feedback: d.Feedback, Comments: d.Comments, Attempts: attempts}, nil
 		case approvalDenied:
 			return ApprovalResult{Denied: true, Action: d.Action,
 				Detail: "decision " + d.Action + " is not an approval signal", Attempts: attempts}, nil

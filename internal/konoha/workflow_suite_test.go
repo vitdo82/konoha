@@ -650,6 +650,56 @@ func TestWorkflowApprovalGateDenied(t *testing.T) {
 	}
 }
 
+// §108/§55: a request-changes decision at the publish gate runs a bounded repair
+// carrying the human feedback and then re-gates; an approval on the re-gate lets
+// the pipeline proceed. The gate is consulted twice and nothing is silently
+// approved.
+func TestWorkflowApprovalGateRequestChangesReworksThenGrants(t *testing.T) {
+	resetMetrics()
+	env := mockCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockSmallPath(env)
+	gates, repairs := 0, 0
+	var repairReq RepairRequest
+	env.OnActivity(AwaitApproval, mock.Anything, mock.Anything).Return(
+		func(context.Context, ApprovalRequest) (ApprovalResult, error) {
+			gates++
+			if gates == 1 {
+				return ApprovalResult{Rework: true, Action: humanDecisionRequestChanges,
+					Feedback: "add a regression test\n", Attempts: 1}, nil
+			}
+			return ApprovalResult{Granted: true, Action: humanDecisionApprove, Attempts: 2}, nil
+		})
+	env.OnActivity(RunRepair, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in RepairRequest) (DevelopResult, error) {
+			repairs++
+			repairReq = in
+			return DevelopResult{CommitSHA: "sha2", ChangedFiles: []string{"pkg/worker.go"},
+				Validated: true, Evidence: &AgentEvidence{Prompt: "repair", Stdout: "ok"}}, nil
+		})
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: testIssue, RepoPath: t.TempDir(),
+		Lifecycle: LifecycleConfig{Mode: modeSupervisedAutonomous, DevelopmentMaxComplexity: 4,
+			Approval: ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepPublish}}}}
+	env.ExecuteWorkflow(IssueCycleWorkflow, in)
+	if env.IsWorkflowCompleted() {
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatalf("workflow error: %v", err)
+		}
+	}
+	if got := terminalState(t, env); got != stateClosed {
+		t.Fatalf("rework-then-approve terminal = %q, want CLOSED", got)
+	}
+	if gates != 2 || repairs != 1 {
+		t.Fatalf("gates/repairs = %d/%d, want 2/1", gates, repairs)
+	}
+	if len(repairReq.Review.Blocking) != 1 || repairReq.Review.Blocking[0] != "add a regression test" {
+		t.Fatalf("repair must carry the human feedback as blocking findings: %+v", repairReq.Review)
+	}
+	if repairReq.PreviousCommit != "devsha" {
+		t.Fatalf("repair must build on the reviewed commit, got %q", repairReq.PreviousCommit)
+	}
+}
+
 // §55/§40: a gate timeout stays BLOCKED and never publishes (no silent success).
 func TestWorkflowApprovalGateTimeoutBlocks(t *testing.T) {
 	resetMetrics()

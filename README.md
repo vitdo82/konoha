@@ -473,7 +473,7 @@ never changes the terminal state. Under `dryRun` it is namespaced under
 | Config dir | `KONOHA_CONFIG_DIR` | default `configs/` |
 | Metrics listener | `METRICS_ADDR` | default off |
 | Webhook | `WEBHOOK_ADDR` + `GH_WEBHOOK_SECRET` | optional §32 fast-path |
-| Console | `KONOHA_CONSOLE_ADDR` + `KONOHA_CONSOLE_TOKEN` | optional #105 read-only console; **loopback only** |
+| Console | `KONOHA_CONSOLE_ADDR` + `KONOHA_CONSOLE_TOKEN` | optional #105/#108 console (read + decisions); **loopback only** |
 | GitHub App | `GH_APP_ID` / `GH_APP_INSTALL_ID` / `GH_APP_PEM` | secrets, never in file |
 | Max concurrent activities | `WORKER_MAX_CONCURRENT_ACTIVITIES` | host capacity |
 | Task queue | `KONOHA_TASK_QUEUE` | rare per-env rename |
@@ -609,12 +609,13 @@ offline against `evidence.dir`:
                                    # outcomes, conditions, usage (no Temporal)
 ```
 
-## Local review console (#105, board + detail #106)
+## Local review console (#105, board + detail #106, decisions #108)
 
-An opt-in, **loopback-only, read-only** HTTP console for the board and cycle
-detail. It is **disabled by default** — no listener starts unless
-`KONOHA_CONSOLE_ADDR` is set — and start a dedicated process (or let the worker
-start it when the same env var is set):
+An opt-in, **loopback-only** HTTP console for the board, cycle detail, and the
+human decision gate (#108). Read-only except for the decisions endpoint. It is
+**disabled by default** — no listener starts unless `KONOHA_CONSOLE_ADDR` is set
+— and start a dedicated process (or let the worker start it when the same env
+var is set):
 
 ```bash
 KONOHA_CONSOLE_ADDR=127.0.0.1:8765 /tmp/prbot console   # standalone, no Temporal required
@@ -630,19 +631,20 @@ Auth:
 - **CLI/worker API clients** present a bearer token (`KONOHA_CONSOLE_TOKEN`). If
   unset, a per-process token is generated and logged at startup.
 - **Browsers** fetch a per-process **CSRF token** from `GET /api/v1/status` and
-  send it on every API call; browser **mutations** (a later ticket) additionally
+  send it on every API call; browser **mutations** (the decisions endpoint) also
   require a loopback `Origin`. All token comparisons are constant-time.
 
-Read-only endpoints (there is **no mutation endpoint**):
+Endpoints:
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/v1/status` | `{version, readOnly, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
+| `GET /api/v1/status` | `{version, readOnly, decisions, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
 | `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) **and** the grouped `columns` |
-| `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, and the Diff/Validation/Metadata projections |
+| `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, the Diff/Validation/Metadata projections, and the open `gate` identity |
 | `GET /api/v1/cycles/{id}/artifacts` | artifact list with `{path, size, contentType, kind, previewable}` |
 | `GET /api/v1/cycles/{id}/artifacts/{name}` | **preview** (inline): text/HTML as `text/plain`, images as images; binary/oversize → 415 |
 | `GET /api/v1/cycles/{id}/download/{name}` | **download** any artifact (`Content-Disposition: attachment`, correct content type) |
+| `POST /api/v1/cycles/{id}/decisions` | **the only mutation** (#108): `approve` / `request-changes` / `deny` |
 
 ### Board + cycle detail (#106)
 
@@ -690,14 +692,48 @@ ever executing it:
   is rendered via `textContent`, never `innerHTML`). The pure listing/preview
   projection is unit-tested without a browser.
 
+### Human decisions: approve / request-changes / deny (#108)
+
+When a repo has the §55 pre-execution gate on, a cycle waits in
+`PENDING_APPROVAL` and the console detail shows a **Decision** panel bound to the
+exact attempt + reviewed SHA the view rendered. The panel is a thin client over
+the **existing authoritative channel** — it never becomes a second source of
+truth:
+
+- **Approve** writes `<!-- konoha-decision: approve -->` to the issue (the §18
+  decision channel the CLI/GitHub path already uses), so `AwaitApproval`/
+  `ReadHumanDecision` resume the cycle deterministically.
+- **Deny** writes `deny` → `HUMAN_REQUIRED` (unchanged). A **timeout** still
+  stays `BLOCKED`; the UI never implies approval.
+- **Request changes** writes `request-changes` plus a size-bounded feedback body
+  and optional diff-anchored comments. It records a #97 **rework activation**
+  carrying the feedback and returns the record to the working path; the
+  diff-anchored comments are persisted as the cycle's `comments.json` and shown
+  on the next review. At the publish gate the workflow runs a bounded repair
+  with the feedback and re-gates (capped by `maxDevReviewAttempts`).
+- **Authority + idempotency:** only the **current** gate may be actioned — a
+  superseded attempt/SHA is refused with `409`, and a repeated submit is a no-op
+  (one decision per gate, keyed by a byte-exact id marker). Diff-anchored
+  comments bound to a superseded SHA are **stale** and cannot be re-submitted.
+- **Audit:** every accepted decision is appended by the existing §55
+  `RecordAuditEvent` with the actor, step, and decision (`allow` / `deny` /
+  `request_changes`).
+- No new database, no parallel state machine: the §6 workflow state remains
+  authoritative (§44 #20) and the decision is observable via the existing
+  `konoha-decision` marker.
+
+Writing a decision posts an issue comment, so the console shells `gh` (the
+operator's GitHub auth) **only** on a decision — the read-only paths still touch
+no GitHub credential. `repos.yaml` is read (policy only) to resolve the repo
+owner and the audit sink.
+
 The SPA is served from embedded assets with a strict `Content-Security-Policy`
 (`default-src 'none'; script-src 'self'; …`), no inline script, and it never
-executes artifact content. The console process reads **no GitHub credential**
-and makes **no outbound network calls** beyond the operator's own Temporal
-server (optional; finished cycles render without it). Malformed cycle ids are
-`400`, unknown cycles are `404`, and every handler is time-bounded. This is
-policy-read-only over the same evidence store the CLI reads; see
-`docs/non-goals.md` → A2.
+executes artifact content. The read-only paths make **no outbound network calls**
+beyond the operator's own Temporal server (optional; finished cycles render
+without it). Malformed cycle ids are `400`, unknown cycles are `404`, a stale
+gate is `409`, and every handler is time-bounded. This is policy-read over the
+same evidence store the CLI reads; see `docs/non-goals.md` → A2.
 
 
 ## Debug
