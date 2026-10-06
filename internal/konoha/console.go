@@ -93,15 +93,22 @@ func (c ConsoleConfig) enabled() bool { return c.Addr != "" }
 // validateLoopbackAddr rejects any bind address that is not an explicit loopback
 // host, so the console can never be exposed on a routable interface.
 func validateLoopbackAddr(addr string) error {
+	return validateLoopback("console", addr)
+}
+
+// validateLoopback rejects any bind address that is not an explicit loopback
+// host, so the named surface (console/mcp) can never be exposed on a routable
+// interface.
+func validateLoopback(what, addr string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("console addr %q: %w", addr, err)
+		return fmt.Errorf("%s addr %q: %w", what, addr, err)
 	}
 	if port == "" {
-		return fmt.Errorf("console addr %q: missing port", addr)
+		return fmt.Errorf("%s addr %q: missing port", what, addr)
 	}
 	if !isLoopbackHost(host) {
-		return fmt.Errorf("console addr %q: must bind a loopback host (127.0.0.1, ::1 or localhost), not %q", addr, host)
+		return fmt.Errorf("%s addr %q: must bind a loopback host (127.0.0.1, ::1 or localhost), not %q", what, addr, host)
 	}
 	return nil
 }

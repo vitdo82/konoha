@@ -487,6 +487,7 @@ never changes the terminal state. Under `dryRun` it is namespaced under
 | Metrics listener | `METRICS_ADDR` | default off |
 | Webhook | `WEBHOOK_ADDR` + `GH_WEBHOOK_SECRET` | optional §32 fast-path |
 | Console | `KONOHA_CONSOLE_ADDR` + `KONOHA_CONSOLE_TOKEN` | optional #105/#108 console (read + decisions); **loopback only** |
+| MCP | `KONOHA_MCP_ADDR` + `KONOHA_MCP_TOKEN` (+ `KONOHA_MCP_CONTROL`) | optional #116 read-only MCP surface; control opt-in; **loopback only** |
 | GitHub App | `GH_APP_ID` / `GH_APP_INSTALL_ID` / `GH_APP_PEM` | secrets, never in file |
 | Max concurrent activities | `WORKER_MAX_CONCURRENT_ACTIVITIES` | host capacity |
 | Task queue | `KONOHA_TASK_QUEUE` | rare per-env rename |
@@ -863,6 +864,48 @@ console (#105/#111), bounded by #102, torn down with the cycle (#93), and
 so untrusted served content is never treated as trusted console content. See
 `docs/non-goals.md` → conditional exceptions and
 [#114](https://github.com/vitdo82/konoha/issues/114).
+
+## MCP server (#116)
+
+An opt-in, **loopback-only**, **read-only** Model Context Protocol surface so an
+operator's local agent can ask "what needs attention?", "what is the status of
+cycle X?", "show the latest failure" without scraping the evidence store. It is
+**disabled by default** — no listener starts unless `KONOHA_MCP_ADDR` is set —
+and reads no GitHub credential. Start a dedicated process, or let the worker
+start it when the same env var is set:
+
+```bash
+KONOHA_MCP_ADDR=127.0.0.1:8766 /tmp/prbot mcp   # standalone, no Temporal required
+KONOHA_MCP_ADDR=127.0.0.1:8766 make run         # or alongside the worker
+```
+
+> **Loopback only.** A non-loopback bind address (e.g. `0.0.0.0:8766`, a LAN IP,
+> or a bare `:8766`) is **rejected at startup**, exactly like the console.
+
+Transport is MCP **Streamable HTTP** (JSON-RPC 2.0 over `POST /mcp`); auth is a
+bearer token (`KONOHA_MCP_TOKEN`, generated and logged when unset), compared
+constant-time. Tools are thin projections over the **same data as the CLI (#99)
+and console (#105)**: every read is redacted (#82) and size-bounded, and
+`get_evidence` paths are evidence-store-relative only (traversal rejected, #83).
+
+| Tool | Returns |
+|---|---|
+| `list_cycles` | board rows (finished from evidence + running from Temporal), optionally filtered by `repo` / `state`, plus the grouped `columns` |
+| `get_cycle` | one cycle's detail: state, agent/verification outcomes, ordered conditions, artifacts, diff/validation projections |
+| `get_evidence` | one cycle's artifact list, or one artifact's redacted, path-validated content |
+| `environment_list` | one cycle's recorded evidence artifacts (its inspectable environment) |
+| `environment_log` | one cycle's agent stdout/stderr + validation output (same data as `prbot logs`) |
+| `environment_diff` | one cycle's recorded `diff.patch` |
+
+There are **no mutating tools by default**. Setting `KONOHA_MCP_CONTROL=1` adds
+exactly one opt-in control tool, `post_decision` (`approve` /
+`request-changes` / `deny`), which binds to the live gate attempt+SHA and writes
+**only** through the authoritative §18 decision channel (#108) — never a parallel
+path. It is default-closed; the mutating environment operations (create/write/
+exec/delete) of Container Use's MCP tools are deliberately **not** exposed, and
+`request_retry` is deferred because it would need a new §18 action outside the
+#108 closed set (the queue retry/cancel surface stays console-only, #109). See
+`docs/non-goals.md` for the no-sandbox boundary.
 
 ## Debug
 

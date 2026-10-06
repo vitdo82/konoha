@@ -814,6 +814,20 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   credential-free and make no outbound calls beyond the optional Temporal status
   query. Adding the console renames no exported activity/workflow func (no
   Temporal type change).
+- `mcp.go` owns the #116 local MCP surface: an opt-in, **loopback-only**,
+  **read-only** Model Context Protocol server (Streamable HTTP, JSON-RPC 2.0
+  over `POST /mcp`) started by `StartMCPServer` (worker; no-op when
+  `KONOHA_MCP_ADDR` is unset) or the `prbot mcp` entrypoint. It reuses the
+  console's `validateLoopback`/`bearerToken`/`constantTimeEqual` and the same
+  `consoleData` projections, so `list_cycles`/`get_cycle`/`get_evidence` return
+  the SAME data as the CLI (#99) and console (#105); `environment_list/log/diff`
+  read the cycle's recorded evidence (same as `prbot logs`). Every read is
+  redacted (#82) and size-bounded, `get_evidence` paths are store-relative only
+  (#83), and `mcpConfigFromEnv` reads **only** `KONOHA_MCP_*` (never `GH_*`). No
+  mutating tool is exposed by default; `KONOHA_MCP_CONTROL` adds exactly one
+  opt-in tool, `post_decision`, which routes through the #108 `submitDecision`
+  path (the authoritative §18 channel) — never a parallel write. Adding the MCP
+  surface renames no exported activity/workflow func (no Temporal type change).
 - `decisions.go` owns the #108 console decision surface, built on the §55 gate
   and #97 change record. **It is not a second source of truth**: `SubmitHumanDecision`
   writes the byte-exact `<!-- konoha-decision: <action> -->` marker (plus a
