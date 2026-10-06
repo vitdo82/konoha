@@ -195,6 +195,26 @@ without restarting a completed workflow. Deliveries with an invalid
   isolation**, and introduces no per-tenant GitHub App credential — `GH_*` is
   unchanged (§23); see `docs/non-goals.md` → B3 (#101). `scopes.go` adds no
   exported activity/workflow func, so no Temporal type name changes.
+- **Declarative agent profiles (`profiles.go`, #117)**: a top-level `agents:`
+  block in `konoha.yaml` bundles the per-agent layers — harness (#85), model
+  (#98 catalog NAME), limits (#102), plus `tools`/`mcp`/`promptMode` — into named
+  profiles. `repos.yaml` selects one per stage via `lifecycle.agents.<stage>`
+  (`analyst|estimator|developer|reviewer|repair|completion`) with a repo-level
+  `lifecycle.agents.default`. `resolveAgentProfiles` runs **once at load** inside
+  `loadReposConfigWithResources` (before `resolveScopes`, so a scope narrows the
+  profile-resolved harness/model), flattening the selection into the existing
+  `LifecycleConfig.Harness`/`Models`/`Limits` so **no workflow-side name
+  resolution** ever occurs. The resolved stage→profile map + a content digest
+  land on `LifecycleConfig.Profiles`/`ProfileDigest` (`yaml:"-"`, carried in the
+  schedule input), in `outcome.json` (`CycleOutcome.Profiles`/`ProfileDigest`),
+  and in the #88 policy digest. Unknown profile/harness/model names, an empty or
+  duplicate tool/MCP entry, two selected profiles that disagree on the single
+  harness/limits the pipeline can express, and a **conflicting** legacy
+  `lifecycle.harness`/`model`/`models`/`limits` key all fail at load. A repo with
+  no `lifecycle.agents` is byte-for-byte the legacy behavior (the implicit
+  profile). `tools`/`mcp`/`promptMode` are recorded + digested only — their
+  cross-reference enforcement is the #119 tool/MCP registry. `profiles.go` adds
+  no exported activity/workflow func (no Temporal type name changes).
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are

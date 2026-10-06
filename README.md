@@ -148,6 +148,14 @@ harness:                          # §85 generic harness (used when a repo selec
   mcp:                            # #96: MCP server config for supporting harnesses (optional)
     path: ".mcp.json"             # worktree-relative location to write (git-excluded)
     config: "{}"                  # config content
+# agents:                         # #117 declarative agent profiles (see below)
+#   reviewer:
+#     harness: opencode           # §85 harness NAME (fallback: defaults.lifecycle.harness)
+#     model: strong               # §98 catalog NAME from defaults.agents.models (never a raw id)
+#     tools: [read, grep]         # recorded + digested (enforcement lands with the #119 tool/MCP registry)
+#     mcp: [github]               # recorded + digested (enforcement lands with #119)
+#     limits: { memoryMiB: 2048 } # #102 override; agrees with every other selected profile
+#     promptMode: arg             # recorded + digested (harness prompt transport)
 defaults:
   lifecycle:
     harness: opencode             # §85 fallback harness name when a repo leaves it unset
@@ -210,6 +218,38 @@ sandbox (see `docs/security.md`), so there is nothing to name: there is no
 egress to policy and no isolated workspace to attach. They are documented as
 not-applicable rather than stubbed, so the catalog never advertises a capability
 that does not exist.
+
+**Declarative agent profiles (#117).** A profile bundles the per-agent layers
+(harness #85, model #98, limits #102, plus the tool/MCP references and prompt
+transport) into one named unit declared in `konoha.yaml` `agents:`. A repo
+selects a profile per stage in `repos.yaml` — `lifecycle.agents.<stage>` for
+`analyst|estimator|developer|reviewer|repair|completion`, with a repo-level
+`lifecycle.agents.default` fallback:
+
+```yaml
+lifecycle:
+  agents:                        # #117: stage → profile name (default = repo fallback)
+    default: cheap
+    developer: strong
+    reviewer: strong
+```
+
+Resolution happens **once at load** (`prbot config` / worker startup): the
+selected profile is flattened into the repo's effective harness/model/limits, so
+no workflow ever resolves a profile name. The resolved stage→profile map and a
+content **digest** land in `outcome.json` (`profiles` / `profileDigest`) and are
+covered by the #88 policy digest, so a profile edit is a reviewable diff. An
+unknown profile, harness, or model name **fails at load**, and two selected
+profiles that disagree on the single harness/limits the pipeline can express
+fail closed.
+
+**Backward compatibility.** A repo with no `lifecycle.agents` keeps today's
+behavior exactly — the legacy `lifecycle.harness`/`model`/`models`/`limits` keys
+are the implicit profile. Declaring both a profile and a **conflicting** legacy
+key (e.g. a profile harness of `opencode` alongside `lifecycle.harness: generic`)
+fails at load with a clear error; agreeing values are allowed. `tools`, `mcp`,
+and `promptMode` are recorded and digested; their cross-reference enforcement
+lands with the tool/MCP registry (#119), which owns the named catalogs.
 
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).

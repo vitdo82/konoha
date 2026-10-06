@@ -34,6 +34,7 @@ type LifecycleConfig struct {
 	Models                        map[string]string `yaml:"models" json:"models,omitempty"`   // §98 per-stage catalog name (analyst/estimator/developer/reviewer/repair/completion)
 	Budget                        string            `yaml:"budget" json:"budget,omitempty"`   // §98 named budget from defaults.agents.budgets; "" = none
 	Harness                       string            `yaml:"harness" json:"harness,omitempty"` // §85 agent harness by NAME; "" = defaults.lifecycle.harness
+	Agents                        map[string]string `yaml:"agents" json:"agents,omitempty"`   // #117 per-stage profile selection; "default" = repo-level default
 	DevelopmentMaxComplexity      int               `yaml:"developmentMaxComplexity" json:"developmentMaxComplexity,omitempty"`
 	MaxDevReviewAttempts          int               `yaml:"maxDevReviewAttempts" json:"maxDevReviewAttempts,omitempty"`
 	Autonomy                      Autonomy          `yaml:"autonomy" json:"autonomy,omitempty"`
@@ -60,6 +61,14 @@ type LifecycleConfig struct {
 	// (yaml:"-") — travels in the schedule input, and is part of the #88 policy
 	// digest, so a change of scope is a visible diff. Empty = global baseline.
 	Scope string `yaml:"-" json:"scope,omitempty"`
+	// Profiles/ProfileDigest are the #117 load-resolved agent-profile selection:
+	// stage → profile name, and the content digest of the resolved bundle. Set
+	// ONCE at load by resolveAgentProfiles (yaml:"-", never accepted from
+	// repos.yaml), carried in the schedule input, and stamped onto outcome.json.
+	// The workflow only reads the flattened policy (harness/model/limits); it
+	// never resolves a profile name.
+	Profiles      map[string]string `yaml:"-" json:"profiles,omitempty"`
+	ProfileDigest string            `yaml:"-" json:"profileDigest,omitempty"`
 }
 
 // ValidationGate is one structured §26 verification gate: a bare argv run in a
@@ -226,6 +235,13 @@ func loadReposConfigWithResources(path string) ([]RepoConfig, error) {
 	if err := validateResourceRefs(repos, cfg.Defaults.Agents); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// #117: resolve each repo's agent-profile selection ONCE at load, flattening
+	// it into the lifecycle (harness/model/limits) so no workflow-side name
+	// resolution occurs. Runs BEFORE scopes so a scope narrows the resolved
+	// harness/model the profile actually selected.
+	if err := resolveAgentProfiles(repos, cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	// #104: resolve the narrow-only tenancy scopes once at load, so the emitted
 	// schedule input carries the resolved scope + effective policy (the workflow
 	// never resolves a scope name).
@@ -266,6 +282,14 @@ func (lc *LifecycleConfig) validate() error {
 	for stage := range lc.Models {
 		if !knownStage(stage) {
 			return fmt.Errorf("lifecycle.models.%s: unknown stage (known: %s)", stage, strings.Join(pipelineStages, ", "))
+		}
+	}
+	// #117: profile selection keys are the closed stage set plus the repo-level
+	// `default`; the profile NAMEs are validated against the `agents:` catalog at
+	// load by resolveAgentProfiles.
+	for stage := range lc.Agents {
+		if stage != profileDefaultStage && !knownStage(stage) {
+			return fmt.Errorf("lifecycle.agents.%s: unknown stage (known: %s, %s)", stage, strings.Join(pipelineStages, ", "), profileDefaultStage)
 		}
 	}
 	if lc.DevelopmentMaxComplexity < 0 || lc.DevelopmentMaxComplexity > 10 {
