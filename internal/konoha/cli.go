@@ -207,6 +207,7 @@ func Main() {
 	w.RegisterActivity(RunReviewer)
 	w.RegisterActivity(RunRepair)
 	w.RegisterActivity(RunCompletion)
+	w.RegisterActivity(RunPRDescription) // #115: AI-generated PR description
 	w.RegisterActivity(RunResolution)
 	w.RegisterActivity(RunSplit)
 	w.RegisterActivity(RunDiagnosis)

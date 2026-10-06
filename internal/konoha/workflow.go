@@ -683,6 +683,31 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// -- publish (idempotent PR, §25) — from the MAIN repo path + the dev commit
 	// (the worktree was cleaned up; its commit lives in the main repo object DB).
 	status.setStep("publish")
+	// #115: one bounded AI generation of the PR body over the validated
+	// artifacts (opt-in `lifecycle.publish.aiDescription`). Any failure falls
+	// back to the deterministic body and still opens the PR. The body is EVIDENCE
+	// ONLY: the reviewer/risk-gate/merge/close paths read `a`/`dev`, never the PR
+	// body, so generation can never change a verdict (§40/§44 #4).
+	prBodyText := prBody(in, a)
+	if AIDescriptionEnabled(in.Lifecycle) {
+		// ponytail: generated once from the initial validated artifacts; a repair
+		// re-publishes the same body. Regenerate after APPROVE if a moving body
+		// matters (one extra bounded agent call).
+		var desc PRDescriptionResult
+		if err := workflow.ExecuteActivity(agentCtx, RunPRDescription, PRDescriptionRequest{
+			Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum, RepoPath: in.RepoPath,
+			Model: devModel.AgentModel(), Harness: in.Lifecycle.Harness,
+			Title: a.Title, Body: a.Body, Spec: a.Spec,
+			Requirements: a.Requirements, AcceptanceCriteria: a.AcceptanceCriteria, Constraints: a.Constraints,
+			DeveloperSummary: dev.Summary, Concerns: dev.Concerns, ChangedFiles: dev.ChangedFiles,
+			ValidationOutput: dev.ValidationOutput, Limits: in.Lifecycle.Limits,
+		}).Get(agentCtx, &desc); err != nil {
+			workflow.GetLogger(ctx).Warn("PR description generation failed; using deterministic body (§25)", "err", err)
+		} else if strings.TrimSpace(desc.Body) != "" {
+			prBodyText = desc.Body
+			writeAgentEvidence(writeEvidence, desc.Evidence, desc, "")
+		}
+	}
 	var pub PublishResult
 	pubIn := PublishInput{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath,
@@ -690,7 +715,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		Branch:     fmt.Sprintf("konoha/issue-%d", in.IssueNum),
 		BaseBranch: "main",
 		Title:      a.Title,
-		Body:       prBody(in, a),
+		Body:       prBodyText,
 		// §26 validation already ran in the developer activity; its aggregate is
 		// carried on dev.Validated/ValidationOutput, so publish does not re-run it.
 		ValidationCmd:  "",

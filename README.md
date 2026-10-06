@@ -33,6 +33,8 @@ repos:
         strategy: squash               # squash | rebase | merge
         requireCI: true                # gate the merge on green CI (default true)
         ciMaxWait: 10m                 # bounded CI poll window
+      publish:                         # §25/#115 PR description policy
+        aiDescription: false           # opt-in AI PR body; failure → deterministic body
       release:                         # §50 post-merge release + changelog
         enabled: false                 # opt-in; false/unset = no-op
         changelogPath: CHANGELOG.md    # repo-relative changelog file
@@ -257,6 +259,17 @@ commit SHA and terminal state are unchanged). The legacy
 `lifecycle.validationCmd` shell string still works; setting both is a load-time
 error (ambiguous). A repo that declares neither inherits
 `defaults.lifecycle.validation`.
+
+**AI PR description (§25/#115).** Opt in with
+`lifecycle.publish.aiDescription: true` (default off). Before opening the PR the
+worker runs one bounded agent step over the already-validated artifacts (issue
+spec, developer summary, changed files, §26 validation evidence) and posts a
+structured body — Summary / Changes / Risks / Validation — bounded in length and
+redacted. The body is **evidence only**: it never feeds the reviewer, the §20
+risk gate, the §49 merge, or the §19 close policy, so it can never change a
+verdict. Malformed output or a generation failure (or the default off) falls
+back to the deterministic body and the PR still opens — never a broken PR. No
+raw issue text is treated as instructions (§27).
 
 ### Durable per-cycle evidence (`evidence.dir`)
 

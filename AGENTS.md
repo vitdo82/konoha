@@ -225,6 +225,21 @@ without restarting a completed workflow. Deliveries with an invalid
   per-repo list, falling back to `defaults.lifecycle`. The workflow threads the
   resolved profile into the dev/repair activities only, so `dev.Validated` feeds
   the §84 `verificationOutcome`; publish keeps its existing policy gate.
+- `prdesc.go` owns the #115 AI-generated PR description (§25), an opt-in
+  (`lifecycle.publish.aiDescription`, default off) bounded agent step.
+  `RunPRDescription` runs a fresh opencode execution over the already-validated
+  artifacts (issue spec, developer summary, changed files, §26 validation
+  evidence) — never the developer/reviewer transcript — embedding issue-derived
+  text in the `UNTRUSTED` markers (§27), and returns a structured
+  `PRDescription` (summary/changes/risks/validation) parsed/validated
+  fail-closed (`parsePRDescriptionJSON`/`ValidatePRDescription`). `renderPRDescription`
+  prepends the deterministic `Closes` line, clamps fields, redacts (#82), and
+  length-bounds the body. The workflow calls it before `EnsurePullRequest`; any
+  failure falls back to the deterministic `prBody` and the PR still opens
+  (§40 fail-open to the safe default). The body is EVIDENCE ONLY — the
+  reviewer/§20 gate/§49 merge/§19 close read `a`/`dev`, never the body, so it
+  can never change a verdict (`RetryClass` is `agent`, exactly 1). It adds one
+  registered activity (`RunPRDescription`), no renamed funcs.
 - `merge.go` owns the §49 merge + CI status gate: `WaitForCI` polls
   `gh pr checks --json bucket,name` until every check passes or one fails,
   bounded by `merge.ciMaxWait`; a fail, an unclassifiable bucket, or a timeout

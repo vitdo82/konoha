@@ -46,6 +46,7 @@ type LifecycleConfig struct {
 	Propagation                   PropagationConfig `yaml:"propagation" json:"propagation,omitempty"`
 	Approval                      ApprovalConfig    `yaml:"approval" json:"approval,omitempty"`
 	Audit                         AuditConfig       `yaml:"audit" json:"audit,omitempty"`
+	Publish                       PublishConfig     `yaml:"publish" json:"publish,omitempty"`             // #115 PR-description policy
 	Validation                    []ValidationGate  `yaml:"validation" json:"validation,omitempty"`       // §26 structured argv gates
 	ValidationCmd                 string            `yaml:"validationCmd" json:"validationCmd,omitempty"` // §26 legacy shell-string fallback; mutually exclusive with validation
 	Limits                        *LimitsConfig     `yaml:"limits" json:"limits,omitempty"`               // #102 per-repo host resource ceilings (nil = global konoha.yaml limits)
@@ -129,6 +130,14 @@ type MergeConfig struct {
 	Strategy  string `yaml:"strategy" json:"strategy,omitempty"`   // squash|rebase|merge
 	RequireCI *bool  `yaml:"requireCI" json:"requireCI,omitempty"` // gate the merge on green CI
 	CIMaxWait string `yaml:"ciMaxWait" json:"ciMaxWait,omitempty"` // bounded CI poll window (Go duration)
+}
+
+// PublishConfig is the per-repo §25 publish policy (#115). AIDescription opts a
+// repo into one bounded AI generation of the PR body over already-validated
+// artifacts; it defaults OFF (opt-in). Any generation failure falls back to the
+// deterministic body, so the PR still opens. The body is evidence only.
+type PublishConfig struct {
+	AIDescription bool `yaml:"aiDescription" json:"aiDescription,omitempty"`
 }
 
 // Autonomy is the §33 autonomy block.
