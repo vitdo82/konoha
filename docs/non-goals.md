@@ -110,8 +110,12 @@ as a stronger guarantee than they are (§40: never a silent over-claim).
 
 ### B2. Network egress — [#103]
 
-- **Boundary:** an **advisory** `HTTPS_PROXY` allowlist that shapes well-behaved
-  agent traffic; **bypassable** by a process that ignores it. Enforcement is
+- **Boundary:** an **advisory** `egress:` proxy allowlist (konoha.yaml:
+  `proxy` + `allowOut`) that sets `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` on agent
+  and validation children to shape well-behaved traffic; **bypassable** by a
+  process that ignores it, and **not a security boundary**. Konoha performs no
+  host-side L7 credential header injection. `outcome.json` records
+  `egress.status: advisory` + the allowlist, never "enforced". Enforcement is
   deferred to [#92] (see [A4](#a4-enforced-network-egress--l7-credential-header-injection)).
 - **Upgrade condition:** [#92] adopts a container executor with policyable
   egress; then the advisory proxy is replaced by (or backed by) real enforcement.

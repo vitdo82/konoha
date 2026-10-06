@@ -131,6 +131,7 @@ type CycleOutcome struct {
 	Resources           *ResourceEvidence `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
 	Cleanup             *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
 	Limits              *LimitEvidence    `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
+	Egress              *EgressEvidence   `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the

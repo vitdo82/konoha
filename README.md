@@ -117,6 +117,9 @@ evidence:
 #   memoryMiB: 2048
 #   diskMiB: 1024
 #   maxWallClock: 30m             # hard kill; must not exceed worker.devTimeout
+# egress:                         # #103 ADVISORY proxy allowlist (bypassable; NOT a security boundary)
+#   proxy: http://127.0.0.1:8888  # sets HTTPS_PROXY/HTTP_PROXY/NO_PROXY on agent + validation children
+#   allowOut: ["api.anthropic.com", "registry.npmjs.org"]  # recorded in outcome.json only
 harness:                          # §85 generic harness (used when a repo selects `generic`)
   executable: ""                  # bare executable NAME (no path separators)
   args: ["run", "{{model_args}}", "{{prompt}}"]  # {{model_args}}/{{prompt}} expand
@@ -333,6 +336,38 @@ FAILED`, reason `agent_failure`), never a silent pass; it never changes a
 deterministic gate verdict except by killing the process that would have
 produced it (§40). Invalid/negative ceilings, or a `maxWallClock` greater than
 the agent activity window, fail at config load.
+
+### Network egress — advisory only (#103)
+
+Konoha has **no sandbox** (`docs/security.md`), so it cannot enforce a network
+policy: agents and gates run as the operator's OS user with the operator's
+network access, and any in-process proxy would be trivially bypassed. The
+optional `egress:` block is therefore **advisory**: when set, Konoha exports
+`HTTPS_PROXY`/`HTTP_PROXY` (and a loopback `NO_PROXY`) on agent and validation
+child processes so **well-behaved** tools honour the operator's allowlisting
+proxy.
+
+```yaml
+egress:
+  proxy: http://127.0.0.1:8888
+  allowOut: ["api.anthropic.com", "registry.npmjs.org"]
+```
+
+> **This is bypassable and is not a security boundary.** A process that ignores
+> the proxy env or opens a raw socket is not stopped. Konoha never labels host
+> egress as "enforced" and performs **no L7 credential header injection** on the
+> host — there is no trusted mandatory proxy to carry it. `outcome.json` records
+> the advisory status + allowlist, never an enforcement claim:
+
+```json
+"egress": {"status": "advisory", "proxy": "http://127.0.0.1:8888", "allowOut": ["api.anthropic.com"]}
+```
+
+Absent/empty `egress.proxy` is the default and sets **no** proxy env (today's
+behavior). Enforced egress (deny-by-default + L7 header injection) belongs to the
+container/microVM executor ([#92](https://github.com/vitdo82/konoha/issues/92)),
+where it becomes mandatory; see
+[`docs/non-goals.md`](docs/non-goals.md) → A4/B2.
 
 ### Agent token/cost accounting (§39)
 

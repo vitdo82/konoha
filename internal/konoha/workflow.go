@@ -300,6 +300,12 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 				out.Limits = limitsEvidence(EffectiveLimits(in.Lifecycle))
 			}
 		}
+		// #103: record the advisory egress policy (or its absence) as evidence.
+		// It is BYPASSABLE and never an enforcement claim; absent config records
+		// nothing, exactly like limits.
+		if out.Egress == nil {
+			out.Egress = egressEvidence(appCfg.Egress)
+		}
 		// §98: record the resolved catalog + budget crossings as evidence. A
 		// crossing NEVER rewrites the verdict/state or shortens a timeout — it is
 		// a reviewable record only (§40).
@@ -1153,5 +1159,6 @@ func failedChildOutcome(in IssueInput) CycleOutcome {
 		VerificationOutcome: verificationSkipped,
 		EscalationReason:    reasonAgentFailure,
 		Limits:              limitsEvidence(EffectiveLimits(in.Lifecycle)), // #102: applied ceilings + status
+		Egress:              egressEvidence(appCfg.Egress),                 // #103: advisory egress (never "enforced")
 	}
 }

@@ -69,7 +69,7 @@ func validateRepo(in PublishInput) (ok, skipped bool, output string, err error) 
 		return false, true, "", nil
 	}
 	// #102: best-effort host ceilings on the legacy shell-string path too.
-	c, _ := enforceCommand(context.Background(), limitsForOverride(in.Limits), "sh", []string{"-c", cmd}, in.RepoPath, cmdEnv(in.RepoPath))
+	c, _ := enforceCommand(context.Background(), limitsForOverride(in.Limits), "sh", []string{"-c", cmd}, in.RepoPath, egressEnv(cmdEnv(in.RepoPath), appCfg.Egress))
 	out, runErr := c.CombinedOutput()
 	return runErr == nil, false, string(out), nil
 }
@@ -210,7 +210,7 @@ func runGate(in PublishInput, g ValidationGate) gateRun {
 
 	ctx, cancel := context.WithTimeout(context.Background(), g.timeout())
 	defer cancel()
-	c, _ := enforceCommand(ctx, limitsForOverride(in.Limits), g.Argv[0], g.Argv[1:], dir, cmdEnv(dir))
+	c, _ := enforceCommand(ctx, limitsForOverride(in.Limits), g.Argv[0], g.Argv[1:], dir, egressEnv(cmdEnv(dir), appCfg.Egress))
 	stdout, stderr, err := runCapture(c)
 	r.Stdout, r.Stderr = stdout, stderr
 	if err == nil {

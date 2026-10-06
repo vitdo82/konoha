@@ -60,6 +60,7 @@ type AppConfig struct {
 	Evidence EvidenceConfig       `yaml:"evidence"`
 	Harness  GenericHarnessConfig `yaml:"harness"`
 	Limits   LimitsConfig         `yaml:"limits"` // #102 global host resource ceilings (per-repo lifecycle.limits overrides)
+	Egress   EgressConfig         `yaml:"egress"` // #103 advisory proxy allowlist (bypassable; NOT a boundary)
 	Defaults DefaultsConfig       `yaml:"defaults"`
 }
 
@@ -350,6 +351,11 @@ func (c AppConfig) validate() error {
 		return err
 	}
 	if err := c.Limits.validateActivityWindow("limits", c.Worker.devWindow()); err != nil {
+		return err
+	}
+	// #103: advisory egress must be a well-formed http(s) proxy URL; absent is
+	// valid (= today's behavior).
+	if err := c.Egress.validate("egress"); err != nil {
 		return err
 	}
 	if c.Worker.MaxConcurrentActivities < 1 {
