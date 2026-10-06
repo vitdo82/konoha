@@ -1144,6 +1144,8 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	if out.Scope == "" {
 		out.Scope = in.Lifecycle.Scope
 	}
+	// #117: record the load-resolved agent profiles (stage → name) + digest.
+	stampProfiles(&out, in.Lifecycle)
 	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
 	// child ID for a sweep-escalated failure), so evidence is stable under retry.
 	cycleID := out.WorkflowID

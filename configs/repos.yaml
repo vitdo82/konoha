@@ -4,6 +4,10 @@
 #   - mode: review-only | supervised-autonomous
 #   - model: opencode agent model (provider/model, e.g. opencode-go/deepseek-v4.1-flash);
 #     unset = built-in default
+#   - agents: #117 per-stage profile selection from konoha.yaml `agents:`
+#     {default: <profile>, developer: <profile>, ...}; resolves once at load into
+#     the effective harness/model/limits. Conflicting legacy harness/model/limits
+#     keys fail at load; tools/mcp are recorded + digested (enforcement is #119).
 #   - developmentMaxComplexity: max complexity the developer handles (1-10)
 #   - maxDevReviewAttempts: bounded review/fix loops
 #   - autonomy.default/closePolicy + humanRequired*: escalation policy

@@ -63,6 +63,7 @@ type AppConfig struct {
 	Egress   EgressConfig         `yaml:"egress"`   // #103 advisory proxy allowlist (bypassable; NOT a boundary)
 	Facility string               `yaml:"facility"` // #104 tenancy Facility label (recorded; not an auth boundary — single-operator)
 	Scopes   ScopesConfig         `yaml:"scopes"`   // #104 narrow-only product-line scopes (Paddock Facility > Product Line > Department)
+	Agents   AgentProfilesConfig  `yaml:"agents"`   // #117 declarative agent profiles (harness/model/tools/mcp/limits)
 	Defaults DefaultsConfig       `yaml:"defaults"`
 }
 
@@ -396,6 +397,11 @@ func (c AppConfig) validate() error {
 		return err
 	}
 	if err := c.Defaults.Agents.validate(); err != nil {
+		return err
+	}
+	// #117: every declared profile is validated (known harness/model/tool/mcp),
+	// even if no repo selects it, so a typo fails at load.
+	if err := c.Agents.validate(c.Defaults.Agents); err != nil {
 		return err
 	}
 	d := c.Defaults.Lifecycle

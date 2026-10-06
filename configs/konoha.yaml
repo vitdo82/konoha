@@ -49,6 +49,27 @@ evidence:
 #         repositories: ["acme/payments-checkout"]
 #         models: ["strong"]
 
+# #117 declarative agent profiles: bundle harness (#85), model (#98 catalog
+# NAME), limits (#102), plus tools/mcp/promptMode into one named unit. A repo
+# selects one per stage in repos.yaml (`lifecycle.agents.<stage>`, with a
+# repo-level `default`). Resolved ONCE at load (apply.sh / prbot config) into the
+# effective harness/model/limits, digested (#88) and carried in the schedule
+# input — no workflow-side name resolution. An unknown profile/harness/model
+# fails at load; tools/mcp are recorded + digested only (enforcement is the #119
+# registry). A repo with no lifecycle.agents keeps legacy behavior; a conflicting
+# legacy harness/model/limits key fails at load.
+# agents:
+#   cheap:
+#     harness: opencode
+#     model: cheap              # defaults.agents.models name
+#   strong:
+#     harness: opencode
+#     model: strong
+#     tools: [read, grep]       # recorded + digested (not enforced until #119)
+#     mcp: [github]
+#     limits: { memoryMiB: 2048 }
+#     promptMode: arg
+
 worker:
   taskQueue: review-queue
   maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES
