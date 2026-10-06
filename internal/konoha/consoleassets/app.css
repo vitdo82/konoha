@@ -1,0 +1,74 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b36;
+  --text: #e6e8ee;
+  --muted: #8b93a7;
+  --accent: #7cc4ff;
+  --ok: #5fd39a;
+  --warn: #f0b866;
+  --bad: #f0736c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.brand { color: var(--accent); font-weight: 700; letter-spacing: 0.04em; }
+.subtitle { color: var(--muted); }
+.meta { margin-left: auto; color: var(--muted); }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 2fr);
+  gap: 16px;
+  padding: 16px 20px;
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.panel h2 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.board { list-style: none; margin: 0; padding: 0; }
+.board li {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.board li:hover { border-color: var(--line); }
+.board li[aria-selected="true"] { border-color: var(--accent); background: #1c2230; }
+.board .id { display: block; }
+.board .row { display: flex; gap: 8px; color: var(--muted); font-size: 12px; }
+
+.state { padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.state.OPEN, .state.RUNNING { color: var(--accent); }
+.state.CLOSED, .state.DONE { color: var(--ok); }
+.state.BLOCKED, .state.FAILED, .state.HUMAN_REQUIRED, .state.CANCELLED { color: var(--bad); }
+
+.detail .empty, .board .empty { color: var(--muted); }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 10px; margin-bottom: 12px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+.artifacts { margin: 0; padding-left: 18px; color: var(--muted); }
+.error { color: var(--bad); }

@@ -106,6 +106,14 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "console":
+			// #105: loopback-only read-only console. Dispatched BEFORE the worker
+			// bootstrap (and registerOperatorSecrets) so this process reads no
+			// GitHub credential; runConsole loads konoha.yaml itself.
+			if err := runConsole(); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
@@ -245,6 +253,16 @@ func Main() {
 		StartWebhookServer(c, repos)
 	} else {
 		log.Printf("webhook disabled: repos.yaml: %v", err)
+	}
+
+	// #105 read-only console (env KONOHA_CONSOLE_ADDR; loopback-only).
+	// Disabled by default; a non-loopback address fails fast.
+	consoleStore, err := NewEvidenceStore(appCfg.Evidence, &defaultRedactor)
+	if err != nil {
+		log.Fatalf("console: %v", err)
+	}
+	if _, err := StartConsoleServer(c, consoleStore, consoleVersion()); err != nil {
+		log.Fatalf("console: %v", err)
 	}
 
 	// #93: recover worktrees stranded by a crashed worker. workflowAlive lets the

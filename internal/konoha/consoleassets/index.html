@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Konoha console</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">konoha</span>
+    <span class="subtitle">local review console</span>
+    <span id="meta" class="meta"></span>
+  </header>
+  <main id="app" class="layout">
+    <section class="panel" aria-labelledby="board-title">
+      <h2 id="board-title">Cycles</h2>
+      <ul id="board" class="board"></ul>
+    </section>
+    <section class="panel" aria-labelledby="detail-title">
+      <h2 id="detail-title">Detail</h2>
+      <div id="detail" class="detail">
+        <p class="empty">Select a cycle.</p>
+      </div>
+    </section>
+  </main>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

@@ -764,4 +764,28 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   <repo> <issue>` (joins change + recomputed lineage via pure
   `buildChangeView`/`changeViewJSON`, no Temporal). Never call
   `activity.GetLogger` in `RecordChange` (non-Temporal ctx panics).
+- `console.go` owns the #105 local review console: an opt-in, **loopback-only,
+  read-only** HTTP server + embedded SPA. `StartConsoleServer` (worker; no-op
+  when `KONOHA_CONSOLE_ADDR` is unset) and the `prbot console` entrypoint
+  (`runConsole`) share `newConsoleServer`; a non-loopback bind address
+  (`validateLoopbackAddr`/`isLoopbackHost`) **fails fast**, and disabling by
+  default is explicit (`ConsoleConfig.enabled`). Auth is `authorized`: a
+  constant-time bearer token (`KONOHA_CONSOLE_TOKEN`, random+logged when unset)
+  for CLI/worker, or the per-process CSRF token issued by `GET /api/v1/status`
+  for browsers; `mutationAllowed` (CSRF + loopback `Origin`) is the dormant
+  plumbing for the decisions ticket — **there is no mutation endpoint in #105**.
+  Read-only routes: `GET /api/v1/status|cycles|cycles/{id}|cycles/{id}/artifacts`
+  (method-qualified; unknown id → 404 via `validConsoleCycleID`, malformed → 400;
+  `http.Server` timeouts bound every handler). `consoleData` reads finished
+  cycles from the evidence store (`listCycleIDs`/`loadOutcomeOptional`/
+  `listArtifacts` on `*EvidenceStore`) and running cycles best-effort from the
+  #89 status query (`temporalStatusQuery`/`temporalRunningLister`, nil client ⇒
+  evidence-only). The SPA (`consoleassets/`, `//go:embed`) is served with a
+  strict CSP (`consoleCSP`, no inline script) and never executes artifact
+  content. Env-only config (`consoleConfigFromEnv`, reads **only**
+  `KONOHA_CONSOLE_*`) means the console process touches **no GitHub credential**
+  and makes no outbound calls beyond the optional Temporal status query. Adding
+  the console renames no exported activity/workflow func (no Temporal type
+  change).
+
 
