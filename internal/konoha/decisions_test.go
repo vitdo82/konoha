@@ -448,3 +448,48 @@ func TestLoopbackOriginRule(t *testing.T) {
 		}
 	}
 }
+
+// #111 AC5: at the HTTP boundary a browser mutation from a non-allowlisted
+// (non-loopback) Origin is rejected with 403, even when it carries the correct
+// CSRF token; a loopback Origin is not, and a CLI/worker bearer token never
+// consults the Origin. The mutation route is the only one behind requireMutation.
+func TestConsoleForeignOriginForbidden(t *testing.T) {
+	srv, err := newConsoleServer(ConsoleConfig{Addr: "127.0.0.1:0", Token: "secret-token"}, &consoleData{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+
+	post := func(origin, csrf, bearer string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost,
+			hs.URL+"/api/v1/cycles/r-issue-7/decisions",
+			strings.NewReader(`{"action":"approve","attempt":1,"sha":"s"}`))
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if csrf != "" {
+			req.Header.Set(consoleCSRFHeader, csrf)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		return res.StatusCode
+	}
+
+	if got := post("https://evil.example", srv.csrf, ""); got != http.StatusForbidden {
+		t.Fatalf("foreign-origin browser mutation = %d, want 403", got)
+	}
+	if got := post("http://127.0.0.1:8080", srv.csrf, ""); got == http.StatusForbidden {
+		t.Fatalf("loopback-origin browser mutation = %d, must not be 403", got)
+	}
+	if got := post("https://evil.example", "", "secret-token"); got == http.StatusForbidden {
+		t.Fatal("bearer (CLI/worker) mutation must not require an allowed Origin")
+	}
+}
