@@ -17,6 +17,15 @@ evidence:
 #   diskMiB: 1024
 #   maxWallClock: 30m
 
+# #103 advisory network egress: sets HTTPS_PROXY/HTTP_PROXY/NO_PROXY on agent
+# and validation children so well-behaved tools use the operator's allowlisting
+# proxy. BYPASSABLE and NOT a security boundary — never labelled "enforced".
+# Absent/unset proxy = today's behavior (no proxy env). outcome.json records
+# egress.status: advisory + allowOut. Real enforcement is the sandbox path (#92).
+# egress:
+#   proxy: http://127.0.0.1:8888
+#   allowOut: ["api.anthropic.com", "registry.npmjs.org"]
+
 worker:
   taskQueue: review-queue
   maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES

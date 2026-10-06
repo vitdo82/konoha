@@ -311,8 +311,10 @@ func agentCommand(ctx context.Context, prompt, model, harnessName, dir string, l
 		exe = h.Executable()
 	}
 	// §23: the scrubbed env never carries a GitHub write credential; #102 wraps
-	// the child without changing that env.
-	cmd, _ := enforceCommand(ctx, limits, exe, h.Args(prompt, rm), dir, h.Env(dir))
+	// the child without changing that env. #103 appends the advisory egress proxy
+	// (bypassable, never a boundary) to the scrubbed env for every harness.
+	env := egressEnv(h.Env(dir), appCfg.Egress)
+	cmd, _ := enforceCommand(ctx, limits, exe, h.Args(prompt, rm), dir, env)
 	if pa.Executable != "" {
 		cmd.Env = prependPath(cmd.Env, filepath.Dir(pa.Executable))
 	}
