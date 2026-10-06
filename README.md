@@ -473,6 +473,7 @@ never changes the terminal state. Under `dryRun` it is namespaced under
 | Config dir | `KONOHA_CONFIG_DIR` | default `configs/` |
 | Metrics listener | `METRICS_ADDR` | default off |
 | Webhook | `WEBHOOK_ADDR` + `GH_WEBHOOK_SECRET` | optional §32 fast-path |
+| Console | `KONOHA_CONSOLE_ADDR` + `KONOHA_CONSOLE_TOKEN` | optional #105 read-only console; **loopback only** |
 | GitHub App | `GH_APP_ID` / `GH_APP_INSTALL_ID` / `GH_APP_PEM` | secrets, never in file |
 | Max concurrent activities | `WORKER_MAX_CONCURRENT_ACTIVITIES` | host capacity |
 | Task queue | `KONOHA_TASK_QUEUE` | rare per-env rename |
@@ -607,6 +608,49 @@ offline against `evidence.dir`:
 /tmp/prbot describe <repo> <issue> # outcome.json summary: state, agent/verification
                                    # outcomes, conditions, usage (no Temporal)
 ```
+
+## Local review console (#105)
+
+An opt-in, **loopback-only, read-only** HTTP console for the board and cycle
+detail. It is **disabled by default** — no listener starts unless
+`KONOHA_CONSOLE_ADDR` is set — and start a dedicated process (or let the worker
+start it when the same env var is set):
+
+```bash
+KONOHA_CONSOLE_ADDR=127.0.0.1:8765 /tmp/prbot console   # standalone, no Temporal required
+KONOHA_CONSOLE_ADDR=127.0.0.1:8765 make run             # or alongside the worker
+```
+
+> **Loopback only.** A non-loopback bind address (e.g. `0.0.0.0:8765`, a LAN IP,
+> or a bare `:8765`) is **rejected at startup** with a clear error. The console
+> is not an authenticated remote control plane; it is a local operator surface.
+
+Auth:
+
+- **CLI/worker API clients** present a bearer token (`KONOHA_CONSOLE_TOKEN`). If
+  unset, a per-process token is generated and logged at startup.
+- **Browsers** fetch a per-process **CSRF token** from `GET /api/v1/status` and
+  send it on every API call; browser **mutations** (a later ticket) additionally
+  require a loopback `Origin`. All token comparisons are constant-time.
+
+Read-only endpoints (there is **no mutation endpoint** in this ticket):
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/status` | `{version, readOnly, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
+| `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) |
+| `GET /api/v1/cycles/{id}` | cycle detail (outcome/status + artifact names) |
+| `GET /api/v1/cycles/{id}/artifacts` | artifact **name** list (content is not served yet) |
+
+The SPA is served from embedded assets with a strict `Content-Security-Policy`
+(`default-src 'none'; script-src 'self'; …`), no inline script, and it never
+executes artifact content. The console process reads **no GitHub credential**
+and makes **no outbound network calls** beyond the operator's own Temporal
+server (optional; finished cycles render without it). Malformed cycle ids are
+`400`, unknown cycles are `404`, and every handler is time-bounded. This is
+policy-read-only over the same evidence store the CLI reads; see
+`docs/non-goals.md` → A2.
+
 
 ## Debug
 

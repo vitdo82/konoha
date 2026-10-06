@@ -43,10 +43,16 @@ because effort is available.
 - **ESF does:** exposes an authenticated web control plane.
 - **Konoha does:** control is the **CLI + GitHub** — Temporal schedules, the
   operator CLI (`doctor`/`status`/`logs`/`describe`), and GitHub issues/PRs/labels
-  as the human surface. There is no server-side console.
+  as the human surface. There is no **authenticated remote control plane**.
+  ([#105] adds a local, **loopback-only, read-only** console *foundation* — board
+  and cycle detail over the evidence store with a bearer/CSRF auth posture and
+  **no mutation endpoint**. It is a local operator view, not a hosted
+  control plane; the non-goal stands until multi-operator RBAC is required.)
 - **Revisit when:** an operator workflow genuinely cannot be expressed through
   the CLI + GitHub (e.g. multi-operator RBAC). The operator CLI lands in the
   `v4.2-console` milestone; that is the current answer to "a UI".
+
+[#105]: https://github.com/vitdo82/konoha/issues/105
 
 ### A3. OpenTelemetry
 
