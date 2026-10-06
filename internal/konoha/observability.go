@@ -114,25 +114,29 @@ type CycleOutcome struct {
 	VerificationOutcome VerificationOutcome `json:"verificationOutcome,omitempty"`
 	// #94: true when a §26 validation gate dirtied the worktree after the agent
 	// committed. Evidence only (never changes the delivered SHA or the state).
-	VerificationMutated bool              `json:"verificationMutated,omitempty"`
-	Conditions          []Condition       `json:"conditions,omitempty"`
-	EscalationReason    string            `json:"escalationReason,omitempty"` // §18 trigger, if any
-	Route               string            `json:"route,omitempty"`            // SMALL|LARGE
-	Complexity          int               `json:"complexity,omitempty"`
-	Confidence          string            `json:"confidence,omitempty"`
-	Attempts            int               `json:"attempts,omitempty"`
-	ReviewRounds        int               `json:"reviewRounds,omitempty"`
-	Disagreements       int               `json:"disagreements,omitempty"`
-	POInterventions     int               `json:"poInterventions,omitempty"`
-	DurationSeconds     float64           `json:"durationSeconds,omitempty"`
-	Usage               HarnessUsage      `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
-	EvidenceError       string            `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
-	PolicyDigest        string            `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
-	Resources           *ResourceEvidence `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
-	Scope               string            `json:"scope,omitempty"`         // #104: resolved tenancy scope (policy tenancy, not isolation)
-	Cleanup             *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
-	Limits              *LimitEvidence    `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
-	Egress              *EgressEvidence   `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)
+	VerificationMutated bool        `json:"verificationMutated,omitempty"`
+	Conditions          []Condition `json:"conditions,omitempty"`
+	EscalationReason    string      `json:"escalationReason,omitempty"` // §18 trigger, if any
+	Route               string      `json:"route,omitempty"`            // SMALL|LARGE
+	Complexity          int         `json:"complexity,omitempty"`
+	Confidence          string      `json:"confidence,omitempty"`
+	// #106: board card intent, projected from issue labels/config when recorded.
+	// Descriptive only (evidence), absent by default — the card degrades gracefully.
+	Priority        string            `json:"priority,omitempty"`
+	Assignee        string            `json:"assignee,omitempty"`
+	Attempts        int               `json:"attempts,omitempty"`
+	ReviewRounds    int               `json:"reviewRounds,omitempty"`
+	Disagreements   int               `json:"disagreements,omitempty"`
+	POInterventions int               `json:"poInterventions,omitempty"`
+	DurationSeconds float64           `json:"durationSeconds,omitempty"`
+	Usage           HarnessUsage      `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
+	EvidenceError   string            `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
+	PolicyDigest    string            `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
+	Resources       *ResourceEvidence `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
+	Scope           string            `json:"scope,omitempty"`         // #104: resolved tenancy scope (policy tenancy, not isolation)
+	Cleanup         *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
+	Limits          *LimitEvidence    `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
+	Egress          *EgressEvidence   `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the

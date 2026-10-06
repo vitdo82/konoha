@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // #105 AC: a non-loopback bind address is rejected; loopback (incl. localhost /
@@ -331,6 +332,242 @@ func TestConsoleSecurityHeadersAndSPA(t *testing.T) {
 		t.Fatalf("unknown api = %d, want 404", res.StatusCode)
 	}
 	res.Body.Close()
+}
+
+// #106 AC1: the board groups cycles into the five fixed columns, with
+// deterministic newest-first ordering, without a browser or Temporal.
+func TestBoardColumnsProjection(t *testing.T) {
+	now := time.Now().UTC()
+	cycles := []CycleSummary{
+		{ID: "a-issue-1", State: stateClosed, At: now.Add(-time.Hour)},
+		{ID: "b-issue-2", State: stateClosed, At: now},
+		{ID: "c-issue-3", State: stateBlocked},
+		{ID: "d-issue-4", State: statePendingApproval},
+		{ID: "e-issue-5", State: stateHumanRequired},
+		{ID: "f-issue-6", State: stateFailed},
+		{ID: "g-issue-7", State: stateDeveloping, Running: true},
+		{ID: "h-issue-8", State: stateCancelled},
+		{ID: "i-issue-9", State: "SOMETHING_ELSE"},
+	}
+	cols := boardColumns(cycles)
+	if len(cols) != 5 {
+		t.Fatalf("columns = %d, want 5", len(cols))
+	}
+	wantOrder := []string{boardColRunning, boardColAttention, boardColHuman, boardColClosed, boardColFailed}
+	byID := map[string]BoardColumn{}
+	for i, c := range cols {
+		if c.ID != wantOrder[i] {
+			t.Fatalf("column %d = %q, want %q", i, c.ID, wantOrder[i])
+		}
+		byID[c.ID] = c
+	}
+	if n := len(byID[boardColRunning].Cards); n != 1 {
+		t.Fatalf("running cards = %d, want 1", n)
+	}
+	if n := len(byID[boardColAttention].Cards); n != 2 {
+		t.Fatalf("attention cards = %d, want 2 (blocked + pending-approval)", n)
+	}
+	if n := len(byID[boardColHuman].Cards); n != 1 {
+		t.Fatalf("human cards = %d, want 1", n)
+	}
+	if n := len(byID[boardColFailed].Cards); n != 3 {
+		t.Fatalf("failed cards = %d, want 3 (failed + cancelled + unknown)", n)
+	}
+	// Newest first within a column.
+	closed := byID[boardColClosed].Cards
+	if len(closed) != 2 || closed[0].ID != "b-issue-2" {
+		t.Fatalf("closed cards = %+v, want b-issue-2 first (newest)", closed)
+	}
+	for _, c := range cols {
+		if c.Count != len(c.Cards) {
+			t.Fatalf("column %s count %d != len(cards) %d", c.ID, c.Count, len(c.Cards))
+		}
+	}
+}
+
+// #106 AC2: the canonical agent-SUCCESS / verification-FAILED mismatch is a
+// distinct predicate, never collapsed.
+func TestOutcomesConflict(t *testing.T) {
+	cases := []struct {
+		agent AgentOutcome
+		ver   VerificationOutcome
+		want  bool
+	}{
+		{agentOutcomeSuccess, verificationFailed, true},
+		{agentOutcomeSuccess, verificationError, true},
+		{agentOutcomeSuccess, verificationSuccess, false},
+		{agentOutcomeSuccess, verificationSkipped, false},
+		{agentOutcomeBlocked, verificationFailed, false},
+		{agentOutcomeSkipped, verificationSkipped, false},
+	}
+	for _, tc := range cases {
+		if got := outcomesConflict(tc.agent, tc.ver); got != tc.want {
+			t.Fatalf("outcomesConflict(%s,%s) = %v, want %v", tc.agent, tc.ver, got, tc.want)
+		}
+	}
+}
+
+// #106 AC4/AC6: the diff parses into changed files with per-file stats, and
+// comments group into line-anchored threads (deterministic ordering).
+func TestParseUnifiedDiffAndThreads(t *testing.T) {
+	patch := "diff --git a/a.go b/a.go\n" +
+		"--- a/a.go\n+++ b/a.go\n" +
+		"@@ -1,2 +1,2 @@\n-old\n+new\n ctx\n"
+	files := parseUnifiedDiff(patch)
+	if len(files) != 1 || files[0].Path != "a.go" || files[0].Added != 1 || files[0].Removed != 1 {
+		t.Fatalf("parseUnifiedDiff = %+v, want a.go +1/-1", files)
+	}
+	threads := diffThreads([]DiffComment{
+		{File: "b.go", Line: 5, Body: "b"},
+		{File: "a.go", Line: 2, Body: "a2"},
+		{File: "a.go", Line: 1, Body: "a1-first"},
+		{File: "a.go", Line: 1, Body: "a1-second"},
+	})
+	if len(threads) != 3 {
+		t.Fatalf("threads = %d, want 3", len(threads))
+	}
+	if threads[0].File != "a.go" || threads[0].Line != 1 || len(threads[0].Comments) != 2 {
+		t.Fatalf("thread[0] = %+v, want a.go:1 with 2 comments", threads[0])
+	}
+	if threads[0].Comments[0].Body != "a1-first" || threads[0].Comments[1].Body != "a1-second" {
+		t.Fatalf("thread[0] comment order = %+v, want input order preserved", threads[0].Comments)
+	}
+	if threads[2].File != "b.go" || threads[2].Line != 5 {
+		t.Fatalf("thread[2] = %+v, want b.go:5 last", threads[2])
+	}
+}
+
+// #106 AC1/AC5/AC7: the board endpoint returns the grouped columns and the
+// summary projection carries priority/assignee when present (absent = empty).
+func TestConsoleBoardColumnsAndCardMeta(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range []CycleOutcome{
+		{WorkflowID: "duck-issue-7", Owner: "acme", Repo: "duck", Issue: 7,
+			TerminalState: stateClosed, Priority: "P1", Assignee: "vitali"},
+		{WorkflowID: "duck-issue-8", Owner: "acme", Repo: "duck", Issue: 8,
+			TerminalState: stateBlocked},
+	} {
+		b, _ := json.Marshal(o)
+		if err := store.Write(o.WorkflowID, evidenceOutcome, string(b), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv, err := newConsoleServer(ConsoleConfig{Addr: "127.0.0.1:0", Token: "secret-token"}, &consoleData{store: store}, "test-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+
+	res := getURL(t, hs.URL+"/api/v1/cycles", "secret-token", "")
+	var body struct {
+		Columns []BoardColumn `json:"columns"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if len(body.Columns) != 5 {
+		t.Fatalf("columns = %d, want 5", len(body.Columns))
+	}
+	closed := body.Columns[3]
+	if closed.ID != boardColClosed || len(closed.Cards) != 1 {
+		t.Fatalf("closed column = %+v, want one card", closed)
+	}
+	card := closed.Cards[0]
+	if card.Priority != "P1" || card.Assignee != "vitali" {
+		t.Fatalf("card meta = %+v, want priority P1 + assignee vitali", card)
+	}
+	blocked := body.Columns[1]
+	if len(blocked.Cards) != 1 || blocked.Cards[0].Priority != "" || blocked.Cards[0].Assignee != "" {
+		t.Fatalf("blocked column = %+v, want one card with absent meta", blocked)
+	}
+}
+
+// #106 AC2/AC3/AC4/AC6: an evidence-backed detail separates the outcomes, keeps
+// conditions ordered, and renders diff + per-gate validation + anchored threads.
+func TestConsoleDetailProjections(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	o := CycleOutcome{
+		WorkflowID: "duck-issue-7", Owner: "acme", Repo: "duck", Issue: 7,
+		TerminalState:       stateHumanRequired,
+		AgentOutcome:        agentOutcomeSuccess,
+		VerificationOutcome: verificationFailed,
+		Priority:            "P1",
+		Assignee:            "vitali",
+		Conditions: []Condition{
+			{Type: conditionAgent, Status: string(agentOutcomeSuccess), At: now},
+			{Type: conditionVerification, Status: string(verificationFailed), At: now},
+			{Type: conditionTerminal, Status: stateHumanRequired, Reason: "verification-failed", At: now},
+		},
+	}
+	b, _ := json.MarshalIndent(o, "", "  ")
+	writes := map[string]string{
+		evidenceOutcome: string(b),
+		evidenceDiff: "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n" +
+			"@@ -1,1 +1,2 @@\n old\n+new\n",
+		evidenceValidation: "go test ./... ok",
+		evidenceComments:   `[{"id":"c1","file":"x.go","line":2,"body":"nit here","author":"alice"}]`,
+	}
+	for name, content := range writes {
+		if err := store.Write("duck-issue-7", name, content, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.WriteVerification("duck-issue-7", "unit", "stdout", "ok", false); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := newConsoleServer(ConsoleConfig{Addr: "127.0.0.1:0", Token: "secret-token"}, &consoleData{store: store}, "test-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+
+	res := getURL(t, hs.URL+"/api/v1/cycles/duck-issue-7", "secret-token", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("detail = %d, want 200", res.StatusCode)
+	}
+	var d CycleDetail
+	if err := json.NewDecoder(res.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	if d.Outcome == nil || d.Outcome.AgentOutcome != agentOutcomeSuccess || d.Outcome.VerificationOutcome != verificationFailed {
+		t.Fatalf("outcomes = %+v, want agent SUCCESS + verification FAILED distinct", d.Outcome)
+	}
+	if !d.OutcomeConflict {
+		t.Fatal("OutcomeConflict = false, want true for SUCCESS/FAILED")
+	}
+	if len(d.Outcome.Conditions) != 3 ||
+		d.Outcome.Conditions[0].Type != conditionAgent ||
+		d.Outcome.Conditions[1].Type != conditionVerification ||
+		d.Outcome.Conditions[2].Type != conditionTerminal {
+		t.Fatalf("conditions = %+v, want agent→verification→terminal order", d.Outcome.Conditions)
+	}
+	if d.Diff == nil || len(d.Diff.Files) != 1 || d.Diff.Files[0].Path != "x.go" || d.Diff.Files[0].Added != 1 {
+		t.Fatalf("diff = %+v, want x.go +1", d.Diff)
+	}
+	if len(d.Diff.Threads) != 1 || d.Diff.Threads[0].File != "x.go" || d.Diff.Threads[0].Line != 2 ||
+		d.Diff.Threads[0].Comments[0].Body != "nit here" {
+		t.Fatalf("threads = %+v, want x.go:2 nit here", d.Diff.Threads)
+	}
+	if d.Validation == nil || d.Validation.Outcome != verificationFailed ||
+		!strings.Contains(d.Validation.Output, "go test") ||
+		len(d.Validation.Gates) != 1 || d.Validation.Gates[0].ID != "unit" || d.Validation.Gates[0].Stdout != "ok" {
+		t.Fatalf("validation = %+v, want outcome + combined output + unit gate", d.Validation)
+	}
+	if d.Priority != "P1" || d.Assignee != "vitali" {
+		t.Fatalf("meta = %+v, want priority P1 + assignee vitali", d)
+	}
 }
 
 func TestParseCycleID(t *testing.T) {
