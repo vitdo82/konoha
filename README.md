@@ -640,6 +640,7 @@ Endpoints:
 | Endpoint | Returns |
 |---|---|
 | `GET /api/v1/status` | `{version, readOnly, decisions, queue, stream, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
+| `GET /api/v1/metrics` | #112 metrics dashboard: the existing §39 rate gauges + throughput + #87 cost/tokens, each optional (a missing figure renders "no data") |
 | `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) **and** the grouped `columns` |
 | `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, the Diff/Validation/Metadata projections, and the open `gate` identity |
 | `GET /api/v1/cycles/{id}/stream` | **live SSE** (#110): condition transitions (+ `?watch=1` for a bounded agent command/output tail); resumable via `Last-Event-ID` |
@@ -797,6 +798,25 @@ records.
 - **Bounds:** buffered output is capped by bytes and the replay buffer by event
   count; heartbeats (`: ping`) keep idle connections alive; a
   `PENDING_APPROVAL`/gate wait stays open (only true §6 terminal states close).
+
+### Metrics dashboard (#112)
+
+`GET /api/v1/metrics` surfaces the observability figures the worker already
+computes — no new instrumentation. It is a **pure read-only projection** over the
+in-process §39 registry snapshot plus the durable per-cycle `outcome.json`
+records, so it works both when the worker hosts the console (live figures) and
+standalone (`prbot console`, derived from evidence):
+
+- **Rates** — `autonomous_completion_rate`, `human_escalation_rate`,
+  `split_rate`, `review_disagreement_rate` (the existing §39 gauges).
+- **Throughput** — completed cycles per day over the observed window.
+- **Cost/tokens** (#87) — per completed issue, plus totals.
+
+Every figure is optional: when nothing has been reported it renders **"no data"**
+and is `null` on the wire — a missing number is never shown as a fabricated zero
+(the §87 rule). The projection is unit-tested without a browser or Temporal. This
+is policy-read over the same evidence store as the rest of the console; see
+`docs/non-goals.md` → A2.
 
 ## Debug
 

@@ -255,10 +255,12 @@ func recomputeDerived() {
 	}
 }
 
-// MetricsText renders the registry in a Prometheus-style line format with the
-// STABLE §39 names (sorted). Each line is `<name> <value>`.
-func MetricsText() string {
+// metricsSnapshot returns a copy of the registry (counters + gauges). A name is
+// present only when it was actually set/incremented, so a caller can distinguish
+// a real zero from "no data" (the #112 dashboard rule: never fabricate a zero).
+func metricsSnapshot() map[string]float64 {
 	sink.mu.Lock()
+	defer sink.mu.Unlock()
 	all := make(map[string]float64, len(sink.counters)+len(sink.gauges))
 	for n, v := range sink.counters {
 		all[n] = v
@@ -266,7 +268,13 @@ func MetricsText() string {
 	for n, v := range sink.gauges {
 		all[n] = v
 	}
-	sink.mu.Unlock()
+	return all
+}
+
+// MetricsText renders the registry in a Prometheus-style line format with the
+// STABLE §39 names (sorted). Each line is `<name> <value>`.
+func MetricsText() string {
+	all := metricsSnapshot()
 
 	names := make([]string, 0, len(all))
 	for n := range all {
