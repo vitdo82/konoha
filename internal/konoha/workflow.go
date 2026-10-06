@@ -245,6 +245,10 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// DISCONNECTED context so it still fires when the workflow is cancelled.
 	var cleanup *CleanupResult
 	cleanupDone := false
+	// #109: set once any terminal outcome is recorded, so a cancellation that
+	// arrives before a terminal is durably recorded as CANCELLED (a canceled
+	// cycle is never a silent drop) rather than left with no outcome.
+	terminalRecorded := false
 	runCleanup := func(cctx workflow.Context) {
 		if cleanupDone {
 			return
@@ -271,11 +275,27 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		dctx, cancel := workflow.NewDisconnectedContext(ctx)
 		defer cancel()
 		runCleanup(dctx)
+		// #109: a canceled run records the CANCELLED terminal through the
+		// disconnected context (so the evidence + metrics land even though the
+		// workflow context is dead). The console's cancel action depends on this
+		// to reflect the stopped state; it is never an auto-replay.
+		if !terminalRecorded && ctx.Err() == workflow.ErrCanceled {
+			out := CycleOutcome{
+				WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+				Owner: in.Owner, Repo: in.Repo,
+				TerminalState: stateCancelled,
+				AgentOutcome:  agentOut, VerificationOutcome: verifOut,
+			}
+			if err := recordTerminal(dctx, info, in, out); err != nil {
+				workflow.GetLogger(ctx).Error("cancel terminal record failed (non-fatal)", "err", err)
+			}
+		}
 	}()
 
 	// finish records a terminal outcome through the shared recorder, tagging it
 	// with the tracked outcomes and any prior evidence-write failure.
 	finish := func(out CycleOutcome) error {
+		terminalRecorded = true
 		if out.AgentOutcome == "" {
 			out.AgentOutcome = agentOut
 		}

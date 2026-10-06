@@ -812,5 +812,28 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   through `RecordAuditEvent` (`auditDecisionForAction`: allow/deny/request_changes).
   A `POST` never proceeds on a fail-closed path; the §6 state stays authoritative
   (§44 #20).
+- `queue.go` owns the #109 needs-attention queue + recovery actions (Machinist
+  model: **retry preserves earlier attempts, no silent replay**). `attentionItems`
+  is the PURE projection (awaiting-approval / blocked / failed / interrupted,
+  deterministic newest-first) over a neutral `queueCycle`; the console resolves
+  the live facts (`consoleData.queueCycleFor`: outcome + the Temporal running/
+  status/execution probes) and `listQueue` serves `GET /api/v1/queue`. `retry`/
+  `cancel` are the ONLY authoritatives actions: `cancel` goes through
+  `client.CancelWorkflow` (the workflow's disconnect-safe teardown still runs) and
+  is idempotent (a stopped cycle is `NOOP`); `retry` starts a NEW run under the
+  same deterministic `<repo>-issue-<n>` id (`ALLOW_DUPLICATE` reuse +
+  `USE_EXISTING` conflict policy, so a repeated retry converges, §24) and never
+  deletes the #88 lineage / #97 change history. An **interrupted** cycle (no
+  outcome and no live worker — a running status the worker cannot answer, or a
+  failed/timed-out execution) is never auto-retried: `ConfirmStopped` is required
+  and the writer best-effort stops any still-registered execution first (no
+  silent replay). `attach`/`pause`/`resume` are #136/#144 session verbs — with no
+  provider they are disabled and report `SKIPPED` (§40, never a false success).
+  Every accepted action is `RecordAuditEvent`-audited (§55, steps `queue-retry`/
+  `queue-cancel`) and a `DryRun` (§42) is a `PREVIEW` with no mutation.
+  `consoleQueueWriter` is the writer; `temporalCancelWorkflow`/`temporalStartCycle`/
+  `temporalExecStatus` are the Temporal seams (nil → the surface fails closed
+  with 501). This file adds no exported activity/workflow func (no Temporal type
+  name changes).
 
 

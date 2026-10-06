@@ -34,6 +34,10 @@ var (
 	errDecisionsDisabled = errors.New("console decisions are not enabled")
 	errUnknownCycle      = errors.New("unknown cycle")
 	errBadDecision       = errors.New("invalid decision")
+	// #109 needs-attention queue + recovery action errors.
+	errQueueDisabled     = errors.New("console queue actions are not enabled")
+	errBadQueueAction    = errors.New("invalid queue action")
+	errNeedsConfirmation = errors.New("interrupted cycle requires an explicit stopped confirmation")
 )
 
 // Local review console foundation (#105). An opt-in, LOOPBACK-ONLY, read-only
@@ -197,6 +201,7 @@ type consoleStatus struct {
 	Version    string `json:"version"`
 	ReadOnly   bool   `json:"readOnly"`
 	Decisions  bool   `json:"decisions"`
+	Queue      bool   `json:"queue"`
 	CSRFHeader string `json:"csrfHeader"`
 	CSRFToken  string `json:"csrfToken"`
 }
@@ -213,6 +218,10 @@ type consoleRunningLister func(ctx context.Context) ([]CycleSummary, bool)
 // built without the decision surface (decisions disabled → 501).
 type consoleDecisionSubmitter func(ctx context.Context, in DecisionRequest) (DecisionResult, error)
 
+// consoleQueueAction is the #109 authoritative retry/cancel writer. nil means
+// the queue action surface is disabled (→ 501).
+type consoleQueueAction func(ctx context.Context, in QueueActionRequest, item QueueItem) (QueueActionResult, error)
+
 // consoleData backs the console API. The evidence store is the source of truth
 // for finished cycles; the optional Temporal seams enrich the board and detail
 // with running cycles, and the optional decision seam writes #108 decisions.
@@ -225,6 +234,13 @@ type consoleData struct {
 	// and leaves the audit disabled.
 	repos  map[string]RepoConfig
 	decide consoleDecisionSubmitter
+	// #109: needs-attention queue recovery actions.
+	queue consoleQueueAction
+	// Authoritative Temporal lifecycle seams (nil without a Temporal client, so
+	// retry/cancel fail closed with 501 rather than pretending).
+	cancelWorkflow func(ctx context.Context, workflowID string) error
+	startCycle     func(ctx context.Context, in IssueInput) error
+	execStatus     func(ctx context.Context, workflowID string) (string, bool)
 }
 
 // ConsoleServer serves the read-only API + embedded SPA. Construct via
@@ -287,8 +303,13 @@ func (s *ConsoleServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts", s.requireAuth(s.handleArtifacts))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts/{name...}", s.requireAuth(s.handleArtifactPreview))
 	s.mux.HandleFunc("GET /api/v1/cycles/{id}/download/{name...}", s.requireAuth(s.handleArtifactDownload))
+	// #109: the needs-attention queue (awaiting approval / blocked / failed /
+	// interrupted) and its recovery actions (retry / cancel).
+	s.mux.HandleFunc("GET /api/v1/queue", s.requireAuth(s.handleQueue))
 	// #108: the only mutation surface — approve / request-changes / deny.
 	s.mux.HandleFunc("POST /api/v1/cycles/{id}/decisions", s.requireMutation(s.handleDecision))
+	// #109: retry / cancel (+ disabled session verbs) — authoritative + audited.
+	s.mux.HandleFunc("POST /api/v1/cycles/{id}/actions", s.requireMutation(s.handleQueueAction))
 
 	sub, err := fs.Sub(consoleAssets, "consoleassets")
 	if err != nil {
@@ -326,11 +347,13 @@ func (s *ConsoleServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // token the browser then presents on every API call.
 func (s *ConsoleServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	decisions := s.data != nil && s.data.decide != nil
+	queue := s.data != nil && s.data.queue != nil
 	writeConsoleJSON(w, http.StatusOK, consoleStatus{
 		Name:       "konoha",
 		Version:    s.version,
-		ReadOnly:   !decisions,
+		ReadOnly:   !decisions && !queue,
 		Decisions:  decisions,
+		Queue:      queue,
 		CSRFHeader: consoleCSRFHeader,
 		CSRFToken:  s.csrf,
 	})
@@ -347,6 +370,62 @@ func (s *ConsoleServer) handleCycles(w http.ResponseWriter, r *http.Request) {
 		"cycles":  cycles,
 		"columns": boardColumns(cycles),
 	})
+}
+
+// handleQueue returns the #109 needs-attention queue (awaiting approval /
+// blocked / failed / interrupted), with each item's available recovery actions.
+func (s *ConsoleServer) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if s.data == nil || s.data.store == nil {
+		writeConsoleJSON(w, http.StatusOK, QueueView{Items: []QueueItem{}})
+		return
+	}
+	q, err := s.data.listQueue(r.Context())
+	if err != nil {
+		writeConsoleError(w, http.StatusInternalServerError, "read queue")
+		return
+	}
+	if q.Items == nil {
+		q.Items = []QueueItem{}
+	}
+	writeConsoleJSON(w, http.StatusOK, q)
+}
+
+// handleQueueAction is the #109 recovery mutation endpoint: retry / cancel
+// (and the disabled session verbs). Guarded by the live item state; a mutation
+// goes through the authoritative channel and is audited.
+func (s *ConsoleServer) handleQueueAction(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validConsoleCycleID(id) {
+		writeConsoleError(w, http.StatusBadRequest, "malformed cycle id")
+		return
+	}
+	if s.data == nil || s.data.queue == nil {
+		writeConsoleError(w, http.StatusNotImplemented, "queue actions disabled")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxDecisionBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var in QueueActionRequest
+	if err := dec.Decode(&in); err != nil {
+		writeConsoleError(w, http.StatusBadRequest, "malformed queue action body")
+		return
+	}
+	res, err := s.data.submitQueueAction(r.Context(), id, in)
+	switch {
+	case err == nil:
+		writeConsoleJSON(w, http.StatusOK, res)
+	case errors.Is(err, errBadQueueAction):
+		writeConsoleError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, errNeedsConfirmation):
+		writeConsoleError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, errUnknownCycle):
+		writeConsoleError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, errQueueDisabled):
+		writeConsoleError(w, http.StatusNotImplemented, "queue actions disabled")
+	default:
+		writeConsoleError(w, http.StatusInternalServerError, "queue action failed")
+	}
 }
 
 // handleCycleDetail returns one cycle's detail; malformed id → 400, unknown → 404.
@@ -687,6 +766,13 @@ func (s *EvidenceStore) listArtifacts(id string) ([]string, error) {
 	return out, nil
 }
 
+// cycleExists reports whether any evidence artifact is recorded for a cycle id,
+// so a caller can tell a known-but-interrupted cycle from a typo/unknown id.
+func (s *EvidenceStore) cycleExists(id string) bool {
+	names, err := s.listArtifacts(id)
+	return err == nil && len(names) > 0
+}
+
 // loadOutcomeOptional reads outcome.json for one cycle; ok=false when absent
 // (never an error), so the caller can fall through to the running-cycle path.
 func (s *EvidenceStore) loadOutcomeOptional(id string) (CycleOutcome, bool, error) {
@@ -824,12 +910,7 @@ func StartConsoleServer(c client.Client, store *EvidenceStore, version string) (
 	if !cfg.enabled() {
 		return nil, nil
 	}
-	data := &consoleData{store: store, repos: consoleRepos()}
-	data.decide = consoleDecisionWriter(data)
-	if c != nil {
-		data.status = temporalStatusQuery(c)
-		data.running = temporalRunningLister(c)
-	}
+	data := buildConsoleData(store, consoleRepos(), c)
 	srv, err := newConsoleServer(cfg, data, version)
 	if err != nil {
 		return nil, err
@@ -844,6 +925,23 @@ func StartConsoleServer(c client.Client, store *EvidenceStore, version string) (
 	}()
 	log.Printf("console listening on %s (loopback; decisions via the §18 channel)", cfg.Addr)
 	return srv.server, nil
+}
+
+// buildConsoleData assembles the console data: the evidence store, repos.yaml
+// policy, the #108 decision writer, and — when a Temporal client is present —
+// the #89 status/running seams plus the #109 queue recovery lifecycle seams.
+func buildConsoleData(store *EvidenceStore, repos map[string]RepoConfig, c client.Client) *consoleData {
+	d := &consoleData{store: store, repos: repos}
+	d.decide = consoleDecisionWriter(d)
+	d.queue = consoleQueueWriter(d)
+	if c != nil {
+		d.status = temporalStatusQuery(c)
+		d.running = temporalRunningLister(c)
+		d.cancelWorkflow = temporalCancelWorkflow(c)
+		d.startCycle = temporalStartCycle(c)
+		d.execStatus = temporalExecStatus(c)
+	}
+	return d
 }
 
 // temporalStatusQuery wires the #89 status query into the console.
@@ -922,19 +1020,18 @@ func runConsole() error {
 	if err != nil {
 		return err
 	}
-	data := &consoleData{store: store, repos: consoleRepos()}
-	data.decide = consoleDecisionWriter(data)
 	addr := os.Getenv("TEMPORAL_ADDRESS")
 	if addr == "" {
 		addr = "127.0.0.1:7233"
 	}
-	// Best-effort: running cycles need Temporal; the console is fully functional
-	// (finished cycles) without it.
-	if c, err := client.Dial(client.Options{HostPort: addr}); err == nil {
-		defer c.Close()
-		data.status = temporalStatusQuery(c)
-		data.running = temporalRunningLister(c)
+	// Best-effort: running cycles + queue retry/cancel need Temporal; the console
+	// is fully functional (finished cycles, read-only) without it.
+	var c client.Client
+	if dialed, err := client.Dial(client.Options{HostPort: addr}); err == nil {
+		defer dialed.Close()
+		c = dialed
 	}
+	data := buildConsoleData(store, consoleRepos(), c)
 	srv, err := newConsoleServer(cfg, data, consoleVersion())
 	if err != nil {
 		return err
