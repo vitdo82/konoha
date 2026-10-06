@@ -640,7 +640,9 @@ Read-only endpoints (there is **no mutation endpoint**):
 | `GET /api/v1/status` | `{version, readOnly, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
 | `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) **and** the grouped `columns` |
 | `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, and the Diff/Validation/Metadata projections |
-| `GET /api/v1/cycles/{id}/artifacts` | artifact **name** list |
+| `GET /api/v1/cycles/{id}/artifacts` | artifact list with `{path, size, contentType, kind, previewable}` |
+| `GET /api/v1/cycles/{id}/artifacts/{name}` | **preview** (inline): text/HTML as `text/plain`, images as images; binary/oversize → 415 |
+| `GET /api/v1/cycles/{id}/download/{name}` | **download** any artifact (`Content-Disposition: attachment`, correct content type) |
 
 ### Board + cycle detail (#106)
 
@@ -658,6 +660,9 @@ Read-only endpoints (there is **no mutation endpoint**):
     ticket #113; absent → the diff renders with no threads).
   - **Validation** — the deterministic verification outcome, the combined
     `validation.txt`, and each §26 gate's captured stdout/stderr.
+  - **Artifacts** — every evidence artifact with size/type; **Preview** (text up
+    to 1 MiB; HTML shown as text, never executed; images as images) and
+    **Download** (any artifact, as an attachment).
   - **Metadata** — repo/issue, harness/model + policy digest (#88), usage/cost
     (#87), and attempt number (#95).
 - **"Summaries are not proof":** agent outcomes and deterministic verification
@@ -665,6 +670,25 @@ Read-only endpoints (there is **no mutation endpoint**):
   while verification `FAILED`/`ERROR`) is highlighted and never masked by the
   agent's prose. The board/outcome/diff/comments projections are pure and
   unit-tested without a browser or Temporal.
+
+### Safe artifact viewer (#107)
+
+Human review must read what the agent actually produced, without the console
+ever executing it:
+
+- **List** every artifact for a cycle with its path, size, content type, and
+  whether it is previewable.
+- **Download** *any* artifact with `Content-Disposition: attachment` and a
+  correct `Content-Type`.
+- **Preview** is capped at **1 MiB** and served **inline**: text/markdown/JSON
+  as `text/plain`, and **HTML is displayed as text, never executed**
+  (`text/plain` + the global CSP + `X-Content-Type-Options: nosniff`); images
+  render as images; binary or oversize artifacts are **download-only**.
+- **Safety:** artifact paths are evidence-store-relative only — traversal is
+  rejected (`400`); the viewer reads only the configured evidence store, never
+  an arbitrary host path. Untrusted issue/agent text is data in the UI too (it
+  is rendered via `textContent`, never `innerHTML`). The pure listing/preview
+  projection is unit-tested without a browser.
 
 The SPA is served from embedded assets with a strict `Content-Security-Policy`
 (`default-src 'none'; script-src 'self'; …`), no inline script, and it never

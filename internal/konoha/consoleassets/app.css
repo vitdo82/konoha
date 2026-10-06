@@ -119,7 +119,15 @@ body {
 .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 10px; margin: 0 0 12px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; word-break: break-word; }
-.artifacts { margin: 0; padding-left: 18px; color: var(--muted); }
+.artifacts { margin: 0 0 12px; padding-left: 0; list-style: none; color: var(--muted); }
+.artifacts li { display: flex; gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.artifact-path { flex: 1; word-break: break-all; color: var(--text); }
+.artifact-size { white-space: nowrap; }
+.artifact-action { font: inherit; cursor: pointer; }
+.artifact-preview { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.artifact-head { color: var(--muted); font-size: 11px; margin-bottom: 4px; word-break: break-all; }
+.artifact-text { margin: 0; overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
+.artifact-image { max-width: 100%; }
 .error { color: var(--bad); }
 
 /* Result: outcome separation + conflict. */
