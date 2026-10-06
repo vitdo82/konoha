@@ -1,0 +1,17 @@
+{
+  "repo": "o/r",
+  "issue": 2,
+  "status": "DONE",
+  "workflowId": "r-issue-2",
+  "reworkNote": "auth gap",
+  "feedback": [
+    {
+      "key": "r-issue-2/review/1/blocking/0",
+      "kind": "review_comment",
+      "author": "reviewer",
+      "body": "auth gap",
+      "at": "0001-01-01T00:00:00Z"
+    }
+  ],
+  "updatedAt": "2026-10-06T10:27:41.236246Z"
+}

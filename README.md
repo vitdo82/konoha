@@ -51,6 +51,11 @@ repos:
           timeout: 20m                 # per-gate window (default 10m)
           dir: backend                 # repo-relative; no ".." / leading "/"
       # validationCmd: "make check"   # §26 legacy shell-string form; mutually exclusive
+      limits:                          # #102 per-repo host ceilings (overrides konoha.yaml limits)
+        cpuMilli: 2000                 # Linux best-effort, NOT a security boundary; no-op elsewhere
+        memoryMiB: 2048
+        diskMiB: 1024
+        maxWallClock: 30m              # hard kill; must be <= worker.devTimeout
       deps:                            # §52 dependency + security automation
         enabled: false                 # opt-in; false/unset = no scan, no issues
         scanCmd: ""                    # required when enabled; prints the JSON finding array
@@ -107,6 +112,11 @@ worker:
 evidence:
   dir: .konoha/evidence           # durable per-cycle evidence root (see below)
   sink: local                     # storage backend; `local` only — S3/MinIO is a deferred seam
+# limits:                         # #102 host resource ceilings (Linux best-effort; no-op elsewhere)
+#   cpuMilli: 2000                # unset/absent = no ceilings (per-repo lifecycle.limits overrides)
+#   memoryMiB: 2048
+#   diskMiB: 1024
+#   maxWallClock: 30m             # hard kill; must not exceed worker.devTimeout
 harness:                          # §85 generic harness (used when a repo selects `generic`)
   executable: ""                  # bare executable NAME (no path separators)
   args: ["run", "{{model_args}}", "{{prompt}}"]  # {{model_args}}/{{prompt}} expand
@@ -289,6 +299,40 @@ recorded but never changes the terminal state (§40). Once per worker start an
 orphan sweep removes an owned worktree whose workflow is gone and whose age
 exceeds `worker.orphanWorktreeTTL`; `KONOHA_DISABLE_WORKTREE_CLEANUP=1`
 (test/debug only) disables teardown and the sweep.
+
+### Host resource ceilings (#102)
+
+Konoha runs agent and validation child processes directly on the operator host
+(there is no sandbox — see `docs/security.md`), so a runaway agent can consume
+the machine. The optional `limits:` block (global in `konoha.yaml`, overridable
+per repo under `lifecycle.limits`) applies **best-effort anti-accident ceilings**
+around those processes:
+
+```yaml
+limits:
+  cpuMilli: 2000        # 2000m = 2 cores
+  memoryMiB: 2048
+  diskMiB: 1024
+  maxWallClock: 30m     # hard kill; must not exceed worker.devTimeout
+```
+
+These are explicitly **not a security boundary** — a host process can still see
+the host. Enforcement is **Linux-only**: Konoha prefers a `systemd-run --user
+--scope` cgroup (`MemoryMax`/`CPUQuota`/`RuntimeMaxSec`), falling back to a
+POSIX `sh`+`ulimit` wrapper (`RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_FSIZE`, plus
+`timeout` for the wall clock). On any other OS (e.g. macOS, the dev host) it is a
+documented **no-op**. The applied ceilings and whether they were
+`ENFORCED`/`SKIPPED` (with a reason) are recorded in `outcome.json`:
+
+```json
+"limits": {"cpuMilli": 2000, "memoryMiB": 2048, "status": "ENFORCED", "mechanism": "systemd-run"}
+```
+
+A ceiling kill is a recorded agent failure (`outcome.json` → `agentOutcome:
+FAILED`, reason `agent_failure`), never a silent pass; it never changes a
+deterministic gate verdict except by killing the process that would have
+produced it (§40). Invalid/negative ceilings, or a `maxWallClock` greater than
+the agent activity window, fail at config load.
 
 ### Agent token/cost accounting (§39)
 

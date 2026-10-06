@@ -597,6 +597,20 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   issue text is JSON-escaped inside `UNTRUSTED ISSUE DATA` markers (§27). The
   activity returns only a local commit artifact (never pushes/PRs) and records
   the §26 validation result.
+- `limits.go` owns the #102 best-effort host resource ceilings. A global
+  `limits:` block in konoha.yaml plus a per-repo `lifecycle.limits` override
+  (`cpuMilli`/`memoryMiB`/`diskMiB`/`maxWallClock`, resolved by `EffectiveLimits`,
+  validated at load incl. `maxWallClock <= worker.devTimeout`) are applied to
+  every agent child (`agentCommand` → `enforceCommand`) and every §26 validation
+  gate/legacy command (`runGate`/`validateRepo`). Enforcement is **Linux-only**
+  (systemd-run `--user --scope` cgroup, else a POSIX `sh`+`ulimit` rlimit
+  wrapper + `timeout`); off Linux it is a documented no-op. `LimitEvidence`
+  (applied values + `ENFORCED`/`SKIPPED` reason + any crossed ceiling) lands on
+  `DevelopResult`/`ReviewResult` and `outcome.json` (`CycleOutcome.Limits`,
+  `failedChildOutcome`). It is **anti-accident, not a security boundary**, and
+  evidence only: a ceiling never rewrites a deterministic verdict except by
+  killing the process that would have produced it (§40). The wrapper always uses
+  the caller's scrubbed env, so it cannot re-introduce a `GH_*` credential (§23).
 - `cleanup.go` owns the #93 disconnect-safe worktree teardown + durable cleanup
   record. `CleanupWorktree` is the thin, idempotent wrapper over `removeWorktree`:
   it removes ONLY a dir whose `.owner` claim matches the requesting `WorkflowID`

@@ -33,23 +33,24 @@ func validDiagnosisReason(r string) bool {
 // the structured attempt history and review feedback (never any agent's hidden
 // transcript). All issue-derived text is untrusted data (§27).
 type DevelopmentFailure struct {
-	Owner            string   `json:"owner"`
-	Repo             string   `json:"repo"`
-	IssueNum         int      `json:"issue"`
-	RepoPath         string   `json:"repoPath"`
-	Model            string   `json:"model,omitempty"`   // agent model for this repo (§4)
-	Harness          string   `json:"harness,omitempty"` // §85 harness by name; "" = process default
-	Title            string   `json:"title"`
-	Body             string   `json:"body"`
-	Spec             string   `json:"spec"`
-	Requirements     []string `json:"requirements"`
-	Constraints      []string `json:"constraints"`
-	Assumptions      []string `json:"assumptions"`
-	Reason           string   `json:"reason"`           // §17 trigger (diagReason*)
-	Attempts         int      `json:"attempts"`         // attempts completed before failure
-	AttemptSummaries []string `json:"attemptSummaries"` // one line per dev/repair round (§39)
-	ReviewBlocking   []string `json:"reviewBlocking"`
-	ReviewNits       []string `json:"reviewNits"`
+	Owner            string        `json:"owner"`
+	Repo             string        `json:"repo"`
+	IssueNum         int           `json:"issue"`
+	RepoPath         string        `json:"repoPath"`
+	Model            string        `json:"model,omitempty"`   // agent model for this repo (§4)
+	Harness          string        `json:"harness,omitempty"` // §85 harness by name; "" = process default
+	Title            string        `json:"title"`
+	Body             string        `json:"body"`
+	Spec             string        `json:"spec"`
+	Requirements     []string      `json:"requirements"`
+	Constraints      []string      `json:"constraints"`
+	Assumptions      []string      `json:"assumptions"`
+	Reason           string        `json:"reason"`           // §17 trigger (diagReason*)
+	Attempts         int           `json:"attempts"`         // attempts completed before failure
+	AttemptSummaries []string      `json:"attemptSummaries"` // one line per dev/repair round (§39)
+	ReviewBlocking   []string      `json:"reviewBlocking"`
+	ReviewNits       []string      `json:"reviewNits"`
+	Limits           *LimitsConfig `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
 }
 
 // DiagnosisResult is the Diagnosis agent's bounded proposition (§17).
@@ -201,7 +202,7 @@ func RunDiagnosis(ctx context.Context, in DevelopmentFailure) (DiagnosisResult, 
 	}
 	prompt := diagnosisPrompt(in)
 
-	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath)
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits))
 	if err != nil {
 		return DiagnosisResult{}, err
 	}

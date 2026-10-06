@@ -19,22 +19,23 @@ import (
 // Diff and ValidationOutput are observed artifacts, and the issue-derived text
 // is carried as structured, untrusted data (§27).
 type ReviewRequest struct {
-	Owner              string   `json:"owner"`
-	Repo               string   `json:"repo"`
-	PRNumber           int      `json:"pr"`
-	RepoPath           string   `json:"repoPath"`
-	Model              string   `json:"model,omitempty"`   // agent model for this repo (§4)
-	Harness            string   `json:"harness,omitempty"` // §85 harness by name; "" = process default
-	CommitSHA          string   `json:"commitSha"`         // the exact head commit being reviewed (§15)
-	Diff               string   `json:"diff"`
-	ValidationOutput   string   `json:"validationOutput"` // §26 tests/results
-	Title              string   `json:"title"`
-	Body               string   `json:"body"`
-	Spec               string   `json:"spec"`
-	Requirements       []string `json:"requirements"`
-	AcceptanceCriteria []string `json:"acceptanceCriteria"`
-	Constraints        []string `json:"constraints"`
-	Assumptions        []string `json:"assumptions"`
+	Owner              string        `json:"owner"`
+	Repo               string        `json:"repo"`
+	PRNumber           int           `json:"pr"`
+	RepoPath           string        `json:"repoPath"`
+	Model              string        `json:"model,omitempty"`   // agent model for this repo (§4)
+	Harness            string        `json:"harness,omitempty"` // §85 harness by name; "" = process default
+	CommitSHA          string        `json:"commitSha"`         // the exact head commit being reviewed (§15)
+	Diff               string        `json:"diff"`
+	ValidationOutput   string        `json:"validationOutput"` // §26 tests/results
+	Title              string        `json:"title"`
+	Body               string        `json:"body"`
+	Spec               string        `json:"spec"`
+	Requirements       []string      `json:"requirements"`
+	AcceptanceCriteria []string      `json:"acceptanceCriteria"`
+	Constraints        []string      `json:"constraints"`
+	Assumptions        []string      `json:"assumptions"`
+	Limits             *LimitsConfig `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
 }
 
 // reviewerSystem is the authoritative reviewer instruction block (§4.5/§13/
@@ -199,13 +200,17 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := reviewPrompt(req, req.Diff)
 
-	cmd, caps, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath)
+	lim := limitsForOverride(req.Limits)
+	cmd, caps, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath, lim)
 	if err != nil {
 		return ReviewResult{}, err
 	}
-	stdout, stderr, err := runCapture(cmd)
+	stdout, stderr, limEv, err := runCaptureWithLimits(cmd, lim)
 	combined := stdout + stderr
 	if err != nil {
+		if limEv != nil && limEv.Crossed {
+			return ReviewResult{}, fmt.Errorf("opencode run: host limit exceeded (%s): %s: %w", limEv.CrossedReason, Redact(strings.TrimSpace(combined)), err)
+		}
 		return ReviewResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(combined)), err)
 	}
 
@@ -214,7 +219,7 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 		CommitSHA: req.CommitSHA, Blocking: blocking, Nits: nits,
 		Attempt:  activityAttempt(ctx),
 		Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr, Provisioning: caps},
-		Usage:    parseHarnessUsage(combined)}
+		Usage:    parseHarnessUsage(combined), Limits: limEv}
 	if err := ValidateReview(r); err != nil {
 		return ReviewResult{}, fmt.Errorf("agent review invalid: %w", err)
 	}

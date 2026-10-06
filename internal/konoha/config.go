@@ -48,6 +48,7 @@ type LifecycleConfig struct {
 	Audit                         AuditConfig       `yaml:"audit" json:"audit,omitempty"`
 	Validation                    []ValidationGate  `yaml:"validation" json:"validation,omitempty"`       // §26 structured argv gates
 	ValidationCmd                 string            `yaml:"validationCmd" json:"validationCmd,omitempty"` // §26 legacy shell-string fallback; mutually exclusive with validation
+	Limits                        *LimitsConfig     `yaml:"limits" json:"limits,omitempty"`               // #102 per-repo host resource ceilings (nil = global konoha.yaml limits)
 	POGateTimeout                 string            `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
 	DryRun                        bool              `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int               `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
@@ -208,6 +209,15 @@ func loadReposConfigWithResources(path string) ([]RepoConfig, error) {
 	if err := validateResourceRefs(repos, cfg.Defaults.Agents); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// #102: a per-repo wall-clock ceiling must not exceed the agent activity
+	// window it complements (validated against the resolved worker config).
+	for i := range repos {
+		if repos[i].Lifecycle != nil && repos[i].Lifecycle.Limits != nil {
+			if err := repos[i].Lifecycle.Limits.validateActivityWindow(repos[i].Repo+": lifecycle.limits", cfg.Worker.devWindow()); err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+		}
+	}
 	return repos, nil
 }
 
@@ -291,6 +301,11 @@ func (lc *LifecycleConfig) validate() error {
 	}
 	if err := validateGates("lifecycle", lc.Validation, lc.ValidationCmd); err != nil {
 		return err
+	}
+	if lc.Limits != nil {
+		if err := lc.Limits.validate("lifecycle.limits"); err != nil {
+			return err
+		}
 	}
 	// §55 AC: every gated decision must be recorded. An enabled pre-gate with no
 	// audit sink would gate silently, so it fails at load (never a config that

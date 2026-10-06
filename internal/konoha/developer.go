@@ -55,6 +55,7 @@ type DevelopRequest struct {
 	OpenQuestions      []string         `json:"openQuestions"`
 	ValidationCmd      string           `json:"validationCmd,omitempty"` // §26 repo validation; "" = none
 	Validation         []ValidationGate `json:"validation,omitempty"`    // §26 structured argv gates
+	Limits             *LimitsConfig    `json:"limits,omitempty"`        // #102 host resource ceilings (nil = global)
 }
 
 // DevelopResult is what the developer returns to Konoha (§25). CommitSHA is the
@@ -77,6 +78,7 @@ type DevelopResult struct {
 	Attempt             int            `json:"attempt,omitempty"`             // #95 Temporal activity attempt provenance
 	Evidence            *AgentEvidence `json:"evidence,omitempty"`            // #83 raw prompt/streams (redacted on write)
 	Usage               HarnessUsage   `json:"usage,omitempty"`               // #87 best-effort tokens/cost (zero = not reported)
+	Limits              *LimitEvidence `json:"limits,omitempty"`              // #102 applied ceilings + enforcement status (evidence only)
 }
 
 // developerSystem is the authoritative developer instruction block (§4.4, §26,
@@ -397,13 +399,16 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		}
 	}
 
-	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir)
+	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir, limitsForOverride(in.Limits))
 	if err != nil {
 		return DevelopResult{}, err
 	}
-	stdout, stderr, err := runCapture(cmd)
+	stdout, stderr, limitsEv, err := runCaptureWithLimits(cmd, limitsForOverride(in.Limits))
 	combined := stdout + stderr
 	if err != nil {
+		if limitsEv != nil && limitsEv.Crossed {
+			return DevelopResult{}, fmt.Errorf("opencode run: host limit exceeded (%s): %s: %w", limitsEv.CrossedReason, Redact(strings.TrimSpace(combined)), err)
+		}
 		return DevelopResult{}, fmt.Errorf("opencode run: %s: %w", Redact(strings.TrimSpace(combined)), err)
 	}
 
@@ -424,6 +429,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 			Attempt:  activityAttempt(ctx),
 			Evidence: &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr, Provisioning: caps},
 			Usage:    parseHarnessUsage(combined),
+			Limits:   limitsEv,
 		}, nil
 	}
 
@@ -447,6 +453,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		Attempt:      activityAttempt(ctx),
 		Evidence:     &AgentEvidence{Prompt: prompt, Stdout: stdout, Stderr: stderr, Provisioning: caps},
 		Usage:        parseHarnessUsage(combined),
+		Limits:       limitsEv,
 	}
 	// §26: record validation output unconditionally; the publication gate
 	// decides whether a failing result still ships (never silently ignored).
@@ -455,7 +462,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 	var drift verificationDrift
 	res.Validated, res.ValidationSkipped, res.ValidationOutput, drift, err =
 		validateRepoWithDrift(PublishInput{RepoPath: dir, ValidationCmd: in.ValidationCmd,
-			Validation: in.Validation, CycleID: in.WorkflowID})
+			Validation: in.Validation, CycleID: in.WorkflowID, Limits: in.Limits})
 	if err != nil {
 		return DevelopResult{}, err
 	}

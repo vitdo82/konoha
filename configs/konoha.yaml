@@ -7,6 +7,16 @@ evidence:
   dir: .konoha/evidence           # #83: durable per-cycle evidence root (cycles/<id>/)
   sink: local                     # #100: storage backend; local only (S3/MinIO is a deferred seam)
 
+# #102 host resource ceilings (best-effort anti-accident, NOT a security
+# boundary; enforced on Linux via systemd-run else rlimits, no-op elsewhere).
+# Unset = no ceilings. Per-repo override: lifecycle.limits in repos.yaml.
+# maxWallClock must not exceed worker.devTimeout (the agent activity window).
+# limits:
+#   cpuMilli: 2000                # 2000m = 2 cores (systemd CPUQuota; rlimit derives CPU-seconds)
+#   memoryMiB: 2048
+#   diskMiB: 1024
+#   maxWallClock: 30m
+
 worker:
   taskQueue: review-queue
   maxConcurrentActivities: 10      # env override: WORKER_MAX_CONCURRENT_ACTIVITIES

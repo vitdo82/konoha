@@ -291,8 +291,9 @@ func prepareAgent(ctx context.Context, h Harness, dir string) (provisionedAgent,
 // agentCommand builds the child process for one agent run: the repo-selected
 // harness (name, never a path) plus an explicitly resolved model. A malformed
 // model is rejected rather than adopted silently. Optional capabilities run
-// first; their outcomes are returned for evidence.
-func agentCommand(ctx context.Context, prompt, model, harnessName, dir string) (*exec.Cmd, []CapabilityOutcome, error) {
+// first; their outcomes are returned for evidence. #102 host resource ceilings
+// are applied best-effort to the child (no-op off Linux).
+func agentCommand(ctx context.Context, prompt, model, harnessName, dir string, limits LimitsConfig) (*exec.Cmd, []CapabilityOutcome, error) {
 	h, err := harnessRegistryFor().Lookup(effectiveHarnessName(harnessName))
 	if err != nil {
 		return nil, nil, err
@@ -309,9 +310,9 @@ func agentCommand(ctx context.Context, prompt, model, harnessName, dir string) (
 	if strings.TrimSpace(exe) == "" {
 		exe = h.Executable()
 	}
-	cmd := exec.CommandContext(ctx, exe, h.Args(prompt, rm)...)
-	cmd.Dir = dir
-	cmd.Env = h.Env(dir) // §23: no GitHub write credential reaches the agent
+	// §23: the scrubbed env never carries a GitHub write credential; #102 wraps
+	// the child without changing that env.
+	cmd, _ := enforceCommand(ctx, limits, exe, h.Args(prompt, rm), dir, h.Env(dir))
 	if pa.Executable != "" {
 		cmd.Env = prependPath(cmd.Env, filepath.Dir(pa.Executable))
 	}
