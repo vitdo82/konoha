@@ -832,6 +832,25 @@ and is `null` on the wire — a missing number is never shown as a fabricated ze
 is policy-read over the same evidence store as the rest of the console; see
 `docs/non-goals.md` → A2.
 
+### Preview pane (not implemented — blocked on isolation #114)
+
+A per-cycle **dev-server + embedded browser preview** (Vibe-Kanban style) is
+**not available** and there is **no preview proxy, preview route, or dev-server
+lifecycle**. It is deferred until Konoha gains an execution-isolation boundary
+(#92): the preview serves a repository's own bytes, and the #102 resource
+ceilings and #103 egress policy are **advisory/best-effort on the host, not
+confinement** (`docs/non-goals.md` → B1/B2). On the current shared host a preview
+would be a second, unpoliced execution surface, so it stays out.
+
+When (and only when) isolation lands, the preview is planned as
+**default-closed and operator-configured** — a repo names a run command, a caller
+can never supply one — **loopback-only and origin-checked** like the rest of the
+console (#105/#111), bounded by #102, torn down with the cycle (#93), and
+**origin-isolated** from the console origin (separate origin or sandboxed iframe)
+so untrusted served content is never treated as trusted console content. See
+`docs/non-goals.md` → conditional exceptions and
+[#114](https://github.com/vitdo82/konoha/issues/114).
+
 ## Debug
 
 The binary also has CLI entrypoints used with `make build`:
