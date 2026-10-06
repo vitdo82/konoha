@@ -27,6 +27,12 @@ Security model — trusted vs untrusted inputs, the agent/validation env
 allowlist, argv-only gates, worktree isolation, and the host-execution trade-off
 — lives in `docs/security.md` (§23/§27/#90).
 
+Console threat model — the local review console's bind boundary (loopback-only),
+Origin allowlist + 403, bearer/CSRF auth, untrusted-artifact handling, the no-
+GitHub-credential rule, local evidence-file permissions, and the §55 audit, each
+mapped to its test — lives in `docs/security-console.md` (#111). It is
+**documentation plus doc-enforced assertions**: no production behavior changed.
+
 Non-goals decision record — the ESF-vs-Konoha **hard non-goals** (sandbox, web
 UI, OpenTelemetry, enforced egress, speculative fan-out) and the caveated
 features that are implementable with stated boundaries (host resource ceilings,
