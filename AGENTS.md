@@ -27,6 +27,12 @@ Security model — trusted vs untrusted inputs, the agent/validation env
 allowlist, argv-only gates, worktree isolation, and the host-execution trade-off
 — lives in `docs/security.md` (§23/§27/#90).
 
+Non-goals decision record — the ESF-vs-Konoha **hard non-goals** (sandbox, web
+UI, OpenTelemetry, enforced egress, speculative fan-out) and the caveated
+features that are implementable with stated boundaries (host resource ceilings,
+advisory egress, policy tenancy) — lives in `docs/non-goals.md` (#101). It is
+**documentation only**: no build instruction, and no production behavior.
+
 ## Verify
 
 ```bash
