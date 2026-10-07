@@ -497,6 +497,44 @@ container/microVM executor ([#92](https://github.com/vitdo82/konoha/issues/92)),
 where it becomes mandatory; see
 [`docs/non-goals.md`](docs/non-goals.md) → A4/B2.
 
+### Machine providers (#121) — local default, no sandbox
+
+Konoha's execution fabric is a `Provider`/`Machine` seam, added after the
+[#92](https://github.com/vitdo82/konoha/issues/92) evaluation returned **do not
+adopt a sandbox now** (`docs/security.md` → "Sandboxed execution evaluation";
+`docs/non-goals.md` → A1 is the revisit trigger). There is **no sandbox
+provider**: the built-in `local` provider is the default and reproduces today's
+host/worktree behavior exactly.
+
+- `Provider` (workflow-only): `Name`/`Capabilities`/`Create`/`Reattach`/
+  `Destroy`/`List`/`Ping`.
+- `Machine` (agent-facing): `Execute(Command{Argv, Dir, Env, StdinPath,
+  Timeout})`, `ReadFile`, `WriteFile`, `Destroy`. **Structured argv only** — the
+  interface has no shell-string form.
+
+The `local` provider:
+
+- `Create` materializes the deterministic, workflow-owned git worktree (the same
+  §4.4 claim as the developer path); a foreign/unclaimed directory is refused.
+- `Execute` runs a bare `argv` child on the host with the §23 scrubbed env (no
+  `GH_*`/cloud credentials), the #103 advisory egress proxy, and the #102
+  best-effort ceilings; a caller-supplied env can never re-add a stripped
+  credential.
+- `Destroy` removes only a worktree whose claim matches the requesting workflow.
+
+**Ownership rule:** the workflow owns infrastructure; an agent only operates
+inside the machine it was given and never creates/reattaches/destroys one. The
+`local` provider advertises **no** snapshot/clone/suspend/preview capability, so
+a requested capability negotiates to `SKIPPED` — never a false success (§40).
+An adapter cannot bypass claim authority, workflow policy, review gates or
+tracker reconciliation: `machine.go` references no GitHub runner, policy gate,
+label projection or reconciliation (the [#142] adapter boundary). This is a
+**foundation, not wired into the agent path yet**; a sandbox provider is added
+only after a #92 revisit trigger fires (rootless container first, microVM only
+for a kernel-level/multi-tenant threat model).
+
+[#142]: https://github.com/vitdo82/konoha/issues/142
+
 ### Policy tenancy / scopes — narrow-only, not isolation (#104)
 
 Several teams can share one Konoha worker by assigning repositories to **scopes**.

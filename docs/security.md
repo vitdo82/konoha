@@ -162,6 +162,13 @@ is genuinely multi-tenant.
   opt-in and an unavailable one **fails closed** — never a silent fallback to
   host execution (§40).
 
+Implemented in [#121]: `machine.go` holds these interfaces and the default
+`local` provider, with capability negotiation (a missing capability is recorded
+`SKIPPED`, a required-but-missing one fails closed). **No sandbox provider is
+added** — this decision stands until one of the revisit triggers above fires.
+
+[#121]: https://github.com/vitdo82/konoha/issues/121
+
 ### Consequences
 
 - No new code, config keys, or dependencies; `make test` is unchanged.
