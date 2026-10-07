@@ -176,6 +176,12 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case os.Args[1] == "export":
+			// #125: queryable per-attempt JSONL export for evals (no Temporal).
+			if err := runExport(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
 	}
 

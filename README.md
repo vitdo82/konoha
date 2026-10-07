@@ -853,7 +853,33 @@ offline against `evidence.dir`:
 /tmp/prbot logs <repo> <issue>     # agent.stdout / agent.stderr / validation.txt (no Temporal)
 /tmp/prbot describe <repo> <issue> # outcome.json summary: state, agent/verification
                                    # outcomes, conditions, usage (no Temporal)
+/tmp/prbot export --format jsonl   # one versioned JSONL record per attempt
+                                   # (repo, issue, attempt, outcomes, usage, policy
+                                   # digest); --repo/--since filter, --include-prompts
+                                   # opts into redacted prompts (no Temporal)
 ```
+
+### Queryable evidence export for evals (#125)
+
+`prbot export --format jsonl` projects the durable evidence store — **no new
+storage** — into one stable, versioned record **per attempt**, deterministically
+ordered `(repo, issue, attempt)`, so history becomes data for analytics, evals
+and training datasets:
+
+```bash
+/tmp/prbot export --format jsonl                     # every attempt, ordered
+/tmp/prbot export --repo ducklambda                  # bare repo name or owner/repo
+/tmp/prbot export --since 2026-01-01 --format jsonl  # RFC3339 or YYYY-MM-DD
+/tmp/prbot export --format jsonl --include-prompts   # redacted prompts, 16 KiB cap
+```
+
+Each line carries `schemaVersion` (currently `1`), `repo`, `issue`, `attempt`,
+`reason` (`initial|repair`), `harness`, `model`, `agentOutcome`,
+`verificationOutcome`, `terminalState`, `conditions`, `tokensIn`/`tokensOut`/
+`costUsd` (#87) and `policyDigest` (#88). Records are redacted (#82); raw prompts
+are excluded unless `--include-prompts` is set, in which case they are redacted
+and capped at 16 KiB (`promptTruncated` is set when cut). `--since` filters on
+the cycle's latest condition timestamp. Adding a field bumps `schemaVersion`.
 
 ## Local review console (#105, board + detail #106, decisions #108, queue #109, forms #120)
 

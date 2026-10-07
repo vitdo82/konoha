@@ -897,6 +897,17 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   the #94 drift patch reuses it as `verification/post-verification.patch`.
   Never call `activity.GetLogger` in these activities (unit tests use a
   non-Temporal ctx, which panics).
+- `export.go` owns the #125 queryable evidence export: `prbot export --format
+  jsonl` projects the SAME recorded data (`listLineage` #88 activations joined
+  with the cycle's #84/#87/#88 `outcome.json`) into one stable, versioned
+  `ExportRecord` **per attempt**, deterministically ordered `(repo, issue,
+  attempt)`, with `--repo`/`--since` filters. It reads the existing store only —
+  no new storage, no new activity (the Temporal type-name set is unchanged).
+  Records are redacted (#82); prompts are excluded unless `--include-prompts`,
+  which redacts and caps them at `exportPromptSizeCap` (16 KiB, `promptTruncated`
+  when cut). Adding a field bumps `exportSchemaVersion`. `loadOutcomeOptional`
+  treats an empty `outcome.json` (an in-flight cycle's `ensureSet` artifact) as
+  "no outcome yet", never a parse failure.
 - `outcome.go` owns the #84 explicit three-outcome evidence record written into
   `outcome.json`: `AgentOutcome ∈ {SUCCESS,FAILED,TIMED_OUT,SKIPPED,BLOCKED}`
   and `VerificationOutcome ∈ {SUCCESS,FAILED,SKIPPED,ERROR}` plus the ordered
