@@ -272,6 +272,20 @@ without restarting a completed workflow. Deliveries with an invalid
   profile). `tools`/`mcp` tool/MCP references are validated against the #119
   catalogs at load (see the tool-registry note below). `profiles.go` adds
   no exported activity/workflow func (no Temporal type name changes).
+- **Agent profile picker at cycle start (`picker.go`, #145)**: the
+  operator-facing selection UX over #117. `profilePickerOptions` projects the
+  `agents:` catalog into sorted `{name,harness,model}` rows and
+  `renderProfilePicker` is the PURE text projection (`*` marks the pick) shared
+  with the #143 TUI overlay — unit-tested without a terminal. `selectCycleProfile`
+  resolves one operator pick (`--profile`, or the CLI `prbot cycle <repo>
+  <issue>`): an empty name keeps the repos.yaml/legacy selection; a non-empty
+  name must exist in the operator's `agents:` catalog or it fails closed; a pick
+  sets `lifecycle.agents.default` and then runs the SAME `resolveAgentProfiles`
+  as load, so the recorded `Profiles`/`ProfileDigest` (and the #88 policy digest)
+  match the scheduled path byte-for-byte, with per-stage `repos.yaml` selections
+  still winning. Resolution reads **only** `konoha.yaml`/`repos.yaml`, so issue
+  text can never supply a profile (§27). `picker.go` adds no exported
+  activity/workflow func (no Temporal type name changes).
 - **Tool registry + permissions + MCP registry (`tools.go`, #119)**: the
   top-level `tools:` block declares `custom` tools (id → description) with the
   built-ins code-level (`builtinToolCatalog`), and `mcpServers:` names HTTP MCP

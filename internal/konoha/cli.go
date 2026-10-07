@@ -197,6 +197,14 @@ func Main() {
 		return
 	}
 
+	// #145: start one issue cycle with an operator-selected agent profile.
+	if len(os.Args) > 1 && os.Args[1] == "cycle" {
+		if err := runCycle(c, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	w := worker.New(c, appCfg.Worker.TaskQueue, worker.Options{
 		MaxConcurrentActivityExecutionSize: workerMaxConcurrentActivities(),
 	})
@@ -937,6 +945,67 @@ func debugIssueInput(n int) IssueInput {
 		RepoPath:  getenv("REPO_PATH", "/Users/vit/projects/ducklambda"),
 		Lifecycle: LifecycleConfig{DryRun: true},
 	}
+}
+
+// runCycle is `prbot cycle <repo> <issue> [--profile <name>]` (#145): start one
+// issue cycle with an operator-selected #117 agent profile. The picker
+// projection is printed so the operator sees the options + choice; an unknown
+// profile fails closed before any GitHub/Temporal mutation. The chosen profile
+// is flattened + digested exactly like the scheduled path, so the recorded
+// lifecycle (and outcome.json) carries the selection.
+func runCycle(c client.Client, args []string) error {
+	var profile string
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--profile":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--profile requires a name")
+			}
+			profile = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--profile="):
+			profile = strings.TrimPrefix(args[i], "--profile=")
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	if len(rest) < 2 {
+		return fmt.Errorf("usage: prbot cycle <repo> <issue> [--profile <name>]")
+	}
+	var n int
+	fmt.Sscan(rest[1], &n)
+	if n <= 0 {
+		return fmt.Errorf("usage: prbot cycle <repo> <issue> [--profile <name>]")
+	}
+	repos, err := loadReposConfigWithResources(defaultReposPath())
+	if err != nil {
+		return err
+	}
+	var repo *RepoConfig
+	for i := range repos {
+		if repos[i].Repo == rest[0] {
+			repo = &repos[i]
+			break
+		}
+	}
+	if repo == nil {
+		return fmt.Errorf("repo %q not found in %s", rest[0], defaultReposPath())
+	}
+	lc, err := selectCycleProfile(appCfg, *repo, profile)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(os.Stderr, renderProfilePicker(profilePickerOptions(appCfg), profile))
+	in := IssueInput{
+		Owner: repo.Owner, Repo: repo.Repo, IssueNum: n,
+		RepoPath: repo.RepoPath, Trigger: "cli", Lifecycle: lc,
+	}
+	if err := temporalStartCycle(c)(context.Background(), in); err != nil {
+		return err
+	}
+	fmt.Printf("started %s-issue-%d harness=%s\n", repo.Repo, n, effectiveHarnessName(lc.Harness))
+	return nil
 }
 
 // runStatus is the `prbot status <repo> <issue>` reader (#89): it queries the

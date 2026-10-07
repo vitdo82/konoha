@@ -263,6 +263,20 @@ are the implicit profile. Declaring both a profile and a **conflicting** legacy
 key (e.g. a profile harness of `opencode` alongside `lifecycle.harness: generic`)
 fails at load with a clear error; agreeing values are allowed.
 
+**Profile picker at cycle start (#145).** `prbot cycle <repo> <issue>
+[--profile <name>]` starts one issue cycle with an operator-selected profile.
+The picker projection lists every named profile with its effective harness +
+model (the `*` marks the choice), and `--profile` selects one; with no pick the
+repo's `lifecycle.agents.default` (or the legacy implicit profile) is used. The
+choice is resolved **once at start** exactly like the scheduled path — flattened
+into harness/model/limits, recorded in `outcome.json` (`profiles`) and covered
+by the #88 policy digest. A pick only overrides the repo-level default, so
+per-stage selections in `repos.yaml` still win. The profile names are
+**operator-defined** in `konoha.yaml` `agents:`; an unknown name **fails
+closed**, and no issue text can supply one (§27) — resolution reads only
+`konoha.yaml`/`repos.yaml`. The pure projection is shared with the #143 TUI
+overlay and is unit-tested without a real terminal.
+
 **Tool registry + permissions (#119).** A tool catalog and named MCP server
 registry let an operator declare exactly what an agent may use. Built-in tool
 ids (`read`, `grep`, `glob`, `edit`, `write`, `bash`, `webfetch`, `task`,
@@ -1191,7 +1205,10 @@ exec/delete) of Container Use's MCP tools are deliberately **not** exposed, and
 The binary also has CLI entrypoints used with `make build`:
 `/tmp/prbot token`, `/tmp/prbot config [configs/repos.yaml]` (prints schedule
 inputs for `apply.sh`), `/tmp/prbot start` (runs a `PrReviewWorkflow` for PR 6
-of `vitdo82/ducklambda`; `PR_NUM` overrides), and `/tmp/prbot publish`
+of `vitdo82/ducklambda`; `PR_NUM` overrides), and `/tmp/prbot cycle <repo>
+<issue> [--profile <name>]` (starts one `IssueCycleWorkflow` with an
+operator-selected #117 profile; the picker projection listing harness/model is
+printed), and `/tmp/prbot publish`
 (`DRY_RUN=1` to shadow-run), and `/tmp/prbot release` (runs the §50 release
 activity for `OWNER`/`REPO`; `RELEASE_ENABLED=0`, `CHANGELOG_PATH`,
 `VERSION_PREFIX`, `BASE_BRANCH`, `DRY_RUN=1` override), and `/tmp/prbot deps`
