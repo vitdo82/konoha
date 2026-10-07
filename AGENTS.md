@@ -165,6 +165,31 @@ without restarting a completed workflow. Deliveries with an invalid
   (#82), and never placed in the envelope, an error, a log, or a
   `ProviderDescriptor` (which records the `apiKeyEnv` NAME only). Adds no
   exported activity/workflow func (no Temporal type-name change).
+- `machine.go` owns the #121 machine-provider abstraction — the execution fabric
+  the #92 evaluation deferred. It exists only because #92 returned **do not adopt
+  a sandbox now** (`docs/security.md` → "Sandboxed execution evaluation");
+  `docs/non-goals.md` → A1 is the revisit trigger. `Provider`
+  (`Name`/`Capabilities`/`Create`/`Reattach`/`Destroy`/`List`/`Ping`) is the
+  **workflow-only** infrastructure handle; `Machine`
+  (`Execute`/`ReadFile`/`WriteFile`/`Destroy`) is the **agent-facing** handle.
+  `Command{Argv, Dir, Env, StdinPath, Timeout}` is **structured argv only** —
+  there is deliberately no shell-string field. Capability negotiation
+  (`negotiateCapabilities`/`requireCapabilities`, closed set
+  `snapshot|clone|suspend|preview`) records a missing capability `SKIPPED` (the
+  #96 `CapabilityOutcome` vocabulary) and fails closed on a required-but-missing
+  one (§40). The built-in `local` provider (the default, selected by NAME via
+  `machineRegistry`) reproduces today's host/worktree behavior: `Create` is the
+  §4.4-owned `ensureWorktree`, `Execute` runs a bare argv child with the §23
+  scrubbed env + #103 advisory egress + #102 ceilings (a caller env can never
+  re-add a stripped credential), `Destroy` honors the claim via `cleanupWorktree`.
+  Ownership/adaptor boundary (#121/#142): only the workflow holds a `Provider`;
+  an agent operates inside its `Machine` and never creates/reattaches/destroys
+  one. `machine.go` references **no** GitHub runner, policy gate, label
+  projection or reconciliation, so an adapter cannot bypass claim authority,
+  workflow policy, review gates or tracker reconciliation. It is a **standalone
+  foundation, NOT wired into the agent path yet** (agents still run through
+  `harness.go`), and adds no exported activity/workflow func (no Temporal
+  type-name change). No sandbox provider is added until #92 is re-opened.
 - **Config source of truth is `repos.yaml`.** `configs/repos.yaml` is loaded by
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
