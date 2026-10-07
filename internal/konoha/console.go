@@ -889,6 +889,11 @@ func (s *EvidenceStore) loadOutcomeOptional(id string) (CycleOutcome, bool, erro
 	if err != nil {
 		return CycleOutcome{}, false, err
 	}
+	// ensureSet creates an empty outcome.json for an in-flight cycle; treat it
+	// as "no outcome yet" rather than a parse failure.
+	if len(strings.TrimSpace(string(b))) == 0 {
+		return CycleOutcome{}, false, nil
+	}
 	var o CycleOutcome
 	if err := json.Unmarshal(b, &o); err != nil {
 		return CycleOutcome{}, false, err
