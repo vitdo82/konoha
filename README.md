@@ -251,6 +251,43 @@ fails at load with a clear error; agreeing values are allowed. `tools`, `mcp`,
 and `promptMode` are recorded and digested; their cross-reference enforcement
 lands with the tool/MCP registry (#119), which owns the named catalogs.
 
+**Model providers — protocols + gateways (#118).** A **foundation** layer, not
+yet wired to the agent harness. A provider names a wire **protocol** — or a
+**gateway** preset — and the credential **name** (never a value):
+
+```yaml
+defaults:
+  providers:
+    anthropic:
+      protocol: anthropic-messages          # openai-responses | openai-chat | anthropic-messages
+      apiKeyEnv: ANTHROPIC_API_KEY          # NAME only; the value is never read or recorded
+    openai:
+      protocol: openai-responses
+      apiKeyEnv: OPENAI_API_KEY
+    openrouter:
+      gateway: openrouter                   # implies openai-chat + a default baseUrl
+      apiKeyEnv: OPENROUTER_API_KEY
+    local-ollama:
+      gateway: ollama                       # no key needed
+```
+
+Gateways are OpenAI-chat-compatible base-URL presets — `openrouter`, `litellm`,
+`ollama` — so a gateway is config, not a fourth adapter. A `baseUrl` overrides
+the default. Every provider implements the same
+`Invoke(ctx, Envelope) (Envelope, error)` contract over a canonical envelope
+(messages/tools in, text/tool-calls/usage out); no wire type leaks past it.
+
+**Typed retry (#95).** A transport failure or a **5xx** is retried with
+exponential backoff (`worker.retryMaxAttempts`); a **4xx** model/policy error is
+**not** retried and fails closed. Response usage is the #87 `HarnessUsage`, so a
+provider response feeds the §39 accounting directly.
+
+**Credentials by name (#82).** `apiKeyEnv` is an env-var **name**. The value is
+resolved only at `Invoke` time, sent in the auth header, and registered with the
+process redactor so it is masked in every log/evidence surface; only the name is
+ever recorded (e.g. a `ProviderDescriptor`). An unknown protocol/gateway, a
+gateway/protocol mismatch, or a non-bare `apiKeyEnv` **fails at load**.
+
 A missing `konoha.yaml` is fine (bundled defaults). `KONOHA_CONFIG_DIR` overrides
 the config directory (default `configs/`).
 

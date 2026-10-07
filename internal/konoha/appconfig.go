@@ -136,8 +136,9 @@ func (e EvidenceConfig) validate() error {
 
 // DefaultsConfig is the `defaults:` block.
 type DefaultsConfig struct {
-	Lifecycle LifecycleDefaults `yaml:"lifecycle"`
-	Agents    AgentsConfig      `yaml:"agents"` // §98 named model + budget catalog
+	Lifecycle LifecycleDefaults         `yaml:"lifecycle"`
+	Agents    AgentsConfig              `yaml:"agents"`    // §98 named model + budget catalog
+	Providers map[string]ProviderConfig `yaml:"providers"` // #118 provider/protocol catalog (validated at load)
 }
 
 // defaultAppConfig returns the code-level defaults (#48: these are the bundled
@@ -398,6 +399,16 @@ func (c AppConfig) validate() error {
 	}
 	if err := c.Defaults.Agents.validate(); err != nil {
 		return err
+	}
+	// #118: every provider entry is validated (known protocol/gateway, http(s)
+	// base URL, bare apiKeyEnv NAME) so a typo fails at load.
+	for name, pc := range c.Defaults.Providers {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("defaults.providers: empty provider name")
+		}
+		if err := pc.validate("defaults.providers." + name); err != nil {
+			return err
+		}
 	}
 	// #117: every declared profile is validated (known harness/model/tool/mcp),
 	// even if no repo selects it, so a typo fails at load.
