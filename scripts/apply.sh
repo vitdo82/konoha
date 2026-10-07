@@ -16,7 +16,11 @@ interval=5m
 
 # The loader is Go, not grep/awk; build once so repos.yaml and the workflows
 # share one parser. The entrypoint moved under cmd/konoha.
-make build --no-print-directory
+# KONOHA_SKIP_BUILD=1 uses a prebuilt /tmp/prbot (the hermetic QA image bakes it
+# and has no Go toolchain); never set outside that QA container.
+if [ "${KONOHA_SKIP_BUILD:-0}" != "1" ]; then
+  make build --no-print-directory
+fi
 
 while IFS=$'\t' read -r repo input; do
   [ -z "$repo" ] && continue
