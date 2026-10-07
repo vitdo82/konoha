@@ -122,6 +122,13 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "api":
+			// #124: the generated console HTTP client (no Temporal, no GitHub
+			// credential). Talks to a running console via KONOHA_CONSOLE_ADDR.
+			if err := runConsoleAPI(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {

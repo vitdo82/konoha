@@ -1,0 +1,653 @@
+openapi: 3.1.0
+info:
+  title: Konoha Console API
+  version: 1.0.0
+  description: |
+    Canonical contract for the Konoha local review console / worker API (#124).
+    This spec is the source of truth: the Go + TypeScript clients under
+    `internal/konoha/consoleapi` and `api/generated/ts` are generated from it and
+    a contract test fails when the server's routes, auth or schemas drift from it.
+
+    The server binds loopback only. Auth is expressed here as two schemes:
+    a bearer token (CLI/worker clients) and the per-process CSRF header
+    (browser). Read routes accept either; mutation routes additionally require a
+    loopback `Origin` when authenticated by CSRF.
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:8765
+    description: Loopback console
+tags:
+  - name: status
+  - name: cycles
+  - name: artifacts
+  - name: queue
+  - name: actions
+paths:
+  /api/v1/status:
+    get:
+      operationId: getStatus
+      summary: Console bootstrap status + CSRF token
+      description: Unauthenticated bootstrap; issues the per-process CSRF token.
+      tags: [status]
+      security: []
+      responses:
+        "200":
+          description: Console status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsoleStatus" }
+  /api/v1/metrics:
+    get:
+      operationId: getMetrics
+      summary: Read-only metrics dashboard (#112)
+      tags: [status]
+      security: &readSecurity
+        - bearerAuth: []
+        - csrfAuth: []
+      responses:
+        "200":
+          description: Metrics dashboard
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetricsView" }
+        "401": &unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/cycles:
+    get:
+      operationId: listCycles
+      summary: Board rows (finished + running)
+      tags: [cycles]
+      security: *readSecurity
+      responses:
+        "200":
+          description: Board rows and grouped columns
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CycleListResponse" }
+        "401": *unauthorized
+  /api/v1/cycles/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+    get:
+      operationId: getCycle
+      summary: One cycle's detail
+      tags: [cycles]
+      security: *readSecurity
+      responses:
+        "200":
+          description: Cycle detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CycleDetail" }
+        "400": &badRequest
+          description: Malformed cycle id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": *unauthorized
+        "404": &notFound
+          description: Unknown cycle
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/cycles/{id}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+    get:
+      operationId: listArtifacts
+      summary: Artifact list with metadata
+      tags: [artifacts]
+      security: *readSecurity
+      responses:
+        "200":
+          description: Artifact list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactListResponse" }
+        "400": *badRequest
+        "401": *unauthorized
+        "404": *notFound
+  /api/v1/cycles/{id}/artifacts/{name}:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+      - $ref: "#/components/parameters/ArtifactName"
+    get:
+      operationId: previewArtifact
+      summary: Preview one artifact inline (text/plain or image)
+      tags: [artifacts]
+      security: *readSecurity
+      responses:
+        "200":
+          description: Inline artifact content
+          content:
+            text/plain:
+              schema: { type: string }
+            image/png:
+              schema: { type: string, format: binary }
+        "401": *unauthorized
+        "404": *notFound
+        "415": &unsupported
+          description: Artifact is binary or oversize, not previewable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/cycles/{id}/download/{name}:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+      - $ref: "#/components/parameters/ArtifactName"
+    get:
+      operationId: downloadArtifact
+      summary: Download one artifact as an attachment
+      tags: [artifacts]
+      security: *readSecurity
+      responses:
+        "200":
+          description: Artifact bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": *unauthorized
+        "404": *notFound
+  /api/v1/cycles/{id}/stream:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+    get:
+      operationId: streamCycle
+      summary: Live progress stream (SSE)
+      description: |
+        Server-sent events: condition transitions plus (with `?watch=1`) a
+        bounded, resumable agent-output tail. Read-only.
+      tags: [cycles]
+      security: *readSecurity
+      parameters:
+        - name: watch
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+        - name: lastEventId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": *unauthorized
+  /api/v1/queue:
+    get:
+      operationId: getQueue
+      summary: Needs-attention queue (#109)
+      tags: [queue]
+      security: *readSecurity
+      responses:
+        "200":
+          description: Queue items
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueueView" }
+        "401": *unauthorized
+  /api/v1/cycles/{id}/decisions:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+    post:
+      operationId: submitDecision
+      summary: Submit a human decision (approve / request-changes / deny)
+      description: The only mutation surface (#108); writes the §18 decision channel.
+      tags: [actions]
+      security: &mutationSecurity
+        - bearerAuth: []
+        - csrfAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+      responses:
+        "200":
+          description: Decision accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionResult" }
+        "400": *badRequest
+        "403": &forbidden
+          description: CSRF/Origin check failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": *notFound
+        "409": &conflict
+          description: Stale gate (superseded attempt/SHA or no open gate)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": &notImplemented
+          description: Decisions disabled on this console
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/cycles/{id}/forms:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+    post:
+      operationId: submitForm
+      summary: Submit a typed interaction form (#120)
+      description: Maps a schema-validated form onto an existing §18 decision action.
+      tags: [actions]
+      security: *mutationSecurity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FormSubmission" }
+      responses:
+        "200":
+          description: Decision accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionResult" }
+        "400": *badRequest
+        "403": *forbidden
+        "404": *notFound
+        "409": *conflict
+        "501": *notImplemented
+  /api/v1/cycles/{id}/actions:
+    parameters:
+      - $ref: "#/components/parameters/CycleID"
+    post:
+      operationId: submitQueueAction
+      summary: Retry / cancel a queued cycle (#109)
+      tags: [actions]
+      security: *mutationSecurity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QueueActionRequest" }
+      responses:
+        "200":
+          description: Action result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueueActionResult" }
+        "400": *badRequest
+        "403": *forbidden
+        "404": *notFound
+        "409": *conflict
+        "501": *notImplemented
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Installation/console bearer token (KONOHA_CONSOLE_TOKEN).
+    csrfAuth:
+      type: apiKey
+      in: header
+      name: X-Konoha-CSRF
+      description: Per-process CSRF token issued by GET /api/v1/status (browsers).
+  parameters:
+    CycleID:
+      name: id
+      in: path
+      required: true
+      description: Stable cycle id (`<repo>-issue-<n>`).
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]+$"
+    ArtifactName:
+      name: name
+      in: path
+      required: true
+      description: Evidence-store-relative artifact path.
+      schema: { type: string }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    ConsoleStatus:
+      type: object
+      required: [name, version, readOnly, decisions, queue, stream, csrfHeader, csrfToken]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        readOnly: { type: boolean }
+        decisions: { type: boolean }
+        queue: { type: boolean }
+        stream: { type: boolean }
+        csrfHeader: { type: string }
+        csrfToken: { type: string }
+        forms:
+          type: array
+          items: { $ref: "#/components/schemas/FormSchema" }
+    CycleSummary:
+      type: object
+      required: [id, state]
+      properties:
+        id: { type: string }
+        owner: { type: string }
+        repo: { type: string }
+        issue: { type: integer }
+        state: { type: string }
+        running: { type: boolean }
+        route: { type: string }
+        complexity: { type: integer }
+        priority: { type: string }
+        assignee: { type: string }
+        at: { type: string, format: date-time }
+    BoardColumn:
+      type: object
+      required: [id, title, count, cards]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        count: { type: integer }
+        cards:
+          type: array
+          items: { $ref: "#/components/schemas/CycleSummary" }
+    CycleListResponse:
+      type: object
+      required: [cycles, columns]
+      properties:
+        cycles:
+          type: array
+          items: { $ref: "#/components/schemas/CycleSummary" }
+        columns:
+          type: array
+          items: { $ref: "#/components/schemas/BoardColumn" }
+    CycleDetail:
+      allOf:
+        - $ref: "#/components/schemas/CycleSummary"
+        - type: object
+          required: [artifacts]
+          properties:
+            outcome: { $ref: "#/components/schemas/CycleOutcome" }
+            status: { $ref: "#/components/schemas/StatusQuery" }
+            artifacts:
+              type: array
+              items: { type: string }
+            outcomeConflict: { type: boolean }
+            diff: { $ref: "#/components/schemas/DiffView" }
+            validation: { $ref: "#/components/schemas/ValidationView" }
+            activations:
+              type: array
+              items: { $ref: "#/components/schemas/LineageActivation" }
+            gate: { $ref: "#/components/schemas/GateView" }
+    GateView:
+      type: object
+      required: [open]
+      properties:
+        open: { type: boolean }
+        attempt: { type: integer }
+        sha: { type: string }
+    # Evidence records are extensible JSON: modeled as free-form objects so the
+    # spec stays stable as new evidence fields are added. The contract test still
+    # pins the surrounding envelope's field set.
+    CycleOutcome:
+      type: object
+      additionalProperties: true
+    StatusQuery:
+      type: object
+      required: [state, conditions]
+      properties:
+        state: { type: string }
+        currentStep: { type: string }
+        conditions:
+          type: array
+          items: { $ref: "#/components/schemas/Condition" }
+        agentOutcome: { type: string }
+        verificationOutcome: { type: string }
+    Condition:
+      type: object
+      required: [type, status, at]
+      properties:
+        type: { type: string }
+        status: { type: string }
+        reason: { type: string }
+        message: { type: string }
+        at: { type: string, format: date-time }
+    DiffView:
+      type: object
+      required: [files, threads]
+      properties:
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/DiffFile" }
+        threads:
+          type: array
+          items: { $ref: "#/components/schemas/DiffThread" }
+    DiffFile:
+      type: object
+      required: [path, added, removed, lines]
+      properties:
+        path: { type: string }
+        added: { type: integer }
+        removed: { type: integer }
+        lines:
+          type: array
+          items: { type: string }
+    DiffThread:
+      type: object
+      required: [file, line, comments]
+      properties:
+        file: { type: string }
+        line: { type: integer }
+        side: { type: string }
+        comments:
+          type: array
+          items: { $ref: "#/components/schemas/DiffComment" }
+    DiffComment:
+      type: object
+      required: [id, file, line, body]
+      properties:
+        id: { type: string }
+        cycleId: { type: string }
+        attempt: { type: integer }
+        sha: { type: string }
+        file: { type: string }
+        line: { type: integer }
+        side: { type: string }
+        body: { type: string }
+        author: { type: string }
+        createdAt: { type: string, format: date-time }
+    ValidationView:
+      type: object
+      properties:
+        outcome: { type: string }
+        output: { type: string }
+        gates:
+          type: array
+          items: { $ref: "#/components/schemas/ValidationGateView" }
+    ValidationGateView:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        stdout: { type: string }
+        stderr: { type: string }
+    LineageActivation:
+      type: object
+      required: [attempt, workflowId, reason]
+      properties:
+        attempt: { type: integer }
+        workflowId: { type: string }
+        reason: { type: string }
+        stage: { type: string }
+        harness: { type: string }
+        model: { type: string }
+        modelDigest: { type: string }
+        baseSha: { type: string }
+        commitSha: { type: string }
+        result: { type: string }
+        reworkNote: { type: string }
+        tokensIn: { type: integer, format: int64 }
+        tokensOut: { type: integer, format: int64 }
+        costUSD: { type: number }
+    ArtifactView:
+      type: object
+      required: [path, size, contentType, kind, previewable]
+      properties:
+        path: { type: string }
+        size: { type: integer, format: int64 }
+        contentType: { type: string }
+        kind: { type: string }
+        previewable: { type: boolean }
+    ArtifactListResponse:
+      type: object
+      required: [id, artifacts]
+      properties:
+        id: { type: string }
+        artifacts:
+          type: array
+          items: { $ref: "#/components/schemas/ArtifactView" }
+    DecisionRequest:
+      type: object
+      required: [action, attempt, sha]
+      properties:
+        owner: { type: string }
+        repo: { type: string }
+        issue: { type: integer }
+        cycleId: { type: string }
+        action:
+          type: string
+          enum: [approve, request-changes, deny, resume]
+        feedback: { type: string }
+        comments:
+          type: array
+          items: { $ref: "#/components/schemas/DiffComment" }
+        attempt: { type: integer }
+        sha: { type: string }
+        actor: { type: string }
+        dryRun: { type: boolean }
+    DecisionResult:
+      type: object
+      required: [accepted]
+      properties:
+        accepted: { type: boolean }
+        duplicate: { type: boolean }
+        action: { type: string }
+        attempt: { type: integer }
+        sha: { type: string }
+    QueueView:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/QueueItem" }
+    QueueItem:
+      type: object
+      required: [id, state, reason, actions]
+      properties:
+        id: { type: string }
+        owner: { type: string }
+        repo: { type: string }
+        issue: { type: integer }
+        state: { type: string }
+        reason: { type: string }
+        running: { type: boolean }
+        interrupted: { type: boolean }
+        attempt: { type: integer }
+        requiresConfirmation: { type: boolean }
+        dryRun: { type: boolean }
+        actions:
+          type: array
+          items: { $ref: "#/components/schemas/QueueActionView" }
+        at: { type: string, format: date-time }
+    QueueActionView:
+      type: object
+      required: [action, enabled]
+      properties:
+        action: { type: string }
+        enabled: { type: boolean }
+        reason: { type: string }
+    QueueActionRequest:
+      type: object
+      required: [action]
+      properties:
+        cycleId: { type: string }
+        owner: { type: string }
+        repo: { type: string }
+        issue: { type: integer }
+        attempt: { type: integer }
+        action:
+          type: string
+          enum: [retry, cancel, attach, pause, resume]
+        confirmStopped: { type: boolean }
+        actor: { type: string }
+        dryRun: { type: boolean }
+    QueueActionResult:
+      type: object
+      required: [accepted, outcome]
+      properties:
+        accepted: { type: boolean }
+        outcome: { type: string }
+        action: { type: string }
+        reason: { type: string }
+    FormSchema:
+      type: object
+      required: [decision, action]
+      properties:
+        decision: { type: string }
+        action: { type: string }
+        title: { type: string }
+        description: { type: string }
+        feedbackField: { type: string }
+        fields:
+          type: array
+          items: { $ref: "#/components/schemas/FormField" }
+    FormField:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string }
+        label: { type: string }
+        type:
+          type: string
+          enum: [text, choice, number]
+        required: { type: boolean }
+        options:
+          type: array
+          items: { type: string }
+        maxLength: { type: integer }
+        min: { type: number }
+        max: { type: number }
+    FormSubmission:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string }
+        values:
+          type: object
+          additionalProperties: true
+        comments:
+          type: array
+          items: { $ref: "#/components/schemas/DiffComment" }
+        attempt: { type: integer }
+        sha: { type: string }
+        actor: { type: string }
+    MetricsView:
+      type: object
+      required: [metrics, completed]
+      properties:
+        metrics:
+          type: array
+          items: { $ref: "#/components/schemas/MetricView" }
+        completed: { type: integer }
+        windowDays: { type: integer }
+    MetricView:
+      type: object
+      required: [key, label]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        value:
+          type: [number, "null"]
+        unit: { type: string }

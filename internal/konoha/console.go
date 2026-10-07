@@ -316,31 +316,13 @@ func newConsoleServer(cfg ConsoleConfig, data *consoleData, version string) (*Co
 	return s, nil
 }
 
-// routes registers the read-only surface. Method-qualified patterns make an
-// unsupported method a 405 without a handler.
+// routes registers the API surface from the canonical route table (#124).
+// Method-qualified patterns make an unsupported method a 405 without a handler;
+// the table is contract-tested against api/openapi.yaml.
 func (s *ConsoleServer) routes() {
-	s.mux.HandleFunc("GET /api/v1/status", s.handleStatus)
-	// #112: read-only metrics dashboard (existing §39 gauges + throughput +
-	// #87 cost/tokens), projected from the registry snapshot + evidence.
-	s.mux.HandleFunc("GET /api/v1/metrics", s.requireAuth(s.handleMetrics))
-	s.mux.HandleFunc("GET /api/v1/cycles", s.requireAuth(s.handleCycles))
-	s.mux.HandleFunc("GET /api/v1/cycles/{id}", s.requireAuth(s.handleCycleDetail))
-	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts", s.requireAuth(s.handleArtifacts))
-	// #110: live progress stream (SSE): condition transitions + a bounded,
-	// resumable agent-output tail (?watch=1).
-	s.mux.HandleFunc("GET /api/v1/cycles/{id}/stream", s.requireAuth(s.handleCycleStream))
-	s.mux.HandleFunc("GET /api/v1/cycles/{id}/artifacts/{name...}", s.requireAuth(s.handleArtifactPreview))
-	s.mux.HandleFunc("GET /api/v1/cycles/{id}/download/{name...}", s.requireAuth(s.handleArtifactDownload))
-	// #109: the needs-attention queue (awaiting approval / blocked / failed /
-	// interrupted) and its recovery actions (retry / cancel).
-	s.mux.HandleFunc("GET /api/v1/queue", s.requireAuth(s.handleQueue))
-	// #108: the only mutation surface — approve / request-changes / deny.
-	s.mux.HandleFunc("POST /api/v1/cycles/{id}/decisions", s.requireMutation(s.handleDecision))
-	// #120: typed interaction forms — validated fail-closed, mapped onto the
-	// SAME #108 decision channel (no new state, no parallel writer).
-	s.mux.HandleFunc("POST /api/v1/cycles/{id}/forms", s.requireMutation(s.handleFormDecision))
-	// #109: retry / cancel (+ disabled session verbs) — authoritative + audited.
-	s.mux.HandleFunc("POST /api/v1/cycles/{id}/actions", s.requireMutation(s.handleQueueAction))
+	for _, rt := range consoleRoutes() {
+		s.register(rt)
+	}
 
 	sub, err := fs.Sub(consoleAssets, "consoleassets")
 	if err != nil {

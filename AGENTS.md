@@ -91,6 +91,19 @@ without restarting a completed workflow. Deliveries with an invalid
   owns CLI dispatch, worker start, and every `w.Register*` call). Config lives
   in `configs/`, scripts in `scripts/` (`apply.sh`). `repos.yaml` is read from
   `configs/` (override `KONOHA_CONFIG_DIR`).
+- **OpenAPI-first console API + generated code (#124)**: `api/openapi.yaml`
+  (OpenAPI 3.1) is the canonical contract for the console/worker API. Regenerate
+  the Go types/client (`internal/konoha/consoleapi/api.gen.go`, oapi-codegen) and
+  the TS types (`api/generated/ts/api.gen.ts`, openapi-typescript) with `make api`
+  (`api/generate.sh`) — **never hand-edit a generated file** (they carry a
+  `Code generated … DO NOT EDIT` header); change the spec and regenerate.
+  `internal/konoha/console_routes.go` is the single route-registration source and
+  `console_contract_test.go` fails if a route/method/auth tier or a response
+  field drifts from the spec. `api/generated/ts/client.ts` is a thin dependency-free
+  `fetch` client typed by the generated spec (`make api-ts-test` typechecks +
+  smokes it). The CLI reads the console through the generated Go client
+  (`prbot api <status|metrics|cycles|cycle|artifacts|queue>` in `console_client.go`)
+  rather than ad-hoc HTTP.
 - **Workflows vs activities** (`internal/konoha/workflow.go` vs `activities.go`): Temporal workflows
   must be deterministic (no I/O, no time in logic). All I/O — shelling out to `gh`
   and `opencode` — lives in activities. Keep it that way.

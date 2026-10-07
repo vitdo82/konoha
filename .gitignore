@@ -3,3 +3,5 @@
 .env
 # go build ./... artifact from `make test`
 prreview
+# generated TS client tooling (npm)
+node_modules/
