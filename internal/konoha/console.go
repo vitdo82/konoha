@@ -212,6 +212,9 @@ type consoleStatus struct {
 	Stream     bool   `json:"stream"`
 	CSRFHeader string `json:"csrfHeader"`
 	CSRFToken  string `json:"csrfToken"`
+	// Forms is the #120 typed interaction-form catalog (static schema), present
+	// when the decision surface is enabled.
+	Forms []FormSchema `json:"forms,omitempty"`
 }
 
 // consoleStatusQuery is the #89 running-cycle lookup seam (nil for an
@@ -333,6 +336,9 @@ func (s *ConsoleServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/queue", s.requireAuth(s.handleQueue))
 	// #108: the only mutation surface — approve / request-changes / deny.
 	s.mux.HandleFunc("POST /api/v1/cycles/{id}/decisions", s.requireMutation(s.handleDecision))
+	// #120: typed interaction forms — validated fail-closed, mapped onto the
+	// SAME #108 decision channel (no new state, no parallel writer).
+	s.mux.HandleFunc("POST /api/v1/cycles/{id}/forms", s.requireMutation(s.handleFormDecision))
 	// #109: retry / cancel (+ disabled session verbs) — authoritative + audited.
 	s.mux.HandleFunc("POST /api/v1/cycles/{id}/actions", s.requireMutation(s.handleQueueAction))
 
@@ -374,7 +380,7 @@ func (s *ConsoleServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	decisions := s.data != nil && s.data.decide != nil
 	queue := s.data != nil && s.data.queue != nil
 	stream := s.data != nil && s.stream != nil
-	writeConsoleJSON(w, http.StatusOK, consoleStatus{
+	st := consoleStatus{
 		Name:       "konoha",
 		Version:    s.version,
 		ReadOnly:   !decisions && !queue,
@@ -383,7 +389,11 @@ func (s *ConsoleServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		Stream:     stream,
 		CSRFHeader: consoleCSRFHeader,
 		CSRFToken:  s.csrf,
-	})
+	}
+	if decisions {
+		st.Forms = decisionFormSchemas()
+	}
+	writeConsoleJSON(w, http.StatusOK, st)
 }
 
 // handleMetrics returns the #112 read-only metrics dashboard: the existing §39
@@ -555,6 +565,56 @@ func (s *ConsoleServer) handleDecision(w http.ResponseWriter, r *http.Request) {
 		writeConsoleError(w, http.StatusNotImplemented, "decisions disabled")
 	default:
 		writeConsoleError(w, http.StatusInternalServerError, "decision failed")
+	}
+}
+
+// handleFormDecision is the #120 mutation endpoint: it validates a typed form
+// submission against its schema (fail-closed, §36), maps it onto an EXISTING
+// §18 decision action, and writes it through the same gate/validation/writer as
+// a raw #108 decision. It introduces no new state and no parallel writer.
+func (s *ConsoleServer) handleFormDecision(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validConsoleCycleID(id) {
+		writeConsoleError(w, http.StatusBadRequest, "malformed cycle id")
+		return
+	}
+	if s.data == nil || s.data.decide == nil {
+		writeConsoleError(w, http.StatusNotImplemented, "decisions disabled")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxDecisionBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var sub FormSubmission
+	if err := dec.Decode(&sub); err != nil {
+		writeConsoleError(w, http.StatusBadRequest, "malformed form body")
+		return
+	}
+	fd, err := ValidateFormSubmission(sub)
+	if err != nil {
+		writeConsoleError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Bind each anchored comment to the reviewed SHA the form was filled against
+	// (the client may omit it), then map + redact via the shared writer path.
+	for i := range fd.Comments {
+		fd.Comments[i].SHA = sub.SHA
+	}
+	req := fd.decisionRequest(DecisionRequest{Attempt: sub.Attempt, SHA: sub.SHA, Actor: sub.Actor})
+	res, err := s.data.submitBoundDecision(r.Context(), id, req)
+	switch {
+	case err == nil:
+		writeConsoleJSON(w, http.StatusOK, res)
+	case errors.Is(err, errBadDecision):
+		writeConsoleError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, errStaleGate):
+		writeConsoleError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, errUnknownCycle):
+		writeConsoleError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, errDecisionsDisabled):
+		writeConsoleError(w, http.StatusNotImplemented, "decisions disabled")
+	default:
+		writeConsoleError(w, http.StatusInternalServerError, "form decision failed")
 	}
 }
 
@@ -891,31 +951,50 @@ func (d *consoleData) gateSnapshot(ctx context.Context, id string) (GateSnapshot
 // wired writer. Owner/repo/issue/cycleId and the actor default are filled here,
 // so the browser only supplies the action + gate identity + feedback.
 func (d *consoleData) submitDecision(ctx context.Context, id string, in DecisionRequest) (DecisionResult, error) {
+	return d.submitBoundDecision(ctx, id, in)
+}
+
+// submitBoundDecision binds a request to the live gate (owner + open +
+// attempt/SHA), validates it (§36), and delegates to the writer. Every mutation
+// path (a raw #108 decision or a #120 form) funnels through here, so the gate
+// authority and validation are identical.
+func (d *consoleData) submitBoundDecision(ctx context.Context, id string, in DecisionRequest) (DecisionResult, error) {
 	if d.decide == nil {
 		return DecisionResult{}, errDecisionsDisabled
 	}
-	snap, ok, err := d.gateSnapshot(ctx, id)
+	bound, err := d.bindDecision(ctx, id, in)
 	if err != nil {
 		return DecisionResult{}, err
 	}
+	if err := ValidateDecisionRequest(bound); err != nil {
+		return DecisionResult{}, fmt.Errorf("%w: %v", errBadDecision, err)
+	}
+	return d.decide(ctx, bound)
+}
+
+// bindDecision resolves the live gate and fills the request identity fields,
+// failing closed on a disabled surface, an unknown cycle, or a stale/closed gate
+// (the sentinels the handlers map to status codes).
+func (d *consoleData) bindDecision(ctx context.Context, id string, in DecisionRequest) (DecisionRequest, error) {
+	snap, ok, err := d.gateSnapshot(ctx, id)
+	if err != nil {
+		return DecisionRequest{}, err
+	}
 	if !ok {
-		return DecisionResult{}, errUnknownCycle
+		return DecisionRequest{}, errUnknownCycle
 	}
 	if !snap.Open {
-		return DecisionResult{}, fmt.Errorf("%w: cycle is not waiting at a gate", errStaleGate)
+		return DecisionRequest{}, fmt.Errorf("%w: cycle is not waiting at a gate", errStaleGate)
 	}
 	if in.Attempt != snap.Attempt || in.SHA != snap.SHA {
-		return DecisionResult{}, fmt.Errorf("%w: attempt %d/%s is superseded by %d/%s",
+		return DecisionRequest{}, fmt.Errorf("%w: attempt %d/%s is superseded by %d/%s",
 			errStaleGate, in.Attempt, shortSHA(in.SHA), snap.Attempt, shortSHA(snap.SHA))
 	}
 	in.Owner, in.Repo, in.Issue, in.CycleID = snap.Owner, snap.Repo, snap.Issue, id
 	if strings.TrimSpace(in.Actor) == "" {
 		in.Actor = "console"
 	}
-	if err := ValidateDecisionRequest(in); err != nil {
-		return DecisionResult{}, fmt.Errorf("%w: %v", errBadDecision, err)
-	}
-	return d.decide(ctx, in)
+	return in, nil
 }
 
 // shortSHA renders an abbreviated SHA for error messages (never a secret).

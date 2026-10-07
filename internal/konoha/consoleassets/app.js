@@ -10,7 +10,7 @@
 // outcomes are separate fields. A conflict (agent SUCCESS while verification
 // FAILED/ERROR) is highlighted and never collapsed into the agent's prose.
 
-const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, queue: false, selected: "", tab: "result", detail: null, commentDraft: [] };
+const state = { csrf: "", csrfHeader: "X-Konoha-CSRF", decisions: false, queue: false, forms: [], selected: "", tab: "result", detail: null, commentDraft: [] };
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -67,6 +67,7 @@ async function bootstrap() {
   state.csrf = status.csrfToken;
   state.csrfHeader = status.csrfHeader || state.csrfHeader;
   state.decisions = !!status.decisions;
+  state.forms = status.forms || [];
   state.queue = !!status.queue;
   document.getElementById("meta").textContent =
     status.name + " " + status.version + (status.readOnly ? " · read-only" : "");
@@ -339,60 +340,118 @@ function tabResult(root, d) {
   decisionPanel(root, d);
 }
 
-// Decision panel (#108): approve / request-changes / deny. It is shown ONLY for
-// an open gate bound to the exact attempt+SHA the detail view rendered, so a
-// stale submission cannot be made from a superseded view. Nothing here is a
-// second source of truth — the server writes the §18 decision channel.
+// Decision panel (#108/#120): schema-driven typed interaction forms for
+// approve / request-changes / clarification. It is shown ONLY for an open gate
+// bound to the exact attempt+SHA the detail view rendered, so a stale submission
+// cannot be made from a superseded view. Each form maps onto an existing §18
+// decision action — nothing here is a second source of truth.
 function decisionPanel(root, d) {
-  if (!state.decisions || !d.gate || !d.gate.open) return;
+  if (!state.decisions || !state.forms.length || !d.gate || !d.gate.open) return;
   const gate = d.gate;
   const box = el("section", "decisions");
   box.append(el("h3", "", "Decision"));
   box.append(el("p", "muted",
     "Gate bound to attempt " + gate.attempt + " @ " + String(gate.sha || "").slice(0, 12)));
 
-  const feedback = document.createElement("textarea");
-  feedback.rows = 3;
-  feedback.placeholder = "Required for request changes";
-  box.append(feedback);
-
-  if (state.commentDraft.length) {
-    box.append(el("p", "muted",
-      state.commentDraft.length + " anchored comment(s) staged (see the Diff tab)"));
+  const picker = document.createElement("select");
+  for (const f of state.forms) {
+    const o = document.createElement("option");
+    o.value = f.decision;
+    o.textContent = f.title || f.decision;
+    picker.append(o);
   }
+  box.append(picker);
 
+  const fields = el("div", "form-fields");
+  box.append(fields);
   const status = el("p", "decision-status", "");
-  const submit = async (action) => {
-    if (action === "request-changes" && !feedback.value.trim()) {
-      status.textContent = "request-changes requires feedback";
-      return;
+  let inputs = {};
+  const renderFields = () => {
+    fields.textContent = "";
+    inputs = {};
+    const schema = state.forms.find((f) => f.decision === picker.value);
+    for (const fld of (schema && schema.fields) || []) {
+      const label = el("label", "form-field");
+      label.append(el("span", "", (fld.label || fld.name) + (fld.required ? " *" : "")));
+      let input;
+      if (fld.type === "choice") {
+        input = document.createElement("select");
+        if (!fld.required) {
+          const o = document.createElement("option");
+          o.value = "";
+          o.textContent = "—";
+          input.append(o);
+        }
+        for (const opt of fld.options || []) {
+          const o = document.createElement("option");
+          o.value = opt;
+          o.textContent = opt;
+          input.append(o);
+        }
+      } else {
+        input = document.createElement("input");
+        input.type = fld.type === "number" ? "number" : "text";
+        if (fld.type === "number") {
+          if (fld.min !== undefined) input.min = fld.min;
+          if (fld.max !== undefined) input.max = fld.max;
+          input.step = "any";
+        }
+        if (fld.maxLength) input.maxLength = fld.maxLength;
+      }
+      inputs[fld.name] = { field: fld, input };
+      label.append(input);
+      fields.append(label);
     }
-    status.textContent = "submitting…";
-    const comments = action === "request-changes" && state.commentDraft.length
-      ? state.commentDraft.map((c) => ({ file: c.file, line: c.line, side: c.side, sha: gate.sha, body: c.body }))
+    if (picker.value === "request-changes" && state.commentDraft.length) {
+      fields.append(el("p", "muted",
+        state.commentDraft.length + " anchored comment(s) staged (see the Diff tab)"));
+    }
+  };
+  picker.addEventListener("change", renderFields);
+  renderFields();
+
+  const submit = el("button", "decision-btn", "Submit");
+  submit.addEventListener("click", async () => {
+    const values = {};
+    for (const name of Object.keys(inputs)) {
+      const { field, input } = inputs[name];
+      const raw = (input.value || "").trim();
+      if (!raw) continue;
+      values[name] = field.type === "number" ? Number(raw) : raw;
+    }
+    const comments = picker.value === "request-changes" && state.commentDraft.length
+      ? state.commentDraft.map((c) => ({ file: c.file, line: c.line, side: c.side, body: c.body }))
       : undefined;
+    status.textContent = "submitting…";
     try {
-      await apiPost("/api/v1/cycles/" + encodeURIComponent(d.id) + "/decisions", {
-        action, attempt: gate.attempt, sha: gate.sha,
-        feedback: action === "request-changes" ? feedback.value : undefined,
-        comments,
+      await apiPost("/api/v1/cycles/" + encodeURIComponent(d.id) + "/forms", {
+        decision: picker.value, values, comments,
+        attempt: gate.attempt, sha: gate.sha,
       });
-      if (action === "request-changes") state.commentDraft = [];
+      if (picker.value === "request-changes") state.commentDraft = [];
       status.textContent = "submitted";
       await selectCycle(d.id);
     } catch (err) {
       status.textContent = String(err.message || err);
     }
-  };
-  const actions = el("div", "decision-actions");
-  for (const [action, label] of [
-    ["approve", "Approve"], ["request-changes", "Request changes"], ["deny", "Deny"],
-  ]) {
-    const b = el("button", "decision-btn " + action, label);
-    b.addEventListener("click", () => submit(action));
-    actions.append(b);
-  }
-  box.append(actions, status);
+  });
+  box.append(submit, status);
+  // Deny has no form fields; it stays a quick #108 action mapped straight onto
+  // the existing decision channel (never a second source of truth).
+  const deny = el("button", "decision-btn deny", "Deny");
+  deny.addEventListener("click", async () => {
+    status.textContent = "submitting…";
+    try {
+      await apiPost("/api/v1/cycles/" + encodeURIComponent(d.id) + "/decisions", {
+        action: "deny", attempt: gate.attempt, sha: gate.sha,
+      });
+      status.textContent = "submitted";
+      await selectCycle(d.id);
+    } catch (err) {
+      status.textContent = String(err.message || err);
+    }
+  });
+  box.append(deny);
   root.append(box);
 }
 

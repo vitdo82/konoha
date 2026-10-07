@@ -119,8 +119,17 @@ func ValidateDecisionRequest(in DecisionRequest) error {
 				return err
 			}
 		}
+	case humanDecisionResume:
+		// #120: a clarification form maps onto the existing §18 `resume` action;
+		// it may carry the typed answer as feedback, but no anchored comments.
+		if len(in.Comments) > 0 {
+			return fmt.Errorf("resume carries no anchored comments")
+		}
+		if len(in.Feedback) > maxDecisionFeedback {
+			return fmt.Errorf("resume feedback %d bytes exceeds the %d-byte cap", len(in.Feedback), maxDecisionFeedback)
+		}
 	default:
-		return fmt.Errorf("decision action %q not in the §108 set {approve, request-changes, deny}", in.Action)
+		return fmt.Errorf("decision action %q not in the §108 set {approve, request-changes, deny, resume}", in.Action)
 	}
 	if in.Attempt <= 0 {
 		return fmt.Errorf("decision: attempt required (the gate identity)")

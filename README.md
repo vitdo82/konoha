@@ -725,10 +725,11 @@ offline against `evidence.dir`:
                                    # outcomes, conditions, usage (no Temporal)
 ```
 
-## Local review console (#105, board + detail #106, decisions #108, queue #109)
+## Local review console (#105, board + detail #106, decisions #108, queue #109, forms #120)
 
 An opt-in, **loopback-only** HTTP console for the board, cycle detail, the human
-decision gate (#108), and the needs-attention queue + recovery actions (#109).
+decision gate (#108), schema-driven interaction forms (#120), and the
+needs-attention queue + recovery actions (#109).
 Read-only except for the decisions and queue-action endpoints. It is
 **disabled by default** — no listener starts unless `KONOHA_CONSOLE_ADDR` is set
 — and start a dedicated process (or let the worker start it when the same env
@@ -755,7 +756,7 @@ Endpoints:
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/v1/status` | `{version, readOnly, decisions, queue, stream, csrfHeader, csrfToken}` (unauthenticated bootstrap) |
+| `GET /api/v1/status` | `{version, readOnly, decisions, queue, stream, csrfHeader, csrfToken, forms}` (unauthenticated bootstrap; `forms` is the #120 schema catalog when decisions are enabled) |
 | `GET /api/v1/metrics` | #112 metrics dashboard: the existing §39 rate gauges + throughput + #87 cost/tokens, each optional (a missing figure renders "no data") |
 | `GET /api/v1/cycles` | board rows (finished cycles from evidence + running from Temporal) **and** the grouped `columns` |
 | `GET /api/v1/cycles/{id}` | cycle detail: outcome/status, ordered conditions, the outcome-conflict flag, the Diff/Validation/Metadata projections, and the open `gate` identity |
@@ -764,6 +765,7 @@ Endpoints:
 | `GET /api/v1/cycles/{id}/artifacts/{name}` | **preview** (inline): text/HTML as `text/plain`, images as images; binary/oversize → 415 |
 | `GET /api/v1/cycles/{id}/download/{name}` | **download** any artifact (`Content-Disposition: attachment`, correct content type) |
 | `POST /api/v1/cycles/{id}/decisions` | **the only mutation** (#108): `approve` / `request-changes` / `deny` |
+| `POST /api/v1/cycles/{id}/forms` | #120 typed interaction form: a schema-validated submission mapped onto an existing §18 decision action (no new state) |
 | `GET /api/v1/queue` | the #109 needs-attention queue: awaiting-approval / blocked / failed / interrupted cycles with their available recovery actions |
 | `POST /api/v1/cycles/{id}/actions` | #109 recovery mutation: `retry` / `cancel` (session verbs `attach` / `pause` / `resume` report `SKIPPED` without a provider, #136/#144) |
 
@@ -861,6 +863,37 @@ Writing a decision posts an issue comment, so the console shells `gh` (the
 operator's GitHub auth) **only** on a decision — the read-only paths still touch
 no GitHub credential. `repos.yaml` is read (policy only) to resolve the repo
 owner and the audit sink.
+
+### Typed interaction forms (#120)
+
+The Decision panel is **schema-driven**: `GET /api/v1/status` advertises a closed
+form catalog (also rendered as typed inputs by the SPA), and a submission goes to
+`POST /api/v1/cycles/{id}/forms`. A form is a typed, validated wrapper around an
+**existing** §18 decision action — it introduces no new state and no parallel
+writer (§44 #20):
+
+| Form | Mapped §18 action | Fields |
+|---|---|---|
+| `approve` | `approve` | — |
+| `request-changes` | `request-changes` | `summary` text (required, ≤8 KiB); `severity` choice (`low`/`medium`/`high`, optional); diff-anchored comments |
+| `clarification` | `resume` | `answer` text (required, ≤8 KiB); `confidence` number 0–1 (optional) |
+
+- **Validation fails closed (§36).** An unknown form or field, a missing required
+  value, a wrong type, a value outside a choice's closed set, and an over-cap or
+  out-of-range value are all rejected (`400`) and **never** become a decision. The
+  validator is pure and unit-tested without a browser or Temporal.
+- **Mapping only.** A valid submission is mapped to its existing §18 action and
+  written through the **same** gate/validation/writer as a raw #108 decision
+  (`SubmitHumanDecision`/`WriteConsoleDecision`), so the `konoha-decision` marker
+  remains the single source of truth and the GitHub channel accepts it unchanged.
+- **Clarification pauses and resumes.** A clarification form is answered at the
+  §55 gate: the cycle waits in `PENDING_APPROVAL`, a valid answer maps to `resume`
+  (which `EvaluateApproval`/`ApplyHumanDecision` treat as continue), and a timeout
+  keeps the existing `BLOCKED` semantics (§40 — never a silent proceed).
+- **Redaction, audit, idempotency (§82/§55/§24).** Freeform form text and anchored
+  comment bodies are redacted before they become a decision; every accepted form
+  is appended to the §55 audit sink with the actor + mapped decision; and a
+  repeated submission for the same gate is a no-op (one decision per gate).
 
 The SPA is served from embedded assets with a strict `Content-Security-Policy`
 (`default-src 'none'; script-src 'self'; …`), no inline script, and it never
