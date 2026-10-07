@@ -92,3 +92,24 @@ defaults:
       strategy: squash             # squash | rebase | merge
       requireCI: true              # gate the merge on green CI (fail-closed)
       ciMaxWait: 10m               # bounded CI poll window
+
+# #118 model-provider protocol abstraction (FOUNDATION; not yet wired to the
+# agent harness). A provider names a wire protocol or a gateway preset and the
+# credential NAME (never a value). Protocols: openai-responses | openai-chat |
+# anthropic-messages. Gateways (OpenAI-chat baseUrl presets): openrouter |
+# litellm | ollama. An unknown protocol/gateway, a gateway/protocol mismatch, or
+# a non-bare apiKeyEnv fails at load. Providers are only built by
+# newProviderRegistry (#118); no cycle path calls them yet.
+# defaults:
+#   providers:
+#     anthropic:
+#       protocol: anthropic-messages
+#       apiKeyEnv: ANTHROPIC_API_KEY     # NAME only; the value is never read/recorded
+#     openai:
+#       protocol: openai-responses
+#       apiKeyEnv: OPENAI_API_KEY
+#     openrouter:
+#       gateway: openrouter              # implies openai-chat + a default baseUrl
+#       apiKeyEnv: OPENROUTER_API_KEY
+#     local-ollama:
+#       gateway: ollama                  # no key needed

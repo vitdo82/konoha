@@ -146,6 +146,25 @@ without restarting a completed workflow. Deliveries with an invalid
   git-excludes it. Every capability records `APPLIED`/`SKIPPED`/`FAILED`
   (`CapabilityOutcome`, never a false success §40) into `provisioning.json`
   evidence; `--version` is best-effort and never fails a run.
+- `modelprovider.go` + `modelprovider_adapters.go` own the #118 model-provider
+  protocol abstraction — a **standalone foundation**, NOT wired into the agent
+  harness (agents still run through `harness.go`; this feeds #PL1 profiles and
+  #PL6 secrets). `ModelProvider` (`Name`/`Protocol`/`Invoke(ctx, Envelope)
+  (Envelope, error)`) is implemented by three wire adapters — OpenAI Responses,
+  OpenAI Chat Completions, Anthropic Messages — over a canonical `Envelope`
+  (messages/tools in; text/tool-calls/`HarnessUsage` out). Protocols are the
+  closed set `openai-responses|openai-chat|anthropic-messages`; gateways
+  (`openrouter|litellm|ollama`) are **OpenAI-chat base-URL presets**, not a fourth
+  adapter. Config is `defaults.providers.<name>` (`protocol`|`gateway`,
+  `baseUrl?`, `apiKeyEnv?`); an unknown protocol/gateway, a gateway/protocol
+  mismatch, or a non-bare `apiKeyEnv` fails at load (`AppConfig.validate`), and
+  again in `newProviderRegistry`. A `retryingProvider` decorator applies the #95
+  contract: `transportError`/5xx retried with backoff, a 4xx `httpStatusError`
+  fails closed in one attempt. Credentials are resolved **by name** at Invoke
+  time via `SecretResolver` (default env), registered with the process redactor
+  (#82), and never placed in the envelope, an error, a log, or a
+  `ProviderDescriptor` (which records the `apiKeyEnv` NAME only). Adds no
+  exported activity/workflow func (no Temporal type-name change).
 - **Config source of truth is `repos.yaml`.** `configs/repos.yaml` is loaded by
   `prbot config` (the shared Go loader, `yaml.v3` `KnownFields`)
   for each repo's schedule-input JSON; unknown keys and out-of-range values
