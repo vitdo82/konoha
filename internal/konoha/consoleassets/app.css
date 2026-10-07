@@ -199,6 +199,12 @@ body {
 .decision-btn.approve { border-color: var(--ok); }
 .decision-btn.deny { border-color: var(--bad); }
 .decision-status { min-height: 1em; color: var(--muted); }
+/* Typed interaction forms (#120). */
+.decisions select { background: #12151b; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+.form-fields { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.form-field { display: flex; flex-direction: column; gap: 3px; }
+.form-field > span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.form-field input { background: #12151b; color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
 .muted { color: var(--muted); }
 
 /* Metrics dashboard (#112). Spans the layout so it reads as an overview. */

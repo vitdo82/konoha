@@ -895,7 +895,8 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   search-before-create so a repeated submit is a no-op (§24); `ReadHumanDecision`
   parses the payload back into `HumanDecision.Feedback`/`Comments`.
   `ValidateDecisionRequest` enforces the §108 rules (action set
-  `approve|request-changes|deny`, non-empty size-bounded request-changes
+  `approve|request-changes|deny` — plus `resume` for the #120 clarification form,
+  which carries only feedback — non-empty size-bounded request-changes
   feedback, diff-anchored comments bound to `(sha, file, line, side)` — a
   comment on any other SHA, an unknown side, or a negative line is stale/
   malformed and fails closed). `consoleData.submitDecision` binds the submission
@@ -918,6 +919,29 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   through `RecordAuditEvent` (`auditDecisionForAction`: allow/deny/request_changes).
   A `POST` never proceeds on a fail-closed path; the §6 state stays authoritative
   (§44 #20).
+- `forms.go` owns the #120 typed interaction forms for human input, built ON TOP
+  of the #108/#97 decision surface (never a second source of truth, §44 #20).
+  `decisionFormSchemas` is the closed, deterministic catalog — `approve` (no
+  fields), `request-changes` (`summary` text required + `severity` choice +
+  diff-anchored comments), `clarification` (`answer` text required + `confidence`
+  number 0–1) — each naming the EXISTING §18 action it maps onto
+  (`approve`/`request-changes`/`resume`). `ValidateFormSubmission` is the PURE,
+  fail-closed §36 gate: an unknown form/field, missing required value, wrong type,
+  a value outside a choice's closed set, and an over-cap (`MaxLength`) or
+  out-of-range (`Min`/`Max`) value are all rejected and never become a decision.
+  `FormDecision.decisionRequest` maps a validated form onto a `DecisionRequest`
+  (binding the gate attempt/SHA + anchored-comment SHA) and applies the #82
+  redactor to the feedback/comment bodies; the console's
+  `POST /api/v1/cycles/{id}/forms` handler (`handleFormDecision`) and the SPA
+  panel (`consoleassets/app.js`, schemas advertised in `GET /api/v1/status.forms`)
+  funnel it through `consoleData.submitBoundDecision` — the SAME live-gate bind +
+  `ValidateDecisionRequest` + `d.decide` path as a raw #108 decision, so audit
+  (§55) and per-gate idempotency (§24) are inherited unchanged. A clarification
+  form is answered at the existing §55 gate: the cycle waits in
+  `PENDING_APPROVAL`, a valid answer maps to `resume` (`EvaluateApproval`/
+  `ApplyHumanDecision` treat it as continue), and a timeout keeps the existing
+  `BLOCKED` semantics (§40). `forms.go` adds no exported activity/workflow func
+  (no Temporal type-name change).
 - `queue.go` owns the #109 needs-attention queue + recovery actions (Machinist
   model: **retry preserves earlier attempts, no silent replay**). `attentionItems`
   is the PURE projection (awaiting-approval / blocked / failed / interrupted,
