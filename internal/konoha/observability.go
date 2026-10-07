@@ -136,6 +136,7 @@ type CycleOutcome struct {
 	Scope           string            `json:"scope,omitempty"`         // #104: resolved tenancy scope (policy tenancy, not isolation)
 	Profiles        map[string]string `json:"profiles,omitempty"`      // #117: resolved stage → agent-profile name (evidence only)
 	ProfileDigest   string            `json:"profileDigest,omitempty"` // #88: digest of the resolved agent-profile bundle
+	Tooling         *AgentTooling     `json:"tooling,omitempty"`       // #119: resolved tool allow/deny + MCP server names (evidence only)
 	Cleanup         *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
 	Limits          *LimitEvidence    `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
 	Egress          *EgressEvidence   `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)

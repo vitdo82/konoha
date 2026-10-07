@@ -69,6 +69,12 @@ type LifecycleConfig struct {
 	// never resolves a profile name.
 	Profiles      map[string]string `yaml:"-" json:"profiles,omitempty"`
 	ProfileDigest string            `yaml:"-" json:"profileDigest,omitempty"`
+	// Tooling is the #119 load-resolved tool + MCP policy: the union of the
+	// selected profiles' allow/deny tool lists and MCP server names. Set ONCE at
+	// load by resolveAgentProfiles (yaml:"-", never accepted from repos.yaml),
+	// carried in the schedule input, recorded in outcome.json, and enforced by
+	// the agent activities (an unknown/denied tool fails closed).
+	Tooling AgentTooling `yaml:"-" json:"tooling,omitempty"`
 }
 
 // ValidationGate is one structured §26 verification gate: a bare argv run in a

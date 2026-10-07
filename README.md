@@ -152,10 +152,18 @@ harness:                          # §85 generic harness (used when a repo selec
 #   reviewer:
 #     harness: opencode           # §85 harness NAME (fallback: defaults.lifecycle.harness)
 #     model: strong               # §98 catalog NAME from defaults.agents.models (never a raw id)
-#     tools: [read, grep]         # recorded + digested (enforcement lands with the #119 tool/MCP registry)
-#     mcp: [github]               # recorded + digested (enforcement lands with #119)
+#     tools: [read, grep]         # #119 advisory allow list (recorded + digested + handed to a supporting harness)
+#     deny: []                    # #119 hard deny list — fails closed (see tool registry below)
+#     mcp: [github]               # #119 named MCP servers from `mcpServers:` (resolved + played to a supporting harness)
 #     limits: { memoryMiB: 2048 } # #102 override; agrees with every other selected profile
 #     promptMode: arg             # recorded + digested (harness prompt transport)
+# tools:                          # #119 tool catalog (built-ins are code-level)
+#   custom:
+#     deploy-check: { description: "Verify a deploy" }
+# mcpServers:                     # #119 named HTTP MCP servers
+#   github:
+#     url: "https://api.githubcopilot.com/mcp/"
+#     headers: { Authorization: "Bearer ${GITHUB_MCP_TOKEN}" }  # written to the git-excluded config only
 defaults:
   lifecycle:
     harness: opencode             # §85 fallback harness name when a repo leaves it unset
@@ -247,9 +255,26 @@ fail closed.
 behavior exactly — the legacy `lifecycle.harness`/`model`/`models`/`limits` keys
 are the implicit profile. Declaring both a profile and a **conflicting** legacy
 key (e.g. a profile harness of `opencode` alongside `lifecycle.harness: generic`)
-fails at load with a clear error; agreeing values are allowed. `tools`, `mcp`,
-and `promptMode` are recorded and digested; their cross-reference enforcement
-lands with the tool/MCP registry (#119), which owns the named catalogs.
+fails at load with a clear error; agreeing values are allowed.
+
+**Tool registry + permissions (#119).** A tool catalog and named MCP server
+registry let an operator declare exactly what an agent may use. Built-in tool
+ids (`read`, `grep`, `glob`, `edit`, `write`, `bash`, `webfetch`, `task`,
+`todowrite`, `skill`) are code-level; custom tools are declared in
+`tools.custom.<id>` with a description. A profile's `tools` is an advisory
+**allow** list: it is recorded in `outcome.json` and covered by the profile
+digest. A profile's `deny` is a **hard** restriction: the bundled harnesses
+receive no tool allowlist, so a denied tool cannot be removed — konoha **fails
+the run closed** rather than silently running with broader capability (§40). An
+unknown tool reference **fails at load**.
+
+Named HTTP MCP servers live in `mcpServers.<name>`; a profile references them by
+name in `mcp`. Only the resolved set is written into the supporting harness's
+git-excluded config (generic harnesses, via the #96 `MCPConfigurer`); a harness
+without the capability records the `mcp` surface `SKIPPED` — never a false
+success. The resolved names are recorded + digested, and an unknown server
+reference **fails at load**. Nothing an issue, PR, diff, or spec says can widen
+the tool/MCP set (§27): resolution reads only `konoha.yaml` and `repos.yaml`.
 
 **Model providers — protocols + gateways (#118).** A **foundation** layer, not
 yet wired to the agent harness. A provider names a wire **protocol** — or a

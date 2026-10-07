@@ -58,8 +58,9 @@ type PRDescriptionRequest struct {
 	DeveloperSummary   string        `json:"developerSummary"` // validated developer artifact
 	Concerns           []string      `json:"concerns"`
 	ChangedFiles       []string      `json:"changedFiles"`
-	ValidationOutput   string        `json:"validationOutput"` // §26 observed test evidence
-	Limits             *LimitsConfig `json:"limits,omitempty"` // #102
+	ValidationOutput   string        `json:"validationOutput"`  // §26 observed test evidence
+	Limits             *LimitsConfig `json:"limits,omitempty"`  // #102
+	Tooling            AgentTooling  `json:"tooling,omitempty"` // #119 resolved tool/MCP policy (nil = none)
 }
 
 // PRDescriptionResult is the activity result. Body is empty on failure so the
@@ -178,7 +179,7 @@ func RunPRDescription(ctx context.Context, in PRDescriptionRequest) (PRDescripti
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := prDescriptionPrompt(in)
 
-	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits))
+	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits), in.Tooling)
 	if err != nil {
 		return PRDescriptionResult{}, err
 	}

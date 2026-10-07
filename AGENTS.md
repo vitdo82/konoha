@@ -231,9 +231,30 @@ without restarting a completed workflow. Deliveries with an invalid
   harness/limits the pipeline can express, and a **conflicting** legacy
   `lifecycle.harness`/`model`/`models`/`limits` key all fail at load. A repo with
   no `lifecycle.agents` is byte-for-byte the legacy behavior (the implicit
-  profile). `tools`/`mcp`/`promptMode` are recorded + digested only — their
-  cross-reference enforcement is the #119 tool/MCP registry. `profiles.go` adds
+  profile). `tools`/`mcp` tool/MCP references are validated against the #119
+  catalogs at load (see the tool-registry note below). `profiles.go` adds
   no exported activity/workflow func (no Temporal type name changes).
+- **Tool registry + permissions + MCP registry (`tools.go`, #119)**: the
+  top-level `tools:` block declares `custom` tools (id → description) with the
+  built-ins code-level (`builtinToolCatalog`), and `mcpServers:` names HTTP MCP
+  servers (`{url, headers}`). A profile's `tools` is an advisory **allow** list;
+  `deny` is a hard restriction. `resolveAgentProfiles` validates every ref
+  against the catalogs (an unknown tool/server **fails at load**), rejects a
+  tool both allowed and denied, and fails closed on any `deny` entry (the bundled
+  harnesses receive no tool allowlist, so a denied tool cannot be removed —
+  running anyway would be broader capability than declared, §40). The resolved
+  policy is the union of the selected profiles, stored on
+  `LifecycleConfig.Tooling` (`yaml:"-"`, carried in the schedule input), handed
+  to the agent path via `AgentTooling` on the request structs, and recorded in
+  `outcome.json` (`CycleOutcome.Tooling`) + the #88 profile digest. `agentCommand`
+  enforces it: a deny list fails closed and MCP server names resolve from the
+  process registry (`resolveMCPServerSpecs`), unknown failing closed. A
+  supporting harness (`MCPConfigurer`, #96) receives only the resolved set and
+  renders it into its git-excluded config (`renderMCPConfig`); a harness without
+  the capability records `mcp` `SKIPPED` — never a false success. Resolution
+  reads **only** konoha.yaml/repos.yaml, so issue text can never grant a tool or
+  server (§27). `tools.go` adds no exported activity/workflow func (no Temporal
+  type name changes).
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are

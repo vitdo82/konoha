@@ -35,8 +35,9 @@ const profileDefaultStage = "default"
 type AgentProfile struct {
 	Harness    string        `yaml:"harness" json:"harness,omitempty"`
 	Model      string        `yaml:"model" json:"model,omitempty"` // §98 catalog NAME (never a raw id)
-	Tools      []string      `yaml:"tools" json:"tools,omitempty"`
-	MCP        []string      `yaml:"mcp" json:"mcp,omitempty"`
+	Tools      []string      `yaml:"tools" json:"tools,omitempty"` // #119 advisory allow list (recorded + digested)
+	Deny       []string      `yaml:"deny" json:"deny,omitempty"`   // #119 hard deny list (fails closed; not enforceable by bundled harnesses)
+	MCP        []string      `yaml:"mcp" json:"mcp,omitempty"`     // #119 named MCP servers (resolved from `mcpServers`)
 	Limits     *LimitsConfig `yaml:"limits" json:"limits,omitempty"`
 	PromptMode string        `yaml:"promptMode" json:"promptMode,omitempty"`
 }
@@ -74,8 +75,9 @@ func sortedProfileNames(m AgentProfilesConfig) []string {
 }
 
 // validate gates one profile: a known harness, a known §98 catalog model name,
-// non-empty unique tool/MCP references, valid limits and a known prompt mode.
-func (p AgentProfile) validate(name string, models AgentsConfig) error {
+// known tool/MCP references (against the #119 catalogs), valid limits and a
+// known prompt mode.
+func (p AgentProfile) validate(name string, models AgentsConfig, tools ToolsConfig, mcp map[string]MCPServerSpec) error {
 	prefix := "agents." + name
 	if h := strings.TrimSpace(p.Harness); h != "" && !knownHarnessName(h) {
 		return fmt.Errorf("%s.harness: unknown harness %q (known: %s)", prefix, p.Harness, strings.Join(builtinHarnessNames, ", "))
@@ -85,11 +87,16 @@ func (p AgentProfile) validate(name string, models AgentsConfig) error {
 			return fmt.Errorf("%s.model: unknown model %q (known: %s)", prefix, m, strings.Join(sortedModelNames(models.Models), ", "))
 		}
 	}
-	if err := validateStringList(prefix+".tools", p.Tools); err != nil {
+	if err := validateToolRefs(prefix, p.Tools, p.Deny, tools); err != nil {
 		return err
 	}
 	if err := validateStringList(prefix+".mcp", p.MCP); err != nil {
 		return err
+	}
+	for _, name := range p.MCP {
+		if _, ok := mcp[name]; !ok {
+			return fmt.Errorf("%s.mcp: unknown MCP server %q (known: %s)", prefix, name, strings.Join(sortedMCPServerNames(mcp), ", "))
+		}
 	}
 	if p.Limits != nil {
 		if err := p.Limits.validate(prefix + ".limits"); err != nil {
@@ -103,12 +110,12 @@ func (p AgentProfile) validate(name string, models AgentsConfig) error {
 }
 
 // validate gates the `agents:` map: non-empty names and each profile valid.
-func (ps AgentProfilesConfig) validate(models AgentsConfig) error {
+func (ps AgentProfilesConfig) validate(models AgentsConfig, tools ToolsConfig, mcp map[string]MCPServerSpec) error {
 	for name, p := range ps {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("agents: empty profile name")
 		}
-		if err := p.validate(name, models); err != nil {
+		if err := p.validate(name, models, tools, mcp); err != nil {
 			return err
 		}
 	}
@@ -124,6 +131,7 @@ type resolvedProfile struct {
 	Harness    string        `json:"harness,omitempty"`
 	Model      string        `json:"model,omitempty"`
 	Tools      []string      `json:"tools,omitempty"`
+	Deny       []string      `json:"deny,omitempty"`
 	MCP        []string      `json:"mcp,omitempty"`
 	Limits     *LimitsConfig `json:"limits,omitempty"`
 	PromptMode string        `json:"promptMode,omitempty"`
@@ -167,6 +175,7 @@ func resolveAgentProfiles(repos []RepoConfig, cfg AppConfig) error {
 		}
 		resolvedHarness := ""
 		var resolvedLimits *LimitsConfig
+		var tooling AgentTooling
 
 		var resolved []resolvedProfile
 		for _, stage := range pipelineStages {
@@ -181,10 +190,15 @@ func resolveAgentProfiles(repos []RepoConfig, cfg AppConfig) error {
 			if !ok {
 				return fmt.Errorf("%s: lifecycle.agents.%s: unknown profile %q (known: %s)", repo, stage, name, strings.Join(sortedProfileNames(cfg.Agents), ", "))
 			}
-			if err := p.validate(name, cfg.Defaults.Agents); err != nil {
+			if err := p.validate(name, cfg.Defaults.Agents, cfg.Tools, cfg.MCPServers); err != nil {
 				return fmt.Errorf("%s: %w", repo, err)
 			}
-			rp := resolvedProfile{Stage: stage, Name: name, Tools: p.Tools, MCP: p.MCP, PromptMode: normalizePromptMode(p.PromptMode)}
+			rp := resolvedProfile{Stage: stage, Name: name, Tools: p.Tools, Deny: p.Deny, MCP: p.MCP, PromptMode: normalizePromptMode(p.PromptMode)}
+			// #119: the repo-level tool/MCP policy is the union of every selected
+			// profile (names only; deduped + sorted for a stable digest/evidence).
+			tooling.Allow = append(tooling.Allow, p.Tools...)
+			tooling.Deny = append(tooling.Deny, p.Deny...)
+			tooling.MCP = append(tooling.MCP, p.MCP...)
 
 			// Harness: a profile may set it; every selected profile must agree on
 			// the single harness the pipeline can express.
@@ -239,6 +253,11 @@ func resolveAgentProfiles(repos []RepoConfig, cfg AppConfig) error {
 		if resolvedLimits != nil {
 			lc.Limits = resolvedLimits
 		}
+		lc.Tooling = AgentTooling{
+			Allow: sortedToolingNames(tooling.Allow),
+			Deny:  sortedToolingNames(tooling.Deny),
+			MCP:   sortedToolingNames(tooling.MCP),
+		}
 		if lc.Profiles == nil {
 			lc.Profiles = map[string]string{}
 		}
@@ -258,5 +277,10 @@ func stampProfiles(out *CycleOutcome, lc LifecycleConfig) {
 	}
 	if lc.ProfileDigest != "" {
 		out.ProfileDigest = lc.ProfileDigest
+	}
+	// #119: record the resolved tool/MCP set (names only) alongside the profiles.
+	if !lc.Tooling.isZero() {
+		t := lc.Tooling
+		out.Tooling = &t
 	}
 }

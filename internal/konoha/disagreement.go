@@ -81,7 +81,8 @@ type ResolutionRequest struct {
 	CompletionRisks          []string          `json:"completionRisks"`
 	CompletionOpenQuestions  []string          `json:"completionOpenQuestions"`
 	CompletionRecommendation string            `json:"completionRecommendation"`
-	Limits                   *LimitsConfig     `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
+	Limits                   *LimitsConfig     `json:"limits,omitempty"`  // #102 host resource ceilings (nil = global)
+	Tooling                  AgentTooling      `json:"tooling,omitempty"` // #119 resolved tool/MCP policy (nil = none)
 }
 
 // ResolutionResult is the Resolution agent's proposition (§37): a bounded
@@ -252,7 +253,7 @@ func RunResolution(ctx context.Context, in ResolutionRequest) (ResolutionResult,
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := resolutionPrompt(in)
 
-	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits))
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits), in.Tooling)
 	if err != nil {
 		return ResolutionResult{}, err
 	}

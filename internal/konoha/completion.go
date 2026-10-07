@@ -65,11 +65,12 @@ type CompletionRequest struct {
 	AcceptanceCriteria []string      `json:"acceptanceCriteria"`
 	Constraints        []string      `json:"constraints"`
 	Assumptions        []string      `json:"assumptions"`
-	ReviewSummary      string        `json:"reviewSummary"`    // reviewer verdict + findings (observed)
-	ReviewVerdict      string        `json:"reviewVerdict"`    // APPROVE | REQUEST_CHANGES
-	Diff               string        `json:"diff"`             // PR diff (observed artifact)
-	ValidationOutput   string        `json:"validationOutput"` // §26 tests/results (observed artifact)
-	Limits             *LimitsConfig `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
+	ReviewSummary      string        `json:"reviewSummary"`     // reviewer verdict + findings (observed)
+	ReviewVerdict      string        `json:"reviewVerdict"`     // APPROVE | REQUEST_CHANGES
+	Diff               string        `json:"diff"`              // PR diff (observed artifact)
+	ValidationOutput   string        `json:"validationOutput"`  // §26 tests/results (observed artifact)
+	Limits             *LimitsConfig `json:"limits,omitempty"`  // #102 host resource ceilings (nil = global)
+	Tooling            AgentTooling  `json:"tooling,omitempty"` // #119 resolved tool/MCP policy (nil = none)
 }
 
 // completionSystem is the authoritative completion-agent instruction block
@@ -207,7 +208,7 @@ func RunCompletion(ctx context.Context, in CompletionRequest) (CompletionResult,
 	defer startAgentHeartbeat(ctx)() // #95
 	prompt := completionPrompt(in)
 
-	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits))
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits), in.Tooling)
 	if err != nil {
 		return CompletionResult{}, err
 	}

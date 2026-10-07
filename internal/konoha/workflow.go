@@ -542,7 +542,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		// §26: structured gates / legacy command resolved from lifecycle.
 		Validation:    ValidationGates(in.Lifecycle),
 		ValidationCmd: ValidationCommand(in.Lifecycle),
-		Limits:        in.Lifecycle.Limits, // #102
+		Limits:        in.Lifecycle.Limits,  // #102
+		Tooling:       in.Lifecycle.Tooling, // #119
 	}).Get(ctx, &dev); err != nil {
 		return err
 	}
@@ -651,6 +652,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 				Validation:         ValidationGates(in.Lifecycle),
 				ValidationCmd:      ValidationCommand(in.Lifecycle),
 				Limits:             in.Lifecycle.Limits,
+				Tooling:            in.Lifecycle.Tooling, // #119
 			},
 			Review:         ReviewResult{Verdict: "REQUEST_CHANGES", Blocking: reworkBlocking(feedback, rw.Comments)},
 			PreviousCommit: dev.CommitSHA, // the commit the human reviewed
@@ -700,7 +702,7 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			Title: a.Title, Body: a.Body, Spec: a.Spec,
 			Requirements: a.Requirements, AcceptanceCriteria: a.AcceptanceCriteria, Constraints: a.Constraints,
 			DeveloperSummary: dev.Summary, Concerns: dev.Concerns, ChangedFiles: dev.ChangedFiles,
-			ValidationOutput: dev.ValidationOutput, Limits: in.Lifecycle.Limits,
+			ValidationOutput: dev.ValidationOutput, Limits: in.Lifecycle.Limits, Tooling: in.Lifecycle.Tooling,
 		}).Get(agentCtx, &desc); err != nil {
 			workflow.GetLogger(ctx).Warn("PR description generation failed; using deterministic body (§25)", "err", err)
 		} else if strings.TrimSpace(desc.Body) != "" {
@@ -756,7 +758,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			AcceptanceCriteria: a.AcceptanceCriteria,
 			Constraints:        a.Constraints,
 			Assumptions:        a.Assumptions,
-			Limits:             in.Lifecycle.Limits, // #102
+			Limits:             in.Lifecycle.Limits,  // #102
+			Tooling:            in.Lifecycle.Tooling, // #119
 		}).Get(agentCtx, &rev); err != nil {
 			return err
 		}
@@ -820,7 +823,8 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 				// §26: structured gates / legacy command resolved from lifecycle.
 				Validation:    ValidationGates(in.Lifecycle),
 				ValidationCmd: ValidationCommand(in.Lifecycle),
-				Limits:        in.Lifecycle.Limits, // #102
+				Limits:        in.Lifecycle.Limits,  // #102
+				Tooling:       in.Lifecycle.Tooling, // #119
 			},
 			Review:         rev,
 			PreviousCommit: reviewedSHA, // the SHA the reviewer actually saw (§15)

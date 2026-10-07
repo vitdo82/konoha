@@ -35,7 +35,8 @@ type ReviewRequest struct {
 	AcceptanceCriteria []string      `json:"acceptanceCriteria"`
 	Constraints        []string      `json:"constraints"`
 	Assumptions        []string      `json:"assumptions"`
-	Limits             *LimitsConfig `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
+	Limits             *LimitsConfig `json:"limits,omitempty"`  // #102 host resource ceilings (nil = global)
+	Tooling            AgentTooling  `json:"tooling,omitempty"` // #119 resolved tool/MCP policy (nil = none)
 }
 
 // reviewerSystem is the authoritative reviewer instruction block (§4.5/§13/
@@ -201,7 +202,7 @@ func RunReviewer(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	prompt := reviewPrompt(req, req.Diff)
 
 	lim := limitsForOverride(req.Limits)
-	cmd, caps, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath, lim)
+	cmd, caps, err := agentCommand(ctx, prompt, req.Model, req.Harness, req.RepoPath, lim, req.Tooling)
 	if err != nil {
 		return ReviewResult{}, err
 	}

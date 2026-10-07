@@ -97,7 +97,7 @@ func TestEgressAppliesToAgentChild(t *testing.T) {
 	defer func() { appCfg = saved }()
 	appCfg.Egress = EgressConfig{Proxy: "http://127.0.0.1:8888", AllowOut: []string{"api.anthropic.com"}}
 
-	cmd, _, err := agentCommand(context.Background(), "prompt", "", "opencode", t.TempDir(), LimitsConfig{})
+	cmd, _, err := agentCommand(context.Background(), "prompt", "", "opencode", t.TempDir(), LimitsConfig{}, AgentTooling{})
 	if err != nil {
 		t.Fatalf("agentCommand: %v", err)
 	}

@@ -50,7 +50,8 @@ type DevelopmentFailure struct {
 	AttemptSummaries []string      `json:"attemptSummaries"` // one line per dev/repair round (§39)
 	ReviewBlocking   []string      `json:"reviewBlocking"`
 	ReviewNits       []string      `json:"reviewNits"`
-	Limits           *LimitsConfig `json:"limits,omitempty"` // #102 host resource ceilings (nil = global)
+	Limits           *LimitsConfig `json:"limits,omitempty"`  // #102 host resource ceilings (nil = global)
+	Tooling          AgentTooling  `json:"tooling,omitempty"` // #119 resolved tool/MCP policy (nil = none)
 }
 
 // DiagnosisResult is the Diagnosis agent's bounded proposition (§17).
@@ -202,7 +203,7 @@ func RunDiagnosis(ctx context.Context, in DevelopmentFailure) (DiagnosisResult, 
 	}
 	prompt := diagnosisPrompt(in)
 
-	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits))
+	cmd, _, err := agentCommand(ctx, prompt, in.Model, in.Harness, in.RepoPath, limitsForOverride(in.Limits), in.Tooling)
 	if err != nil {
 		return DiagnosisResult{}, err
 	}
