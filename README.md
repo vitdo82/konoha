@@ -122,6 +122,11 @@ evidence:
 # egress:                         # #103 ADVISORY proxy allowlist (bypassable; NOT a security boundary)
 #   proxy: http://127.0.0.1:8888  # sets HTTPS_PROXY/HTTP_PROXY/NO_PROXY on agent + validation children
 #   allowOut: ["api.anthropic.com", "registry.npmjs.org"]  # recorded in outcome.json only
+# #122 per-repo outbound URL policy lives in repos.yaml `lifecycle.urlPolicy`:
+#   allow/deny host globs (`*.example.com`) or CIDRs (`10.0.0.0/8`); deny wins.
+#   ADVISORY on the host (bypassable; never "enforced") and recorded in outcome.json.
+# lifecycle.urlPolicy also pairs with `lifecycle.secrets: [op://…]`: only the
+#   referenced NAMES are recorded; values are resolved by the #CU1 secrets store.
 # facility: acme                  # #104 Facility label (recorded; not an auth boundary — single-operator)
 # scopes:                         # #104 narrow-only policy tenancy (NOT execution isolation; see below)
 #   payments:                     # Product Line
@@ -492,10 +497,53 @@ egress:
 ```
 
 Absent/empty `egress.proxy` is the default and sets **no** proxy env (today's
-behavior). Enforced egress (deny-by-default + L7 header injection) belongs to the
+behavior). Enforced egress (deny-by-default + L7 credential header injection) belongs to the
 container/microVM executor ([#92](https://github.com/vitdo82/konoha/issues/92)),
 where it becomes mandatory; see
 [`docs/non-goals.md`](docs/non-goals.md) → A4/B2.
+
+### Outbound URL policy (SSRF) + referenced secrets (#122)
+
+Each repo may declare an outbound **URL policy** for its agent and validation
+children — an SSRF control that allow/denies by **host** (`*.example.com`) or
+**CIDR** (`10.0.0.0/8`, `169.254.169.254`). **Deny wins**, and a non-empty
+`allow` list means **default-deny**:
+
+```yaml
+# repos.yaml
+lifecycle:
+  urlPolicy:
+    allow: ["api.anthropic.com", "registry.npmjs.org", "*.githubusercontent.com"]
+    deny: ["169.254.169.254", "10.0.0.0/8", "metadata.internal"]
+  secrets: ["env://ANTHROPIC_API_KEY", "op://vault/github-token"]
+```
+
+> **This is advisory on the host and is not a security boundary.** Konoha cannot
+> intercept a child's sockets (no sandbox — `docs/security.md`), so a denied host
+> is **recorded, not blocked**; a process that opens a raw socket is not stopped.
+> Konoha never labels the host policy "enforced". A denial only fails closed
+> where enforcement is possible (inside a sandbox), which the ticket defers to
+> [#92](https://github.com/vitdo82/konoha/issues/92). `outcome.json` records the
+> resolved rules + status:
+
+```json
+"urlPolicy": {"status": "advisory", "allow": ["api.anthropic.com"], "deny": ["10.0.0.0/8"]}
+```
+
+**Referenced secrets are names only.** `lifecycle.secrets` lists *reference
+names* (`op://`, `vault://`, `env://`, `file://`); resolution is delegated to the
+#CU1 secrets store (resolved out-of-process, model-invisible). Only the names
+land in evidence — never a value:
+
+```json
+"secretNames": ["env://ANTHROPIC_API_KEY", "op://vault/github-token"]
+```
+
+Konoha also ships `RequireHTTPSOrLoopback` — the SSRF scheme guard for a URL
+Konoha itself dials: absolute, no userinfo/fragment, HTTPS unless loopback. Like
+the policy engine, it is unit-tested and wired by the enforcement path rather
+than a host child. See [`docs/security.md`](docs/security.md) →
+"Outbound-request (SSRF) URL policy".
 
 ### Machine providers (#121) — local default, no sandbox
 

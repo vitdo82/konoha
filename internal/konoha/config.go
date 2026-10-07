@@ -51,6 +51,8 @@ type LifecycleConfig struct {
 	Validation                    []ValidationGate  `yaml:"validation" json:"validation,omitempty"`       // §26 structured argv gates
 	ValidationCmd                 string            `yaml:"validationCmd" json:"validationCmd,omitempty"` // §26 legacy shell-string fallback; mutually exclusive with validation
 	Limits                        *LimitsConfig     `yaml:"limits" json:"limits,omitempty"`               // #102 per-repo host resource ceilings (nil = global konoha.yaml limits)
+	URLPolicy                     URLPolicy         `yaml:"urlPolicy" json:"urlPolicy,omitempty"`         // #122 outbound allow/deny hosts/CIDRs (advisory on host; enforced in a sandbox)
+	SecretNames                   []string          `yaml:"secrets" json:"secrets,omitempty"`             // #122 referenced secret NAMES only (resolution is #CU1; values never recorded)
 	POGateTimeout                 string            `yaml:"poGateTimeout" json:"poGateTimeout,omitempty"`
 	DryRun                        bool              `yaml:"dryRun" json:"dryRun,omitempty"`
 	MaxConcurrentIssueCycles      int               `yaml:"maxConcurrentIssueCycles" json:"maxConcurrentIssueCycles,omitempty"`
@@ -358,6 +360,16 @@ func (lc *LifecycleConfig) validate() error {
 	if lc.Limits != nil {
 		if err := lc.Limits.validate("lifecycle.limits"); err != nil {
 			return err
+		}
+	}
+	// #122: an outbound URL policy or secret reference must be well-formed at
+	// load; a bad rule/name never reaches the child evidence path.
+	if err := lc.URLPolicy.validate("lifecycle.urlPolicy"); err != nil {
+		return err
+	}
+	for i, s := range lc.SecretNames {
+		if err := validateSecretRef(s); err != nil {
+			return fmt.Errorf("lifecycle.secrets[%d]: %w", i, err)
 		}
 	}
 	// §55 AC: every gated decision must be recorded. An enabled pre-gate with no

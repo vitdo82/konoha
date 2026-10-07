@@ -1150,6 +1150,15 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	}
 	// #117: record the load-resolved agent profiles (stage → name) + digest.
 	stampProfiles(&out, in.Lifecycle)
+	// #122: record the resolved outbound URL policy (+ advisory/enforced status)
+	// and the referenced secret NAMES (never values). A host either runs nothing
+	// or records "advisory"; the status can never over-claim enforcement (§40).
+	if out.URLPolicy == nil {
+		out.URLPolicy = urlPolicyEvidence(EffectiveURLPolicy(in.Lifecycle))
+	}
+	if len(out.SecretNames) == 0 {
+		out.SecretNames = OutboundSecretNames(in.Lifecycle)
+	}
 	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
 	// child ID for a sweep-escalated failure), so evidence is stable under retry.
 	cycleID := out.WorkflowID
