@@ -1,0 +1,27 @@
+# konoha QA repo overlay (#206). DEV/QA ONLY — never a deploy path.
+#
+# One hermetic fixture repo (owner `o` / repo `r`) whose checkout and local bare
+# remote are seeded by scripts/qa-seed.sh:
+#   repoPath          /work/fixture/r        (bind-mounted from ./.qa/work)
+#   KONOHA_GIT_BASE   /work/git-base         -> /work/git-base/o/r.git
+# The committed prod configs/repos.yaml is left byte-unchanged (AC6).
+repos:
+  - repo: r
+    owner: o
+    repoPath: /work/fixture/r
+    schedule: "*/5 * * * *"
+    lifecycle:
+      mode: supervised-autonomous
+      model: opencode-go/deepseek-v4.1-flash
+      developmentMaxComplexity: 4
+      maxDevReviewAttempts: 2
+      autonomy:
+        default: autonomous
+        closePolicy: risk-based
+      merge:
+        strategy: squash
+        requireCI: true
+        ciMaxWait: 5m
+      poGateTimeout: 168h
+      maxConcurrentIssueCycles: 1
+      maxConcurrentChildrenPerIssue: 3

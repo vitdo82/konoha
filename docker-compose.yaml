@@ -1,0 +1,106 @@
+# konoha Docker Compose QA environment (#206). DEV/QA ONLY — never a deploy path.
+#
+# One command brings up a hermetic stack: Temporal + the worker (+ console +
+# metrics) with fake `gh`/`opencode` and a local fixture git remote. No GitHub
+# credentials, no network egress, no LLM cost. See docs/qa-environment.md.
+#
+#   make qa        # docker compose up --wait + seed a cycle
+#   make qa-down   # docker compose down -v
+name: konoha-qa
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postgres
+      BIND_ON_IP: "0.0.0.0"   # bind loopback too, so the healthcheck can dial 127.0.0.1
+    ports:
+      - "127.0.0.1:7233:7233"
+    healthcheck:
+      # Fail-closed gate (AC8): the worker only starts once the frontend answers.
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  temporal-ui:
+    image: temporalio/ui:2.55.0
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  worker:
+    build:
+      context: .
+    depends_on:
+      temporal:
+        condition: service_healthy
+    # `make qa` exports QA_UID/QA_GID as the invoking host user so the
+    # bind-mounted /work is writable and its 0600 evidence is host-readable
+    # (non-root). A bare `docker compose up` falls back to root, which is always
+    # able to write a fresh bind-mount dir (dev/QA-only; never a deploy path).
+    user: "${QA_UID:-0}:${QA_GID:-0}"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      KONOHA_TASK_QUEUE: review-queue
+      KONOHA_CONFIG_DIR: /app/configs/qa
+      KONOHA_CONSOLE_ADDR: 127.0.0.1:8765   # loopback-only (guard unchanged)
+      METRICS_ADDR: ":9090"
+      KONOHA_TOKEN_FIXED: qa-token          # hermetic test seam; never a real deploy
+      KONOHA_GIT_BASE: /work/git-base
+      FAKE_GIT_REMOTE: /work/git-base
+      FAKE_GH_STATE: /work/fakegh
+      FAKE_OPENCODE_DIR: /work/agents
+    volumes:
+      - ./.qa/work:/work                     # fixture checkout + evidence (host-readable)
+      - ./configs/qa:/app/configs/qa:ro      # QA config overlay (AC6)
+    ports:
+      - "127.0.0.1:8765:8766"   # C1 bridge -> worker console (127.0.0.1:8765)
+      - "127.0.0.1:9090:9090"   # §39 metrics
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/metrics"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # C1 (#206): the console/MCP loopback guard is unchanged, so the worker binds
+  # 127.0.0.1:8765 inside its own netns — unreachable via Docker's port DNAT.
+  # This same-namespace socat bridges the container interface (8766) to the
+  # worker's loopback console, preserving the loopback-only invariant.
+  console-bridge:
+    image: alpine/socat:1.8.0.0
+    depends_on:
+      worker:
+        condition: service_started
+    network_mode: "service:worker"
+    command: tcp-listen:8766,fork,reuseaddr tcp:127.0.0.1:8765
+
+volumes:
+  postgres-data:

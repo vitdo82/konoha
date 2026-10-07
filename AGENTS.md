@@ -76,6 +76,13 @@ GH_APP_ID=<id> GH_APP_INSTALL_ID=<id> GH_APP_PEM=<path> make run
 make token            # smoke-test app auth: prints a masked installation token
 ```
 
+Hermetic QA stack (#206): `make qa` brings up a `docker-compose` stack
+(postgres + Temporal + worker + console/metrics + Temporal UI) with fake
+`gh`/`opencode` on PATH, a local fixture git remote, and the non-prod
+`KONOHA_TOKEN_FIXED`/`KONOHA_GIT_BASE` seams — zero GitHub credentials, no
+network egress, no LLM cost. `make qa-down` tears it down. Dev/QA only, never a
+deploy path; see `docs/qa-environment.md`.
+
 Webhook fast-path (optional, §32): set `GH_WEBHOOK_SECRET` (App secret) and
 `WEBHOOK_ADDR` (e.g. `127.0.0.1:8080`) so issue `opened` events start
 `IssueCycleWorkflow` within seconds instead of waiting for the sweep. The

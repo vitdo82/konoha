@@ -1,0 +1,21 @@
+# konoha QA runtime overlay (#206). DEV/QA ONLY — never a deploy path.
+#
+# Loaded via KONOHA_CONFIG_DIR=/app/configs/qa and merged over the bundled
+# runtime defaults (env > file > default), exactly like the prod
+# configs/konoha.yaml — which is deliberately left byte-unchanged (AC6). Only
+# the QA-specific overrides live here.
+
+evidence:
+  # Relative to the worker CWD (/work, bind-mounted from the host at ./.qa/work),
+  # so `prbot describe`/`export` read the same tree from the host.
+  dir: .konoha/evidence
+  sink: local
+
+worker:
+  taskQueue: review-queue
+
+# The hermetic run uses the `opencode` harness slot, which is satisfied by the
+# fake `opencode` baked onto PATH. No model provider is ever dialed.
+defaults:
+  lifecycle:
+    harness: opencode

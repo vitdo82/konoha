@@ -5,3 +5,5 @@
 prreview
 # generated TS client tooling (npm)
 node_modules/
+# Docker Compose QA environment bind-mount state (#206)
+.qa/

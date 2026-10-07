@@ -1,0 +1,8 @@
+# QA bind-mount state (fixture checkout + evidence); disposable local state.
+.qa/
+.git
+.konoha
+node_modules
+*.pem
+.env
+prreview

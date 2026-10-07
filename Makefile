@@ -2,7 +2,12 @@
 BIN := /tmp/prbot
 QUEUE := review-queue
 
-.PHONY: build run apply token test clean api api-ts-test
+# The hermetic QA stack (#206) runs the worker as the invoking host user so the
+# bind-mounted ./.qa/work is writable and its 0600 evidence is host-readable.
+export QA_UID := $(shell id -u)
+export QA_GID := $(shell id -g)
+
+.PHONY: build run apply token test clean api api-ts-test qa qa-down qa-describe qa-export
 
 # Build the worker binary (entrypoint lives under cmd/konoha)
 build:
@@ -37,3 +42,22 @@ api-ts-test:
 
 clean:
 	rm -f $(BIN)
+
+# Hermetic Docker Compose QA environment (#206). DEV/QA ONLY — fake gh/opencode,
+# a local fixture git remote, zero GitHub credentials, no network egress. Brings
+# the stack up (fail-closed on unhealthy Temporal) and seeds one cycle.
+qa:
+	mkdir -p .qa/work
+	docker compose up --wait --build
+	docker compose exec -T worker /prbot cycle r 1
+
+qa-down:
+	docker compose down -v --remove-orphans
+
+# Host-side readers over the bind-mounted evidence (run `make build` first). The
+# evidence root is relative to the worker CWD, so read from .qa/work.
+qa-describe:
+	cd .qa/work && KONOHA_CONFIG_DIR="$(CURDIR)/configs/qa" $(BIN) describe r 1
+
+qa-export:
+	cd .qa/work && KONOHA_CONFIG_DIR="$(CURDIR)/configs/qa" $(BIN) export --format jsonl

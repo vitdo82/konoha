@@ -837,6 +837,11 @@ Env: `GH_APP_ID`, `GH_APP_INSTALL_ID`, `GH_APP_PEM` (path to private key —
 never committed) and `TEMPORAL_ADDRESS` (default `127.0.0.1:7233`).
 `KONOHA_CONFIG_DIR` overrides where `repos.yaml` is read (default `configs/`).
 
+Hermetic QA stack (`make qa` / `make qa-down`): a one-command Docker Compose
+environment (Temporal + worker + console + metrics) with fake `gh`/`opencode`, a
+local fixture git remote, and **zero GitHub credentials / no network egress**.
+Dev/QA only — never a deploy path. See [docs/qa-environment.md](docs/qa-environment.md).
+
 ## Operator CLI
 
 Operator-facing inspection over the durable evidence store (`evidence.dir`),
