@@ -56,6 +56,7 @@ type DevelopRequest struct {
 	ValidationCmd      string           `json:"validationCmd,omitempty"` // §26 repo validation; "" = none
 	Validation         []ValidationGate `json:"validation,omitempty"`    // §26 structured argv gates
 	Limits             *LimitsConfig    `json:"limits,omitempty"`        // #102 host resource ceilings (nil = global)
+	Tooling            AgentTooling     `json:"tooling,omitempty"`       // #119 resolved tool/MCP policy (nil = none)
 }
 
 // DevelopResult is what the developer returns to Konoha (§25). CommitSHA is the
@@ -399,7 +400,7 @@ func runAgentInWorktree(ctx context.Context, in DevelopRequest, priorSHA, prompt
 		}
 	}
 
-	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir, limitsForOverride(in.Limits))
+	cmd, caps, err := agentCommand(ctx, prompt, in.Model, in.Harness, dir, limitsForOverride(in.Limits), in.Tooling)
 	if err != nil {
 		return DevelopResult{}, err
 	}

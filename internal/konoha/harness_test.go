@@ -27,7 +27,7 @@ func TestProvisionStagesAndVerifiesSHA256(t *testing.T) {
 	g := genericHarness{cfg: GenericHarnessConfig{
 		Executable: "pinned-agent", Binary: src, BinarySHA256: goodSHA,
 	}}
-	pa, err := prepareAgent(context.Background(), g, repoPath)
+	pa, err := prepareAgent(context.Background(), g, repoPath, nil)
 	if err != nil {
 		t.Fatalf("provision with correct sha256: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestProvisionStagesAndVerifiesSHA256(t *testing.T) {
 
 	// A mismatched digest fails closed and records FAILED (never a false success).
 	g.cfg.BinarySHA256 = strings.Repeat("0", 64)
-	pa, err = prepareAgent(context.Background(), g, repoPath)
+	pa, err = prepareAgent(context.Background(), g, repoPath, nil)
 	if err == nil {
 		t.Fatal("sha256 mismatch must fail closed")
 	}
@@ -80,7 +80,7 @@ func TestVersionCaptureBestEffort(t *testing.T) {
 	}
 
 	// prepareAgent records version APPLIED either way and never errors on it.
-	pa, err := prepareAgent(context.Background(), genericHarness{cfg: GenericHarnessConfig{Executable: "v-bad"}}, repoPath)
+	pa, err := prepareAgent(context.Background(), genericHarness{cfg: GenericHarnessConfig{Executable: "v-bad"}}, repoPath, nil)
 	if err != nil {
 		t.Fatalf("a failing version capture must not fail the run: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestStdinFileKeepsPromptOutOfArgv(t *testing.T) {
 	}
 
 	const secret = "PROMPT-MUST-NOT-APPEAR-IN-ARGV"
-	cmd, _, err := agentCommand(context.Background(), secret, "provider/model", "generic", repoPath, LimitsConfig{})
+	cmd, _, err := agentCommand(context.Background(), secret, "provider/model", "generic", repoPath, LimitsConfig{}, AgentTooling{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestStdinFileKeepsPromptOutOfArgv(t *testing.T) {
 // #96 AC: a harness that does not implement/declare a capability records
 // SKIPPED — never a false success (§40).
 func TestCapabilitiesSkippedWhenAbsent(t *testing.T) {
-	pa, err := prepareAgent(context.Background(), opencodeHarness{}, t.TempDir())
+	pa, err := prepareAgent(context.Background(), opencodeHarness{}, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestCapabilitiesSkippedWhenAbsent(t *testing.T) {
 		}
 	}
 	// A generic harness with nothing configured is likewise all-SKIPPED.
-	pa, err = prepareAgent(context.Background(), genericHarness{cfg: GenericHarnessConfig{Executable: "agent"}}, t.TempDir())
+	pa, err = prepareAgent(context.Background(), genericHarness{cfg: GenericHarnessConfig{Executable: "agent"}}, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestMCPConfigWrittenOrSkipped(t *testing.T) {
 		Executable: "agent",
 		MCP:        &MCPConfig{Path: ".mcp.json", Config: `{"servers":{}}`},
 	}}
-	pa, err := prepareAgent(context.Background(), g, repoPath)
+	pa, err := prepareAgent(context.Background(), g, repoPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestMCPConfigWrittenOrSkipped(t *testing.T) {
 		t.Fatalf("mcp config must be git-excluded: %q", status)
 	}
 
-	pa, err = prepareAgent(context.Background(), opencodeHarness{}, repoPath)
+	pa, err = prepareAgent(context.Background(), opencodeHarness{}, repoPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestCatalogOfflineModelResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := genericHarness{cfg: GenericHarnessConfig{Executable: "agent", ModelFlag: "--model", CatalogCache: catPath}}
-	pa, err := prepareAgent(context.Background(), g, repoPath)
+	pa, err := prepareAgent(context.Background(), g, repoPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ func TestGenericHarnessRunsFakeBinary(t *testing.T) {
 		ModelFlag:  "--model",
 	}
 
-	cmd, _, err := agentCommand(context.Background(), "PROMPT", "provider/model", "generic", stubDir, LimitsConfig{})
+	cmd, _, err := agentCommand(context.Background(), "PROMPT", "provider/model", "generic", stubDir, LimitsConfig{}, AgentTooling{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,10 +578,10 @@ func TestHarnessResolveModel(t *testing.T) {
 }
 
 func TestAgentCommandRejectsUnknownModelAndHarness(t *testing.T) {
-	if _, _, err := agentCommand(context.Background(), "p", "bad", "opencode", t.TempDir(), LimitsConfig{}); err == nil {
+	if _, _, err := agentCommand(context.Background(), "p", "bad", "opencode", t.TempDir(), LimitsConfig{}, AgentTooling{}); err == nil {
 		t.Fatal("unknown model must be rejected before exec")
 	}
-	if _, _, err := agentCommand(context.Background(), "p", "provider/model", "nope", t.TempDir(), LimitsConfig{}); err == nil {
+	if _, _, err := agentCommand(context.Background(), "p", "provider/model", "nope", t.TempDir(), LimitsConfig{}, AgentTooling{}); err == nil {
 		t.Fatal("unknown harness must be rejected before exec")
 	}
 }

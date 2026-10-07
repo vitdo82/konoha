@@ -65,9 +65,11 @@ type Versioner interface {
 }
 
 type MCPConfigurer interface {
-	// WriteMCPConfig writes the operator-declared MCP server config into the
-	// harness's expected location before the agent runs.
-	WriteMCPConfig(ctx context.Context, dir string) error
+	// WriteMCPConfig writes the resolved #119 MCP server set (registry specs, in
+	// name order) into the harness's expected location before the agent runs. An
+	// empty set falls back to the #96 static operator config, so both paths are
+	// supported.
+	WriteMCPConfig(ctx context.Context, dir string, servers []ResolvedMCPServer) error
 }
 
 // capabilityDeclarer lets a harness declare which optional capabilities its
@@ -232,8 +234,9 @@ type provisionedAgent struct {
 // prepareAgent applies the harness's optional capabilities (#96) in a fixed
 // order. A capability the harness does not implement/configure records SKIPPED;
 // a provisioning failure (e.g. sha256 mismatch) fails closed with the FAILED
-// outcome already recorded.
-func prepareAgent(ctx context.Context, h Harness, dir string) (provisionedAgent, error) {
+// outcome already recorded. The #119 resolved MCP server set is handed to an
+// MCPConfigurer; an empty set keeps the #96 static config path.
+func prepareAgent(ctx context.Context, h Harness, dir string, servers []ResolvedMCPServer) (provisionedAgent, error) {
 	pa := provisionedAgent{}
 	enabled := map[string]bool{}
 	if cd, ok := h.(capabilityDeclarer); ok {
@@ -276,11 +279,15 @@ func prepareAgent(ctx context.Context, h Harness, dir string) (provisionedAgent,
 	}
 
 	if m, ok := h.(MCPConfigurer); ok && enabled["mcp"] {
-		if err := m.WriteMCPConfig(ctx, dir); err != nil {
+		if err := m.WriteMCPConfig(ctx, dir, servers); err != nil {
 			pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilityFailed, Detail: err.Error()})
 			return pa, fmt.Errorf("harness mcp: %w", err)
 		}
-		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilityApplied})
+		detail := "static config"
+		if len(servers) > 0 {
+			detail = fmt.Sprintf("%d resolved server(s)", len(servers))
+		}
+		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilityApplied, Detail: detail})
 	} else {
 		pa.Outcomes = append(pa.Outcomes, CapabilityOutcome{Capability: "mcp", Status: capabilitySkipped, Detail: "not configured"})
 	}
@@ -292,13 +299,23 @@ func prepareAgent(ctx context.Context, h Harness, dir string) (provisionedAgent,
 // harness (name, never a path) plus an explicitly resolved model. A malformed
 // model is rejected rather than adopted silently. Optional capabilities run
 // first; their outcomes are returned for evidence. #102 host resource ceilings
-// are applied best-effort to the child (no-op off Linux).
-func agentCommand(ctx context.Context, prompt, model, harnessName, dir string, limits LimitsConfig) (*exec.Cmd, []CapabilityOutcome, error) {
+// are applied best-effort to the child (no-op off Linux). #119: the resolved
+// tool/MCP policy is enforced here — a non-empty deny list fails closed (the
+// harness cannot remove the tool) and MCP server names resolve against the
+// process registry, unknown failing closed.
+func agentCommand(ctx context.Context, prompt, model, harnessName, dir string, limits LimitsConfig, tooling AgentTooling) (*exec.Cmd, []CapabilityOutcome, error) {
 	h, err := harnessRegistryFor().Lookup(effectiveHarnessName(harnessName))
 	if err != nil {
 		return nil, nil, err
 	}
-	pa, err := prepareAgent(ctx, h, dir)
+	if len(tooling.Deny) > 0 {
+		return nil, nil, fmt.Errorf("tool deny list %v cannot be enforced by harness %q: fail closed (§40)", tooling.Deny, h.Name())
+	}
+	servers, err := resolveMCPServerSpecs(tooling.MCP, appCfg.MCPServers)
+	if err != nil {
+		return nil, nil, err
+	}
+	pa, err := prepareAgent(ctx, h, dir, servers)
 	if err != nil {
 		return nil, pa.Outcomes, err
 	}
@@ -648,10 +665,13 @@ func (g genericHarness) Version(ctx context.Context, dir string) string {
 	return captureVersion(ctx, dir, g.Env(dir), exe)
 }
 
-// WriteMCPConfig writes the operator-declared MCP server config into the
-// harness's expected worktree-relative location and excludes it from git so it
-// cannot dirty status or be committed (#96).
-func (g genericHarness) WriteMCPConfig(ctx context.Context, dir string) error {
+// WriteMCPConfig writes the resolved #119 MCP server set into the harness's
+// expected worktree-relative location and excludes it from git so it cannot
+// dirty status or be committed (#96). An empty set writes the #96 static
+// operator config; a non-empty set renders the resolved registry servers as a
+// conventional `{"mcpServers": {...}}` document (headers are written here but
+// never recorded in evidence).
+func (g genericHarness) WriteMCPConfig(ctx context.Context, dir string, servers []ResolvedMCPServer) error {
 	if g.cfg.MCP == nil {
 		return fmt.Errorf("mcp is unset")
 	}
@@ -663,10 +683,39 @@ func (g genericHarness) WriteMCPConfig(ctx context.Context, dir string) error {
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("mcp.path %q escapes the worktree", rel)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, clean), []byte(g.cfg.MCP.Config)); err != nil {
+	content := g.cfg.MCP.Config
+	if len(servers) > 0 {
+		rendered, err := renderMCPConfig(servers)
+		if err != nil {
+			return err
+		}
+		content = rendered
+	}
+	if err := writeFileAtomic(filepath.Join(dir, clean), []byte(content)); err != nil {
 		return err
 	}
 	return addGitExclude(ctx, dir, filepath.ToSlash(clean))
+}
+
+// renderMCPConfig renders the resolved MCP servers as a deterministic
+// `{"mcpServers": {"<name>": {"url": ..., "headers": {...}}}}` document, name
+// sorted. Pure.
+func renderMCPConfig(servers []ResolvedMCPServer) (string, error) {
+	type serverView struct {
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers,omitempty"`
+	}
+	doc := struct {
+		MCPServers map[string]serverView `json:"mcpServers"`
+	}{MCPServers: make(map[string]serverView, len(servers))}
+	for _, s := range servers {
+		doc.MCPServers[s.Name] = serverView{URL: s.URL, Headers: s.Headers}
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("render MCP config: %w", err)
+	}
+	return string(b), nil
 }
 
 // prependPath puts dir first on PATH in env (adding PATH when absent).

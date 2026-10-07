@@ -44,7 +44,7 @@ func TestMockedAgentUsageCounters(t *testing.T) {
 	}
 	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cmd, _, err := agentCommand(context.Background(), "PROMPT", "", "opencode", stubDir, LimitsConfig{})
+	cmd, _, err := agentCommand(context.Background(), "PROMPT", "", "opencode", stubDir, LimitsConfig{}, AgentTooling{})
 	if err != nil {
 		t.Fatal(err)
 	}

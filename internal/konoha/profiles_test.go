@@ -16,6 +16,7 @@ func TestResolveAgentProfilesFlattensAndDigests(t *testing.T) {
 		"cheap":  {Provider: "anthropic", Model: "claude-haiku"},
 		"strong": {Provider: "anthropic", Model: "claude-sonnet"},
 	}}
+	cfg.MCPServers = map[string]MCPServerSpec{"github": {URL: "https://example.test/mcp"}}
 	cfg.Agents = AgentProfilesConfig{
 		"cheap":  {Harness: "opencode", Model: "cheap", Tools: []string{"read", "grep"}, MCP: []string{"github"}},
 		"strong": {Harness: "opencode", Model: "strong"},

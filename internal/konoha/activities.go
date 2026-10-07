@@ -275,7 +275,7 @@ DIFF:
 %s`, in.PrNum, in.Owner, in.Repo, diff)
 
 	lim := EffectiveLimits(in.Lifecycle)
-	cmd, caps, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath, lim)
+	cmd, caps, err := agentCommand(ctx, prompt, in.Lifecycle.Model, in.Lifecycle.Harness, in.RepoPath, lim, in.Lifecycle.Tooling)
 	if err != nil {
 		return ReviewResult{}, err
 	}

@@ -56,15 +56,17 @@ type LifecycleDefaults struct {
 
 // AppConfig is the resolved application configuration.
 type AppConfig struct {
-	Worker   WorkerConfig         `yaml:"worker"`
-	Evidence EvidenceConfig       `yaml:"evidence"`
-	Harness  GenericHarnessConfig `yaml:"harness"`
-	Limits   LimitsConfig         `yaml:"limits"`   // #102 global host resource ceilings (per-repo lifecycle.limits overrides)
-	Egress   EgressConfig         `yaml:"egress"`   // #103 advisory proxy allowlist (bypassable; NOT a boundary)
-	Facility string               `yaml:"facility"` // #104 tenancy Facility label (recorded; not an auth boundary — single-operator)
-	Scopes   ScopesConfig         `yaml:"scopes"`   // #104 narrow-only product-line scopes (Paddock Facility > Product Line > Department)
-	Agents   AgentProfilesConfig  `yaml:"agents"`   // #117 declarative agent profiles (harness/model/tools/mcp/limits)
-	Defaults DefaultsConfig       `yaml:"defaults"`
+	Worker     WorkerConfig             `yaml:"worker"`
+	Evidence   EvidenceConfig           `yaml:"evidence"`
+	Harness    GenericHarnessConfig     `yaml:"harness"`
+	Limits     LimitsConfig             `yaml:"limits"`     // #102 global host resource ceilings (per-repo lifecycle.limits overrides)
+	Egress     EgressConfig             `yaml:"egress"`     // #103 advisory proxy allowlist (bypassable; NOT a boundary)
+	Facility   string                   `yaml:"facility"`   // #104 tenancy Facility label (recorded; not an auth boundary — single-operator)
+	Scopes     ScopesConfig             `yaml:"scopes"`     // #104 narrow-only product-line scopes (Paddock Facility > Product Line > Department)
+	Agents     AgentProfilesConfig      `yaml:"agents"`     // #117 declarative agent profiles (harness/model/tools/mcp/limits)
+	Tools      ToolsConfig              `yaml:"tools"`      // #119 tool catalog (custom tools) — built-ins are code-level
+	MCPServers map[string]MCPServerSpec `yaml:"mcpServers"` // #119 named HTTP MCP server registry
+	Defaults   DefaultsConfig           `yaml:"defaults"`
 }
 
 // GenericHarnessConfig is the operator-declared `generic` harness (§85): a bare
@@ -397,6 +399,14 @@ func (c AppConfig) validate() error {
 	if err := c.Harness.validate(); err != nil {
 		return err
 	}
+	// #119: the tool catalog and MCP server registry are validated structurally
+	// here; profile references are checked against them below.
+	if err := c.Tools.validate(); err != nil {
+		return err
+	}
+	if err := validateMCPServers(c.MCPServers); err != nil {
+		return err
+	}
 	if err := c.Defaults.Agents.validate(); err != nil {
 		return err
 	}
@@ -410,9 +420,10 @@ func (c AppConfig) validate() error {
 			return err
 		}
 	}
-	// #117: every declared profile is validated (known harness/model/tool/mcp),
-	// even if no repo selects it, so a typo fails at load.
-	if err := c.Agents.validate(c.Defaults.Agents); err != nil {
+	// #117/#119: every declared profile is validated (known harness/model/tool/
+	// mcp refs against the catalog + registry), even if no repo selects it, so a
+	// typo fails at load.
+	if err := c.Agents.validate(c.Defaults.Agents, c.Tools, c.MCPServers); err != nil {
 		return err
 	}
 	d := c.Defaults.Lifecycle

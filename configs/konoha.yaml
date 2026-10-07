@@ -55,9 +55,9 @@ evidence:
 # repo-level `default`). Resolved ONCE at load (apply.sh / prbot config) into the
 # effective harness/model/limits, digested (#88) and carried in the schedule
 # input — no workflow-side name resolution. An unknown profile/harness/model
-# fails at load; tools/mcp are recorded + digested only (enforcement is the #119
-# registry). A repo with no lifecycle.agents keeps legacy behavior; a conflicting
-# legacy harness/model/limits key fails at load.
+# fails at load; tool/mcp refs are validated against the #119 catalog/registry
+# (an unknown ref fails at load). A repo with no lifecycle.agents keeps legacy
+# behavior; a conflicting legacy harness/model/limits key fails at load.
 # agents:
 #   cheap:
 #     harness: opencode
@@ -65,10 +65,24 @@ evidence:
 #   strong:
 #     harness: opencode
 #     model: strong
-#     tools: [read, grep]       # recorded + digested (not enforced until #119)
-#     mcp: [github]
+#     tools: [read, grep]       # #119 advisory allow list (recorded+digested; handed to a supporting harness)
+#     deny: []                  # #119 hard deny list — any entry fails closed (§40)
+#     mcp: [github]             # #119 named server from mcpServers: (resolved + written for a supporting harness)
 #     limits: { memoryMiB: 2048 }
 #     promptMode: arg
+
+# #119 tool catalog + MCP registry. Built-in tool ids are code-level; custom
+# tools are declared here. Named HTTP MCP servers are referenced by profile
+# `mcp`; only the resolved set is handed to a supporting harness (#96). An
+# unknown tool/server ref fails at load; nothing from issue text can grant one
+# (§27).
+# tools:
+#   custom:
+#     deploy-check: { description: "Verify a deploy" }
+# mcpServers:
+#   github:
+#     url: "https://api.githubcopilot.com/mcp/"
+#     headers: { Authorization: "Bearer ${GITHUB_MCP_TOKEN}" }  # git-excluded config only; never recorded
 
 worker:
   taskQueue: review-queue
