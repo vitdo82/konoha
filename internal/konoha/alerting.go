@@ -1,14 +1,10 @@
 package konoha
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -40,7 +36,8 @@ import (
 // alertableMetrics), so no operator parsing is needed.
 type AlertingConfig struct {
 	Enabled    bool               `yaml:"enabled" json:"enabled,omitempty"`
-	Notify     string             `yaml:"notify" json:"notify,omitempty"`   // webhook URL; empty = log only
+	Notify     string             `yaml:"notify" json:"notify,omitempty"`   // legacy single webhook URL (slack-compatible); empty = log only
+	Targets    []NotifyTarget     `yaml:"targets" json:"targets,omitempty"` // #123 named targets; multiple allowed
 	OnRates    []string           `yaml:"onRates" json:"onRates,omitempty"` // optional subset of alertable metrics
 	Thresholds map[string]float64 `yaml:"thresholds" json:"thresholds,omitempty"`
 	Schedule   string             `yaml:"schedule" json:"schedule,omitempty"` // evaluation cadence (Go duration)
@@ -63,9 +60,6 @@ var alertableMetrics = map[string]bool{
 // AlertingEnabled reports whether the repo opted into §53 alerting + failure
 // feedback. Absent/false is a no-op everywhere.
 func AlertingEnabled(lc LifecycleConfig) bool { return lc.Alerting.Enabled }
-
-// AlertingNotify returns the configured webhook URL (trimmed).
-func AlertingNotify(lc LifecycleConfig) string { return strings.TrimSpace(lc.Alerting.Notify) }
 
 // AlertingOnRates returns the optional metric subset to evaluate.
 func AlertingOnRates(lc LifecycleConfig) []string { return lc.Alerting.OnRates }
@@ -105,9 +99,13 @@ func (ac AlertingConfig) validate(prefix string) error {
 		}
 	}
 	if ac.Notify != "" {
-		u, err := url.Parse(ac.Notify)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("%s.notify: %q must be an http(s) URL", prefix, ac.Notify)
+		if err := validateNotifyURL(ac.Notify); err != nil {
+			return fmt.Errorf("%s.notify: %w", prefix, err)
+		}
+	}
+	for i, t := range ac.Targets {
+		if err := t.validate(fmt.Sprintf("%s.targets[%d]", prefix, i)); err != nil {
+			return err
 		}
 	}
 	for name, thr := range ac.Thresholds {
@@ -142,7 +140,7 @@ type AlertRequest struct {
 	Owner      string             `json:"owner"`
 	Repo       string             `json:"repo"`
 	Window     string             `json:"window"` // deterministic evaluation window
-	Notify     string             `json:"notify,omitempty"`
+	Targets    []NotifyTarget     `json:"targets,omitempty"`
 	OnRates    []string           `json:"onRates,omitempty"`
 	Thresholds map[string]float64 `json:"thresholds"`
 	DryRun     bool               `json:"dryRun,omitempty"`
@@ -250,41 +248,22 @@ func EvaluateAlerts(ctx context.Context, in AlertRequest) (AlertResult, error) {
 	return res, nil
 }
 
-// emitRateAlert logs the alert and, unless DryRun or no notify URL, POSTs it to
-// the configured webhook. A non-2xx response is an error (no silent success).
+// emitRateAlert logs the alert (§53 alerts are always logged) and fans it out
+// to the configured targets. A delivery failure is returned so EvaluateAlerts'
+// retry re-attempts it; the alert key is only recorded on success, and
+// per-target dedupe stops a retry double-notifying.
 func emitRateAlert(ctx context.Context, in AlertRequest, a RateAlert) error {
 	msg := fmt.Sprintf("konoha alert [%s/%s] %s %s threshold: value=%.3f threshold=%.3f window=%s",
 		in.Owner, in.Repo, a.Metric, a.Direction, a.Value, a.Threshold, a.Window)
 	log.Print(msg)
 
-	notify := strings.TrimSpace(in.Notify)
-	if in.DryRun || notify == "" {
+	if len(in.Targets) == 0 {
 		return nil
 	}
-	payload, err := json.Marshal(map[string]any{
-		"text":   msg,
-		"repo":   in.Owner + "/" + in.Repo,
-		"window": a.Window,
-		"alerts": []RateAlert{a},
-	})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, notify, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("alert notify %s: %w", notify, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("alert notify %s: status %d: %s", notify, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return nil
+	return deliverEvent(ctx, in.Targets, NotifyEvent{
+		Kind: notifyKindAlert, Owner: in.Owner, Repo: in.Repo, Text: msg,
+		DedupeKey: alertKey(in.Owner, in.Repo, a.Metric, a.Window),
+	}, in.DryRun)
 }
 
 // alertWindow buckets now into the evaluation interval so retries in the same
@@ -310,7 +289,7 @@ func AlertWorkflow(ctx workflow.Context, scope RepoScope) error {
 	var res AlertResult
 	if err := workflow.ExecuteActivity(ctx, EvaluateAlerts, AlertRequest{
 		Owner: scope.Owner, Repo: scope.Repo,
-		Window: window, Notify: AlertingNotify(lc),
+		Window: window, Targets: AlertingTargets(lc),
 		OnRates: AlertingOnRates(lc), Thresholds: AlertingThresholds(lc),
 		DryRun: lc.DryRun,
 	}).Get(ctx, &res); err != nil {
@@ -338,6 +317,7 @@ type FailureFeedbackRequest struct {
 	IssueNum int                `json:"issue"`
 	Outcome  CycleOutcome       `json:"outcome"`
 	Failure  DevelopmentFailure `json:"failure"`
+	Targets  []NotifyTarget     `json:"targets,omitempty"` // #123 notification targets for the filing event
 	DryRun   bool               `json:"dryRun,omitempty"`
 }
 
@@ -435,7 +415,8 @@ func failureIssueBody(in FailureFeedbackRequest, marker string) string {
 
 // FailureFeedbackWorkflow is the §46/§53 terminal hook: a BLOCKED/FAILED run
 // files at most one bug issue carrying the structured failure. The workflow's
-// only I/O is the EnsureFailureIssue activity.
+// I/O is the EnsureFailureIssue activity plus, when a target is configured, the
+// #123 NotifyCycleEvent delivery for the filing.
 func FailureFeedbackWorkflow(ctx workflow.Context, in FailureFeedbackRequest) error {
 	ctx = workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
 
@@ -445,7 +426,45 @@ func FailureFeedbackWorkflow(ctx workflow.Context, in FailureFeedbackRequest) er
 	}
 	workflow.GetLogger(ctx).Info("failure feedback filed",
 		"run", in.Outcome.WorkflowID, "issue", res.Number, "created", res.Created)
+
+	if len(in.Targets) > 0 {
+		text := fmt.Sprintf("cycle %s ended %s: failure feedback filed (issue #%d)",
+			in.Outcome.WorkflowID, in.Outcome.TerminalState, res.Number)
+		if err := workflow.ExecuteActivity(ctx, NotifyCycleEvent, NotifyCycleRequest{
+			Kind: notifyKindFailure, Owner: in.Owner, Repo: in.Repo, Text: text,
+			DedupeKey: in.Outcome.WorkflowID + "|" + notifyKindFailure,
+			Targets:   in.Targets, DryRun: in.DryRun,
+		}).Get(ctx, nil); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// notifyTerminal fires a #123 terminal-outcome notification when the repo
+// configured a target. It runs in workflow code (deterministic); the delivery is
+// I/O in the NotifyCycleEvent activity, retried per the infrastructure policy,
+// and a delivery problem is only logged — it never changes the terminal state
+// (§40). The dedupe key (run + state) means a replay/retry never double-notifies.
+func notifyTerminal(ctx workflow.Context, in IssueInput, out CycleOutcome) {
+	targets := AlertingTargets(in.Lifecycle)
+	if len(targets) == 0 {
+		return
+	}
+	runID := out.WorkflowID
+	if runID == "" {
+		runID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+	nctx := workflow.WithActivityOptions(ctx, activityOptionsFor(retryInfrastructure, appCfg.Worker.startToClose()))
+	err := workflow.ExecuteActivity(nctx, NotifyCycleEvent, NotifyCycleRequest{
+		Kind: notifyKindTerminal, Owner: in.Owner, Repo: in.Repo,
+		Text:      fmt.Sprintf("cycle %s ended %s", runID, out.TerminalState),
+		DedupeKey: runID + "|" + out.TerminalState,
+		Targets:   targets, DryRun: in.Lifecycle.DryRun,
+	}).Get(nctx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Error("terminal notification failed (non-fatal)", "run", runID, "err", err)
+	}
 }
 
 // startFailureFeedback fires the §53 feedback for a terminal BLOCKED/FAILED run,
@@ -469,7 +488,8 @@ func startFailureFeedback(ctx workflow.Context, in IssueInput, out CycleOutcome)
 			Owner: out.Owner, Repo: out.Repo, IssueNum: out.Issue, RepoPath: in.RepoPath,
 			Reason: out.EscalationReason, Attempts: out.Attempts,
 		},
-		DryRun: in.Lifecycle.DryRun,
+		Targets: AlertingTargets(in.Lifecycle),
+		DryRun:  in.Lifecycle.DryRun,
 	}).Get(cctx, nil)
 	if err != nil {
 		workflow.GetLogger(ctx).Error("failure feedback failed (non-fatal)", "run", out.WorkflowID, "err", err)

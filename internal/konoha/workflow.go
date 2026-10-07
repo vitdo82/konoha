@@ -1195,6 +1195,9 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	// idempotent bug issue (only when the repo opted into alerting). Best-effort:
 	// a feedback problem never changes the run's authoritative terminal state.
 	startFailureFeedback(ctx, in, out)
+	// #123 terminal notification: fan the terminal outcome out to any configured
+	// target (best-effort; never changes the terminal state).
+	notifyTerminal(ctx, in, out)
 	return nil
 }
 

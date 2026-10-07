@@ -247,6 +247,7 @@ func Main() {
 	w.RegisterActivity(EnsureCrossRepoIssue)
 	w.RegisterActivity(EvaluateAlerts)
 	w.RegisterActivity(EnsureFailureIssue)
+	w.RegisterActivity(NotifyCycleEvent)     // #123: notify targets (slack/webhook/log)
 	w.RegisterActivity(WriteCycleEvidence)   // #83: durable per-cycle evidence
 	w.RegisterActivity(RecordActivation)     // #88: per-issue activation lineage
 	w.RegisterActivity(RecordChange)         // #97: change/work-item lifecycle

@@ -414,17 +414,42 @@ without restarting a completed workflow. Deliveries with an invalid
   `thresholds: {<metric>: <number>}` + an optional `onRates` subset — the
   alertable set is closed and a typo fails `apply.sh`. Emission is idempotent
   per `(repo, metric, window)` via a process-local `(repo, metric, window)` key
-  (single-worker deployment model); a webhook (`notify`) failure is fail-closed
-  and the key is not recorded, so the retry re-attempts. Alerting NEVER resolves
+  (single-worker deployment model); a target delivery failure (#123) is
+  fail-closed and the key is not recorded, so the retry re-attempts. Alerting
+  NEVER resolves
   a stuck run (§40/§44 #1). The same flag gates failure feedback: a terminal
   `BLOCKED`/`FAILED` cycle runs `FailureFeedbackWorkflow` (`<runId>-failure`)
-  whose only I/O is `EnsureFailureIssue` — idempotent by the byte-exact
+  whose I/O is `EnsureFailureIssue` — idempotent by the byte-exact
   `<!-- konoha-failure: <runId> -->` marker (search-before-create, §24), filing
   at most one bug issue per run with the structured `CycleOutcome` +
-  `DevelopmentFailure`. The issue carries NO `konoha:managed` label, so it stays
+  `DevelopmentFailure` — plus, when a #123 target is configured, a
+  `NotifyCycleEvent` delivery for the filing. The issue carries NO
+  `konoha:managed` label, so it stays
   a normal issue and the existing sweep/webhook drives it back through the
   lifecycle (self-healing stream, no double-start, §32). `DryRun` logs alerts
   but never POSTs and files nothing (§42).
+- `notify.go` owns the #123 notification providers on top of §53: a `Notifier`
+  interface (`Notify(ctx, NotifyEvent) error`) with three implementations —
+  `slackNotifier` (Slack incoming webhook, `{"text": …}`), `webhookNotifier`
+  (generic JSON `{kind,repo,text,dedupeKey}`), and `logNotifier` — so a
+  delivery target is decoupled from the §39 metrics layer (which is untouched).
+  Event kinds are the closed set `alert|terminal|failure`: §53 metric alerts
+  (`EvaluateAlerts` → `deliverEvent`), terminal cycle outcomes
+  (`notifyTerminal`, called from `recordTerminal` for every
+  `CLOSED`/`BLOCKED`/`FAILED`/`HUMAN_REQUIRED`), and failure-feedback filings
+  (`FailureFeedbackWorkflow`). Targets are `lifecycle.alerting.targets:
+  [{type,url}]` (the legacy single `notify:` URL folds in as a Slack target);
+  an unknown type, a missing `url` for slack/webhook, or a `url` on a log target
+  fails at load (`AlertingConfig.validate`), and `newNotifier` fails closed
+  again. Delivery is fail-closed + idempotent (§40/§24): the first target
+  error is returned so the activity (retry class `infrastructure`) retries, the
+  failed target's dedupe key is NOT recorded, and a delivered
+  `(target, dedupeKey)` is skipped — a retry can never double-notify.
+  `NotifyCycleEvent` is the single workflow-side delivery activity (registered
+  in `cli.go`); `DryRun` (§42) logs and sends nothing; a notification problem
+  only logs and never changes the §6 terminal state. No exported
+  activity/workflow func is renamed (no Temporal type-name change beyond the
+  added `NotifyCycleEvent`).
 - `propagation.go` owns the §54 cross-repo change propagation: `PostMergeWorkflow`
   runs `runPropagation` after a merge (independent of §50/§51, so a release/deploy
   failure never blocks it). `DetectAffectedDownstreams` is a **read-only** activity

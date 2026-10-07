@@ -109,7 +109,7 @@ func TestEvaluateAlertsDryRunNoHTTP(t *testing.T) {
 	sink.setGauge(mAutonomousRate, 0.1)
 	res, err := EvaluateAlerts(context.Background(), AlertRequest{
 		Owner: "o", Repo: "r", Window: "w",
-		Notify:     "http://127.0.0.1:0/never",
+		Targets:    []NotifyTarget{{Type: notifyTargetWebhook, URL: "http://127.0.0.1:0/never"}},
 		Thresholds: map[string]float64{mAutonomousRate: 0.7},
 		DryRun:     true,
 	})
@@ -305,7 +305,8 @@ func TestAlertWorkflowWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	if captured.Owner != "o" || captured.Repo != "on" || captured.Window == "" ||
-		captured.Notify != "https://hooks.example/x" || captured.Thresholds[mAutonomousRate] != 0.7 {
+		len(captured.Targets) != 1 || captured.Targets[0].URL != "https://hooks.example/x" ||
+		captured.Thresholds[mAutonomousRate] != 0.7 {
 		t.Fatalf("unexpected activity request: %+v", captured)
 	}
 }

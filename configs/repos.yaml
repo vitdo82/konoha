@@ -25,8 +25,9 @@
 #     grooming — raw items carrying `selector` are analysed DRY and filed as ready
 #     issues (label `readyLabel`, idempotent `<!-- konoha-groomed: <sha> -->`); an
 #     unactionable item gets an idempotent note and is never auto-closed
-#   - alerting: {enabled, notify, schedule, onRates, thresholds}: §53 rate alerts
-#     + failure feedback (files one bug issue per BLOCKED/FAILED run)
+#   - alerting: {enabled, notify, targets, schedule, onRates, thresholds}: §53
+#     rate alerts + failure feedback; targets: [{type: slack|webhook|log, url}]
+#     (#123 notification providers), legacy notify folds in as a slack target
 #   - propagation: {enabled, maxPerMerge, downstream}: §54 cross-repo propagation
 #     (downstream: {<repo>: {trigger: <changed-file glob>, type: <kind>}});
 #     files one konoha:cross-repo issue per affected downstream, capped
@@ -92,7 +93,8 @@ repos:
         readyLabel: konoha:ready # label marking a groomed ready issue
       alerting:                 # §53 rate-drift alerts + failure feedback
         enabled: false          # opt-in; false/unset = no <repo>-alerts schedule, no bug issues
-        notify: ""              # webhook URL (slack-compatible); empty = log only
+        notify: ""              # legacy single webhook URL (slack-compatible); empty = log only
+        targets: []             # #123 targets: [{type: slack|webhook|log, url}]
         schedule: 24h           # evaluation cadence (<repo>-alerts Temporal schedule)
         onRates: []             # optional subset; empty = every configured threshold
         thresholds:             # autonomous rate alerts below; all others above
