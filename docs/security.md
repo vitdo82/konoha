@@ -83,6 +83,44 @@ blast radius, run the worker as a dedicated user with the least privilege it
 needs, keep secrets out of the host environment it inherits, and prefer the
 `generic` harness's allowlist over inheriting the full host env.
 
+## Outbound-request (SSRF) URL policy (#122)
+
+Untrusted issue text and repo bytes (a `validation` gate, an agent that fetches a
+URL) can try to make Konoha or its children reach internal endpoints — cloud
+metadata (`169.254.169.254`), RFC 1918 ranges, or internal services. [#122]
+adds a per-repo **URL policy** (`repos.yaml` → `lifecycle.urlPolicy`) of
+allow/deny **host globs** and **CIDRs** for agent and validation children. It is
+pass/fail deterministic policy: **deny wins**, and a non-empty `allow` list is
+**default-deny**. The event is wrapped by `docs/non-goals.md` A4.
+
+**Boundary — advisory on the host, enforced only in a sandbox.** Konoha runs
+children as the operator's OS user with the operator's network stack
+([Host-execution trade-off](#host-execution-trade-off)); it has no choke point to
+intercept a child's sockets, so on the host the policy is **recorded, not
+blocked** — exactly like the advisory [#103] egress proxy, and likewise
+**bypassable**. `outcome.json` records `urlPolicy.status: "advisory"` plus the
+resolved rules, and no host code path can record `"enforced"` (§40: never a
+silent over-claim). A denial fails closed only where enforcement is possible —
+the sandbox path ([#92]/#PL5), which promotes the policy from advisory to
+enforced and is the same hinge as A4/B2.
+
+**SSRF scheme guard.** `RequireHTTPSOrLoopback` is the exported guard for a URL
+Konoha itself constructs or dials: absolute, with no userinfo or fragment, and
+HTTPS unless the host is loopback — so a plaintext `http://` endpoint on a
+routable host is refused. It is the enforcement-path companion to the policy
+engine and is unit-tested; the sandbox/caller (#92) wires it.
+
+**Secrets are names, never values.** `lifecycle.secrets` lists #CU1 *reference
+names* (`op://`, `vault://`, `env://`, `file://`). Resolution happens
+out-of-process and model-invisible; #122 records only the **names** a run
+referenced in evidence. A value is never read, logged, recorded, or placed in a
+prompt — registration with the [#82] redactor remains the separate #CU1 hook.
+
+[#122]: https://github.com/vitdo82/konoha/issues/122
+[#103]: https://github.com/vitdo82/konoha/issues/103
+[#82]: https://github.com/vitdo82/konoha/issues/82
+[#92]: https://github.com/vitdo82/konoha/issues/92
+
 ## Sandboxed execution evaluation (#92, ADR-style)
 
 **Status: accepted — do not adopt a sandbox in this milestone.** This section is

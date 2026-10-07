@@ -740,6 +740,20 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   evidence only: a ceiling never rewrites a deterministic verdict except by
   killing the process that would have produced it (§40). The wrapper always uses
   the caller's scrubbed env, so it cannot re-introduce a `GH_*` credential (§23).
+- `urlpolicy.go` owns the #122 outbound-request (SSRF) URL policy + referenced
+  secret names. A per-repo `lifecycle.urlPolicy` (`allow`/`deny` host globs and
+  CIDRs) is resolved by `EffectiveURLPolicy`; `EvaluateURLPolicy` is the pure
+  decision (**deny wins**; a non-empty allow list is default-deny) and
+  `GuardOutbound` fails closed only where enforcement is possible. On the host a
+  child's outbound cannot be blocked (no sandbox, docs/security.md), so the
+  policy is **advisory** — `URLPolicyEvidence` records `status: "advisory"` +
+  the resolved rules and no host path may ever record `"enforced"` (§40).
+  `RequireHTTPSOrLoopback` is the scheme guard for URLs Konoha itself dials.
+  `lifecycle.secrets` lists #CU1 *reference names* (`op`/`vault`/`env`/`file`,
+  validated at load); only the NAMES are recorded in `outcome.json`
+  (`CycleOutcome.SecretNames`), never a value — resolution is #CU1. Recorded by
+  `recordTerminal` (`CycleOutcome.URLPolicy`). Adds no exported activity/workflow
+  func (no Temporal type-name change).
 - `cleanup.go` owns the #93 disconnect-safe worktree teardown + durable cleanup
   record. `CleanupWorktree` is the thin, idempotent wrapper over `removeWorktree`:
   it removes ONLY a dir whose `.owner` claim matches the requesting `WorkflowID`

@@ -122,24 +122,26 @@ type CycleOutcome struct {
 	Confidence          string      `json:"confidence,omitempty"`
 	// #106: board card intent, projected from issue labels/config when recorded.
 	// Descriptive only (evidence), absent by default — the card degrades gracefully.
-	Priority        string            `json:"priority,omitempty"`
-	Assignee        string            `json:"assignee,omitempty"`
-	Attempts        int               `json:"attempts,omitempty"`
-	ReviewRounds    int               `json:"reviewRounds,omitempty"`
-	Disagreements   int               `json:"disagreements,omitempty"`
-	POInterventions int               `json:"poInterventions,omitempty"`
-	DurationSeconds float64           `json:"durationSeconds,omitempty"`
-	Usage           HarnessUsage      `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
-	EvidenceError   string            `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
-	PolicyDigest    string            `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
-	Resources       *ResourceEvidence `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
-	Scope           string            `json:"scope,omitempty"`         // #104: resolved tenancy scope (policy tenancy, not isolation)
-	Profiles        map[string]string `json:"profiles,omitempty"`      // #117: resolved stage → agent-profile name (evidence only)
-	ProfileDigest   string            `json:"profileDigest,omitempty"` // #88: digest of the resolved agent-profile bundle
-	Tooling         *AgentTooling     `json:"tooling,omitempty"`       // #119: resolved tool allow/deny + MCP server names (evidence only)
-	Cleanup         *CleanupResult    `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
-	Limits          *LimitEvidence    `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
-	Egress          *EgressEvidence   `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)
+	Priority        string             `json:"priority,omitempty"`
+	Assignee        string             `json:"assignee,omitempty"`
+	Attempts        int                `json:"attempts,omitempty"`
+	ReviewRounds    int                `json:"reviewRounds,omitempty"`
+	Disagreements   int                `json:"disagreements,omitempty"`
+	POInterventions int                `json:"poInterventions,omitempty"`
+	DurationSeconds float64            `json:"durationSeconds,omitempty"`
+	Usage           HarnessUsage       `json:"usage,omitempty"`         // #87 aggregate agent tokens/cost (zero = none reported)
+	EvidenceError   string             `json:"evidenceError,omitempty"` // #83: non-fatal evidence-write failure (never changes state)
+	PolicyDigest    string             `json:"policyDigest,omitempty"`  // #88: SHA-256 of effective policy + resolved harness/model + task
+	Resources       *ResourceEvidence  `json:"resources,omitempty"`     // §98: resolved per-stage models + budget crossings (evidence only)
+	Scope           string             `json:"scope,omitempty"`         // #104: resolved tenancy scope (policy tenancy, not isolation)
+	Profiles        map[string]string  `json:"profiles,omitempty"`      // #117: resolved stage → agent-profile name (evidence only)
+	ProfileDigest   string             `json:"profileDigest,omitempty"` // #88: digest of the resolved agent-profile bundle
+	Tooling         *AgentTooling      `json:"tooling,omitempty"`       // #119: resolved tool allow/deny + MCP server names (evidence only)
+	Cleanup         *CleanupResult     `json:"cleanup,omitempty"`       // #93: disconnect-safe teardown record (never changes state)
+	Limits          *LimitEvidence     `json:"limits,omitempty"`        // #102: applied host ceilings + enforcement status (evidence only)
+	Egress          *EgressEvidence    `json:"egress,omitempty"`        // #103: advisory proxy allowlist (bypassable; never "enforced" on host)
+	URLPolicy       *URLPolicyEvidence `json:"urlPolicy,omitempty"`     // #122: outbound allow/deny policy (advisory on host; never "enforced")
+	SecretNames     []string           `json:"secretNames,omitempty"`   // #122: referenced secret NAMES only — never a value
 }
 
 // RecordCycleMetrics is the single §39 recording activity: it applies the

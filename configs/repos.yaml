@@ -37,6 +37,13 @@
 #   - audit: {enabled, sink}: §55 append-only JSONL audit of every gated decision
 #     (sink required when enabled, and required whenever approval.preGate is on);
 #     fail-closed on a write error
+#   - urlPolicy: {allow, deny}: #122 outbound SSRF allow/deny of host globs
+#     (`*.example.com`) or CIDRs (`10.0.0.0/8`); deny wins, non-empty allow =
+#     default-deny. ADVISORY on the host (bypassable; recorded in outcome.json,
+#     never "enforced"); enforced only in a sandbox (#92).
+#   - secrets: [op://…, vault://…, env://…, file://…]: #122 referenced secret
+#     NAMES only — values are resolved by the #CU1 secrets store and never
+#     recorded.
 #   - dryRun: true suppresses all GitHub mutations (§42 shadow mode)
 #   - maxConcurrentIssueCycles / maxConcurrentChildrenPerIssue: §43 caps
 # #104: a repo may name its tenancy scope explicitly with productLine (and an
