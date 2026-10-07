@@ -1,0 +1,11 @@
+# oapi-codegen configuration for the Konoha Console API (#124).
+#
+# Regenerate with `make api` (or api/generate.sh). The output files under
+# internal/konoha/consoleapi/ and api/generated/ts/ are GENERATED — never edit
+# them by hand; edit api/openapi.yaml and regenerate.
+package: consoleapi
+generate:
+  models: true
+  client: true
+output-options:
+  skip-prune: true

@@ -885,6 +885,34 @@ Endpoints:
 | `GET /api/v1/queue` | the #109 needs-attention queue: awaiting-approval / blocked / failed / interrupted cycles with their available recovery actions |
 | `POST /api/v1/cycles/{id}/actions` | #109 recovery mutation: `retry` / `cancel` (session verbs `attach` / `pause` / `resume` report `SKIPPED` without a provider, #136/#144) |
 
+### Canonical API contract (#124)
+
+The API is **OpenAPI-first**: `api/openapi.yaml` (OpenAPI 3.1) is the source of
+truth for the routes, auth and schemas above. The Go server/client types and the
+TypeScript types are generated from it:
+
+```bash
+make api          # regenerate Go (oapi-codegen) + TS (openapi-typescript) clients
+make api-ts-test  # typecheck + smoke the generated TS client (needs node/npm)
+```
+
+- **Go**: `internal/konoha/consoleapi/api.gen.go` (types + client). The console's
+  route table (`internal/konoha/console_routes.go`) is the single registration
+  source, and `console_contract_test.go` fails if a route, method, auth tier or
+  response field drifts from the spec.
+- **TypeScript**: `api/generated/ts/api.gen.ts` (types) + `client.ts` (a thin,
+  dependency-free `fetch` client typed by them).
+- **Never hand-edit generated files** — edit `api/openapi.yaml` and run
+  `make api` (see `AGENTS.md`).
+
+The CLI can read the running console through the generated client (no ad-hoc
+HTTP/JSON):
+
+```bash
+KONOHA_CONSOLE_ADDR=127.0.0.1:8765 KONOHA_CONSOLE_TOKEN=<token> /tmp/prbot api cycles
+# prbot api <status|metrics|cycles|cycle <id>|artifacts <id>|queue>
+```
+
 ### Board + cycle detail (#106)
 
 - **Board** groups cycles by the authoritative §6 state into five fixed columns —
