@@ -72,7 +72,8 @@ repos:
         readyLabel: konoha:ready       # label marking a groomed ready issue
       alerting:                        # §53 rate-drift alerts + failure feedback
         enabled: false                 # opt-in; false/unset = no alerts, no bug issues
-        notify: ""                     # webhook URL (slack-compatible); empty = log only
+        notify: ""                     # legacy single webhook URL (slack-compatible); empty = log only
+        targets: []                    # #123 targets: {type: slack|webhook|log, url}
         schedule: 24h                  # evaluation cadence (<repo>-alerts schedule)
         onRates: []                    # optional subset; empty = every configured threshold
         thresholds:                    # autonomous rate alerts below; all others above
@@ -718,12 +719,41 @@ parser contract, §6 workflow state names, the secret-redaction patterns and the
   `closePolicy: autonomous`. When `alerting.enabled`, a per-repo `<repo>-alerts`
   schedule runs `AlertWorkflow` → `EvaluateAlerts`, which reads the §39 rate
   gauges and emits one alert per violated metric per window (deduped; log +
-  optional `notify` webhook). The same flag makes a terminal `BLOCKED`/`FAILED`
+  configured notification targets). The same flag makes a terminal
+  `BLOCKED`/`FAILED`
   cycle start `FailureFeedbackWorkflow`, which files at most one bug issue per
   run (`EnsureFailureIssue`, marker `<!-- konoha-failure: … -->`) carrying the
   structured failure; the filed issue is a normal issue (no `konoha:managed`
   label) so the sweep drives it back through the lifecycle. Alerting never
-  resolves a stuck run — Temporal state stays authoritative. When
+  resolves a stuck run — Temporal state stays authoritative.
+
+  ### Notification targets (#123)
+
+  Notification delivery is pluginized behind a `Notifier` interface
+  (`Notify(ctx, NotifyEvent) error`), decoupled from the §39 metrics layer.
+  Delivered event kinds are §53 metric alerts, terminal cycle outcomes
+  (`CLOSED`/`BLOCKED`/`FAILED`/`HUMAN_REQUIRED`), and failure-feedback filings.
+  Configure one or more targets under `lifecycle.alerting.targets`:
+
+  ```yaml
+      alerting:
+        enabled: true
+        targets:
+          - type: slack               # Slack incoming webhook ({"text": …})
+            url: https://hooks.slack.com/services/T…/B…/…
+          - type: webhook             # generic JSON webhook ({kind, repo, text, dedupeKey})
+            url: https://example.com/konoha-hook
+          - type: log                 # log-only; no url
+        thresholds:
+          autonomous_completion_rate: 0.7
+  ```
+
+  An unknown `type` (or a missing/forbidden `url`) fails at config load. The
+  legacy single `notify:` URL still works and is treated as a Slack target.
+  Delivery is fail-closed and idempotent: a failed delivery is returned so the
+  activity retries, its dedupe key is not recorded (so the retry re-attempts),
+  and a `(target, dedupeKey)` already delivered is skipped — a retry can never
+  double-notify. Under `DryRun` (§42) notifications are logged, never sent. When
   `propagation.enabled`, a successful merge also runs the §54 stage:
   `DetectAffectedDownstreams` (reads the PR's changed files via `gh pr diff
   --name-only`) matches them against the configured `downstream` map, and
