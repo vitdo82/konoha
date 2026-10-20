@@ -489,3 +489,31 @@ func TestQueueCycleEvidenceUsesRecordedDryRun(t *testing.T) {
 		t.Fatalf("Evidence = %q, want the recorded dry-run namespace", item.Evidence)
 	}
 }
+
+// #141: a dry-run cycle writes only under dryrun/, so the console must list it
+// from there and its artifacts must be readable — the advertised evidence
+// pointer has to resolve to something.
+func TestDryRunCycleIsListedAndReadable(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := CycleOutcome{WorkflowID: "r-issue-3", Owner: "acme", Repo: "r", Issue: 3,
+		TerminalState: stateBlocked, DryRun: true}
+	b, _ := json.Marshal(o)
+	if err := store.Write(o.WorkflowID, evidenceOutcome, string(b), true); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, err := store.listCycleIDs()
+	if err != nil || len(ids) != 1 || ids[0] != "r-issue-3" {
+		t.Fatalf("listCycleIDs = %v err=%v, want [r-issue-3]", ids, err)
+	}
+	names, err := store.listArtifacts("r-issue-3")
+	if err != nil || len(names) != 1 || names[0] != evidenceOutcome {
+		t.Fatalf("listArtifacts = %v err=%v, want [%s]", names, err, evidenceOutcome)
+	}
+	if _, has, err := store.loadOutcomeOptional("r-issue-3"); err != nil || !has {
+		t.Fatalf("loadOutcomeOptional ok=%v err=%v, want the dry-run outcome", has, err)
+	}
+}

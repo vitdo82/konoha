@@ -215,6 +215,25 @@ func (s *EvidenceStore) relDirFor(id string, dryRun bool) (string, error) {
 
 // Write redacts and atomically writes one artifact. Empty content is skipped so
 // a later phase never erases an earlier artifact.
+// dirFor resolves a cycle's store-relative directory: the §42 dryrun/ namespace
+// when that is where the run wrote, else the normal one. Resolution is by what
+// exists on disk, never by live config, so a later dryRun flip cannot repoint a
+// finished cycle (#141).
+func (s *EvidenceStore) dirFor(id string) (string, bool, error) {
+	rel, err := s.relDirFor(id, false)
+	if err != nil {
+		return "", false, err
+	}
+	if paths, lerr := s.sink.List(rel); lerr == nil && len(paths) > 0 {
+		return rel, false, nil
+	}
+	dry, err := s.relDirFor(id, true)
+	if err != nil {
+		return "", false, err
+	}
+	return dry, true, nil
+}
+
 func (s *EvidenceStore) Write(id, name, content string, dryRun bool) error {
 	if content == "" {
 		return nil

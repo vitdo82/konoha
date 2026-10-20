@@ -1,6 +1,7 @@
 package konoha
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -1357,6 +1358,13 @@ func IssueAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 		}
 		for _, x := range batch {
 			if err := x.future.Get(x.cctx, nil); err != nil {
+				if childCanceled(err) {
+					// #141: the run was stopped (claim released, queue cancel). It
+					// recorded its own CANCELLED terminal — escalating here would
+					// relabel the issue the human just closed and file a bogus bug.
+					workflow.GetLogger(ctx).Info("cycle stopped by cancellation", "issue", x.in.IssueNum)
+					continue
+				}
 				escalateFailedChild(ctx, x.in, err)
 				continue
 			}
@@ -1364,6 +1372,20 @@ func IssueAllWorkflow(ctx workflow.Context, scope RepoScope) error {
 		}
 	}
 	return nil
+}
+
+// childCanceled reports whether a child workflow ended because it was
+// cancelled, rather than failing (#141). Cancellation is a decided stop, never a
+// failure to escalate (§40).
+func childCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, workflow.ErrCanceled) {
+		return true
+	}
+	var ce *temporal.CanceledError
+	return errors.As(err, &ce)
 }
 
 // escalateFailedChild surfaces a failed sweep child instead of silently dropping

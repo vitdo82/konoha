@@ -826,17 +826,23 @@ func summaryFromOutcome(id string, o CycleOutcome) CycleSummary {
 	}
 }
 
-// listCycleIDs returns the sorted cycle ids present under evidence cycles/.
+// listCycleIDs returns the sorted cycle ids present under evidence cycles/ and
+// the §42 dryrun/cycles/ namespace, deduped by id.
 func (s *EvidenceStore) listCycleIDs() ([]string, error) {
-	paths, err := s.sink.List("cycles")
-	if err != nil {
-		return nil, err
-	}
 	set := map[string]bool{}
-	for _, p := range paths {
-		parts := strings.Split(p, "/")
-		if len(parts) >= 3 && parts[0] == "cycles" && validCycleID(parts[1]) {
-			set[parts[1]] = true
+	for _, dir := range []struct {
+		root string
+		at   int
+	}{{"cycles", 0}, {"dryrun/cycles", 1}} {
+		paths, err := s.sink.List(dir.root)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range paths {
+			parts := strings.Split(p, "/")
+			if len(parts) >= dir.at+3 && parts[dir.at] == "cycles" && validCycleID(parts[dir.at+1]) {
+				set[parts[dir.at+1]] = true
+			}
 		}
 	}
 	ids := make([]string, 0, len(set))
@@ -849,7 +855,7 @@ func (s *EvidenceStore) listCycleIDs() ([]string, error) {
 
 // listArtifacts returns the store-root-relative names under one cycle dir.
 func (s *EvidenceStore) listArtifacts(id string) ([]string, error) {
-	rel, err := s.relDirFor(id, false)
+	rel, _, err := s.dirFor(id)
 	if err != nil {
 		return nil, err
 	}
@@ -878,22 +884,13 @@ func (s *EvidenceStore) cycleExists(id string) bool {
 // loadOutcomeOptional reads outcome.json for one cycle; ok=false when absent
 // (never an error), so the caller can fall through to the running-cycle path.
 func (s *EvidenceStore) loadOutcomeOptional(id string) (CycleOutcome, bool, error) {
-	rel, err := s.relDirFor(id, false)
+	rel, _, err := s.dirFor(id)
 	if err != nil {
 		return CycleOutcome{}, false, err
 	}
 	b, err := s.sink.Read(path.Join(rel, evidenceOutcome))
 	if os.IsNotExist(err) {
-		// §42: a dry-run cycle writes under dryrun/. Read it from there so the
-		// recorded dryRun flag is what resolves the namespace, never live config.
-		dryRel, derr := s.relDirFor(id, true)
-		if derr != nil {
-			return CycleOutcome{}, false, derr
-		}
-		b, err = s.sink.Read(path.Join(dryRel, evidenceOutcome))
-		if os.IsNotExist(err) {
-			return CycleOutcome{}, false, nil
-		}
+		return CycleOutcome{}, false, nil
 	}
 	if err != nil {
 		return CycleOutcome{}, false, err

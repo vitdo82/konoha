@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 )
 
 // #141/AC1: a cycle whose issue was closed by a human stops before publish —
@@ -132,4 +134,35 @@ func TestWorkflowLargeClaimReleasedSkipsChildren(t *testing.T) {
 		t.Fatalf("terminal state = %q, want %q", state, stateCancelled)
 	}
 	env.AssertNotCalled(t, "EnsureChildren", mock.Anything, mock.Anything)
+}
+
+// #141: a sweep child that was cancelled (claim released, queue cancel) must not
+// be escalated — escalating would relabel the issue a human just closed as
+// BLOCKED/human-required and file a bogus failure bug for a decided stop.
+func TestWorkflowSweepCanceledChildIsNotEscalated(t *testing.T) {
+	resetMetrics()
+	lc := sweepLifecycle(false, false)
+	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+	env.RegisterActivity(RecordCycleMetrics)
+	mockCleanup(env)
+	var pending []IssueInput
+	for _, n := range []int{testIssue, testIssue + 1} {
+		pending = append(pending, IssueInput{
+			Owner: "o", Repo: "r", IssueNum: n, RepoPath: t.TempDir(), Lifecycle: lc,
+		})
+	}
+	env.OnActivity(ListUnmanagedIssues, mock.Anything, mock.Anything).Return(pending, nil)
+	env.OnWorkflow(IssueCycleWorkflow, mock.Anything, mock.Anything).Return(
+		func(_ workflow.Context, in IssueInput) error {
+			if in.IssueNum == testIssue {
+				return temporal.NewCanceledError("claim released")
+			}
+			return nil
+		})
+
+	env.ExecuteWorkflow(IssueAllWorkflow, sweepScope(lc))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("a stopped child must not fail the sweep: %v", err)
+	}
+	env.AssertNotCalled(t, "ApplyIssueLabels", mock.Anything, mock.Anything)
 }

@@ -268,3 +268,27 @@ func TestWebhookClosedBotSenderDoesNotCancel(t *testing.T) {
 		t.Fatalf("a bot-authored close must not cancel, got %d calls", calls)
 	}
 }
+
+// #141: a claim release is one-way — a released issue keeps `konoha:managed`, so
+// the sweep will never re-claim it. An explicit `reopened` delivery must start
+// the cycle again (the release label, if still applied, ends it at its next
+// checkpoint).
+func TestWebhookReopenedStartsRun(t *testing.T) {
+	webhookEnv(t)
+	var started []string
+	wh := &WebhookServer{
+		repos: []RepoConfig{{Owner: "o", Repo: "r", RepoPath: "/tmp/repo"}},
+		starter: func(_ context.Context, scope RepoScope, issue int) error {
+			started = append(started, scope.Repo+"-issue-"+strconv.Itoa(issue))
+			return nil
+		},
+	}
+	w := httptest.NewRecorder()
+	wh.handleWebhook(w, ghWebhookRequest("sekret", "issues", payload("reopened", "o/r", 7)))
+	if w.Code != 200 {
+		t.Fatalf("reopened status = %d want 200", w.Code)
+	}
+	if len(started) != 1 || started[0] != "r-issue-7" {
+		t.Fatalf("reopened starts = %v, want [r-issue-7]", started)
+	}
+}
