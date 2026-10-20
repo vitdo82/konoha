@@ -33,3 +33,33 @@ func TestReleasedClaim(t *testing.T) {
 		})
 	}
 }
+
+// #141: a release-label set that cannot mean what the operator intended fails
+// at load — a blank entry never matches, and a konoha-projected label
+// (konoha:review is on the issue at the pre-merge checkpoint) would release
+// every run.
+func TestReconcileConfigValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		labels  []string
+		wantErr bool
+	}{
+		{"default set", nil, false},
+		{"custom", []string{"duplicate", "superseded"}, false},
+		{"blank", []string{"duplicate", " "}, true},
+		{"untrimmed", []string{" duplicate"}, true},
+		{"projected label", []string{"konoha:review"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lc := LifecycleConfig{Reconcile: ReconcileConfig{ReleasedLabels: c.labels}}
+			err := lc.validate()
+			if c.wantErr && err == nil {
+				t.Fatalf("labels %v must fail validation", c.labels)
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("labels %v must validate: %v", c.labels, err)
+			}
+		})
+	}
+}

@@ -3,8 +3,12 @@ package konoha
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
+
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 )
 
 // #141/AC1: the release checkpoint reads the issue's state + labels in one
@@ -51,5 +55,22 @@ func TestFetchIssueSnapshotRejectsMissingState(t *testing.T) {
 
 	if _, err := FetchIssueSnapshot(context.Background(), IssueInput{Owner: "o", Repo: "r", IssueNum: 7}); err == nil {
 		t.Fatal("an empty issue state must fail closed")
+	}
+}
+
+// #141: a cancelled child is a decided stop, not a failure — the sweep must not
+// escalate it into a BLOCKED record on an issue a human already closed.
+func TestChildCanceled(t *testing.T) {
+	if childCanceled(nil) {
+		t.Fatal("nil is not a cancellation")
+	}
+	if !childCanceled(workflow.ErrCanceled) {
+		t.Fatal("workflow.ErrCanceled must be recognized")
+	}
+	if !childCanceled(temporal.NewCanceledError("stopped")) {
+		t.Fatal("a Temporal CanceledError must be recognized")
+	}
+	if childCanceled(errors.New("dev failed")) {
+		t.Fatal("an ordinary failure is not a cancellation")
 	}
 }

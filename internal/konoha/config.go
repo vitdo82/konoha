@@ -165,6 +165,29 @@ type ReconcileConfig struct {
 	ReleasedLabels []string `yaml:"releasedLabels" json:"releasedLabels,omitempty"`
 }
 
+// validate rejects a release-label set that cannot do what the operator means:
+// a blank/untrimmed entry never matches, and a label Konoha projects itself
+// (konoha:review is still on the issue at the pre-merge checkpoint) would
+// cancel every run.
+func (r ReconcileConfig) validate(prefix string) error {
+	projected := map[string]bool{}
+	for _, l := range projectableLabels() {
+		projected[l] = true
+	}
+	for _, l := range r.ReleasedLabels {
+		if strings.TrimSpace(l) == "" {
+			return fmt.Errorf("%s.releasedLabels: blank entry", prefix)
+		}
+		if strings.TrimSpace(l) != l {
+			return fmt.Errorf("%s.releasedLabels: %q must be trimmed", prefix, l)
+		}
+		if projected[l] {
+			return fmt.Errorf("%s.releasedLabels: %q is a konoha-projected label and would release every run", prefix, l)
+		}
+	}
+	return nil
+}
+
 // Autonomy is the §33 autonomy block.
 type Autonomy struct {
 	Default             string   `yaml:"default" json:"default,omitempty"`
@@ -360,6 +383,9 @@ func (lc *LifecycleConfig) validate() error {
 		return err
 	}
 	if err := lc.Audit.validate("lifecycle.audit"); err != nil {
+		return err
+	}
+	if err := lc.Reconcile.validate("lifecycle.reconcile"); err != nil {
 		return err
 	}
 	if err := validateGates("lifecycle", lc.Validation, lc.ValidationCmd); err != nil {

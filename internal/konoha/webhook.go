@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
@@ -199,7 +200,7 @@ func (wh *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch ev.Action {
-	case "opened":
+	case "opened", "reopened":
 		if err := wh.starter(r.Context(), scope, ev.Issue.Number); err != nil {
 			// §32: a concurrent sweep start (deterministic ID) yells
 			// "already started". That is CONVERGENCE, not failure — ack it.
@@ -224,7 +225,11 @@ func (wh *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		id := fmt.Sprintf("%s-issue-%d", scope.Repo, ev.Issue.Number)
-		if err := wh.cancel(r.Context(), id); err != nil && !isWorkflowNotFound(err) {
+		// The cancel RPC gets its own budget: GitHub aborts a delivery at ~10s, and
+		// a killed request must not leave the release half-applied.
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := wh.cancel(cctx, id); err != nil && !isWorkflowNotFound(err) {
 			// Surfaced as a 500 so the delivery shows red in GitHub and can be
 			// redelivered; cancel is idempotent, so a retry is harmless.
 			http.Error(w, "cancel run: "+err.Error(), http.StatusInternalServerError)
