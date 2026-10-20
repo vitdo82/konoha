@@ -888,6 +888,42 @@ are excluded unless `--include-prompts` is set, in which case they are redacted
 and capped at 16 KiB (`promptTruncated` is set when cut). `--since` filters on
 the cycle's latest condition timestamp. Adding a field bumps `schemaVersion`.
 
+## Terminal operator console (#143)
+
+`prbot tui` is a shell-native cockpit over the **same** records as the CLI (#99)
+and web console (#105): the evidence store for finished cycles and the #89 status
+query for running ones. It adds no listener, requires no daemon, and reads no
+GitHub credential. Temporal is best-effort, so finished cycles render offline.
+
+```bash
+/tmp/prbot tui          # interactive (needs a TTY)
+/tmp/prbot tui --once   # render one frame and exit (CI/manual checks)
+```
+
+The list is grouped by the same board columns the web console uses (running /
+needs attention / human required / closed / failed); the detail pane shows the
+terminal §6 state with the separate #84 agent/verification outcomes, the
+outcome-conflict flag, and the ordered conditions. Panes reuse the #106 diff,
+#107 artifact preview, and #110 bounded agent-log tail projections.
+
+| Key | Action |
+|---|---|
+| `j` / `k`, `↑` / `↓` | move through cycles (or artifacts in the preview pane) |
+| `g` / `G`, `home` / `end` | first / last cycle (or artifact in the preview pane) |
+| `enter`, `l` | detail pane |
+| `1` | list pane |
+| `2`, `enter`, `l` | detail pane |
+| `3`, `d` | diff pane (#106) |
+| `4`, `p` | preview / artifacts pane (#107) |
+| `5`, `t` | agent log tail (#110) |
+| `a` | attach to a live session — reports `SKIPPED` until a provider (#136/#144) is wired |
+| `r` | refresh from evidence / status |
+| `?` | help overlay (`esc` closes) |
+| `q`, `ctrl+c` | quit |
+
+The projections (`tuiView` and the per-pane renderers) are pure and unit-tested
+without a terminal; the interactive layer only reads keys and repaints.
+
 ## Local review console (#105, board + detail #106, decisions #108, queue #109, forms #120)
 
 An opt-in, **loopback-only** HTTP console for the board, cycle detail, the human
