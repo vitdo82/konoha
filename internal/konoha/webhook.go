@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strings"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -61,6 +63,12 @@ type webhookEvent struct {
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
+	// Sender distinguishes a human close from Konoha's own App-authorised
+	// EnsureIssueState(closed): cancelling on a bot close would cancel the very
+	// run that just finished (#141).
+	Sender struct {
+		Type string `json:"type"`
+	} `json:"sender"`
 }
 
 // webhookStarter is the fast-path seam: given a repo scope + issue it starts
@@ -83,11 +91,48 @@ func scopeForRepo(owner, repo string, repos []RepoConfig) (RepoScope, bool) {
 	return RepoScope{}, false
 }
 
-// WebhookServer serves the GitHub webhook endpoint. Starter is swappable so
-// tests can simulate the fast-path without a Temporal client.
+// webhookCanceler is the §141 stop seam: given the deterministic workflow ID it
+// cancels the run (idempotent — an unknown/already-stopped run is a no-op).
+type webhookCanceler func(ctx context.Context, workflowID string) error
+
+// errWorkflowNotFound marks a cancel for an execution that is already gone.
+var errWorkflowNotFound = errors.New("workflow not found")
+
+// WebhookServer serves the GitHub webhook endpoint. Starter/Cancel are
+// swappable so tests can simulate the fast-path without a Temporal client.
 type WebhookServer struct {
 	repos   []RepoConfig
 	starter webhookStarter
+	cancel  webhookCanceler
+}
+
+// DefaultCanceler cancels a cycle execution by its deterministic ID (#141). A
+// run that is already stopped, or never started, is a no-op: the §31 sweep
+// remains the reconciliation backstop.
+func DefaultCanceler(c client.Client) webhookCanceler {
+	return func(ctx context.Context, workflowID string) error {
+		if err := c.CancelWorkflow(ctx, workflowID, ""); err != nil {
+			if isWorkflowNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+}
+
+// isWorkflowNotFound reports whether a Temporal cancel error means the execution
+// does not exist (already finished/never started) — a no-op, not a failure.
+func isWorkflowNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var nf *serviceerror.NotFound
+	if errors.As(err, &nf) {
+		return true
+	}
+	return strings.Contains(err.Error(), "not found") ||
+		strings.Contains(err.Error(), "NotFound")
 }
 
 // DefaultStarter is the production fast-path: start IssueCycleWorkflow with the
@@ -164,7 +209,29 @@ func (wh *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		log.Printf("webhook opened → started %s-issue-%d", scope.Repo, ev.Issue.Number)
-	case "edited", "labeled", "closed":
+	case "closed":
+		// #141: a human closed the issue, so release the claim and stop the run.
+		// The running cycle's own checkpoint is the backstop when this delivery
+		// never arrives (webhooks are optional).
+		if wh.cancel == nil || scope.Lifecycle.DryRun {
+			log.Printf("webhook closed %s#%d → reconcile (no cancel)", scope.Repo, ev.Issue.Number)
+			break
+		}
+		if strings.EqualFold(ev.Sender.Type, "Bot") {
+			// Our own close: cancelling here would kill the run that is finishing
+			// (and its PostMerge child), so the §50/#54 tail would never run.
+			log.Printf("webhook closed %s#%d → own close (bot sender, no cancel)", scope.Repo, ev.Issue.Number)
+			break
+		}
+		id := fmt.Sprintf("%s-issue-%d", scope.Repo, ev.Issue.Number)
+		if err := wh.cancel(r.Context(), id); err != nil && !isWorkflowNotFound(err) {
+			// Surfaced as a 500 so the delivery shows red in GitHub and can be
+			// redelivered; cancel is idempotent, so a retry is harmless.
+			http.Error(w, "cancel run: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("webhook closed %s#%d → canceled %s", scope.Repo, ev.Issue.Number, id)
+	case "edited", "labeled":
 		// §31/§32 reconcile: never restart a completed workflow; state is
 		// reconciled by the running cycle + the sweep on the next pass.
 		log.Printf("webhook %s %s/%s#%d → reconcile (no restart)", ev.Action, owner, repo, ev.Issue.Number)
@@ -187,6 +254,7 @@ func StartWebhookServer(c client.Client, repos []RepoConfig) *http.Server {
 	wh := &WebhookServer{
 		repos:   repos,
 		starter: DefaultStarter(c),
+		cancel:  DefaultCanceler(c),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook", wh.handleWebhook)

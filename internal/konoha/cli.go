@@ -249,6 +249,7 @@ func Main() {
 	w.RegisterActivity(AwaitApproval)
 	w.RegisterActivity(RecordAuditEvent)
 	w.RegisterActivity(FetchIssueLabels)
+	w.RegisterActivity(FetchIssueSnapshot) // #141: claim-release checkpoint (read-only)
 	w.RegisterActivity(PublishDeveloperChange)
 	w.RegisterActivity(EnsureIssue)
 	w.RegisterActivity(EnsureIssueState)

@@ -124,6 +124,31 @@ func FetchIssueLabels(ctx context.Context, in IssueInput) ([]string, error) {
 	return labels, nil
 }
 
+// IssueSnapshot is the read-only #141 claim view of one issue: its tracker state
+// plus its label names, from a single getIssue call.
+type IssueSnapshot struct {
+	State  string   `json:"state"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+// FetchIssueSnapshot reads one issue's state + label names (read-only, §23) for
+// the #141 claim-release checkpoint. An absent state is unparseable evidence and
+// fails closed (§36/§40) — it is never read as "still open".
+func FetchIssueSnapshot(ctx context.Context, in IssueInput) (IssueSnapshot, error) {
+	it, err := getIssue(ctx, in.Owner, in.Repo, in.IssueNum)
+	if err != nil {
+		return IssueSnapshot{}, err
+	}
+	if strings.TrimSpace(it.State) == "" {
+		return IssueSnapshot{}, fmt.Errorf("issue snapshot %s/%s#%d: empty state", in.Owner, in.Repo, in.IssueNum)
+	}
+	snap := IssueSnapshot{State: it.State, Labels: make([]string, 0, len(it.Labels))}
+	for _, l := range it.Labels {
+		snap.Labels = append(snap.Labels, l.Name)
+	}
+	return snap, nil
+}
+
 func parseIssueNumber(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	if i := strings.LastIndex(s, "/"); i >= 0 {

@@ -316,6 +316,24 @@ without restarting a completed workflow. Deliveries with an invalid
   type name changes).
 - Child workflow IDs are stable per repo+PR (`<repo>-review-<n>`) — that's what makes
   sweeps idempotent/review-once. Don't break the shape.
+- **Claim release vs tracker state (#141, `policy.go`/`reconcile.go`/`webhook.go`)**: a run stops when a human
+  releases its issue. `releasedClaim(state, labels, ReconcileConfig)` is the PURE
+  gate — released when the issue is not `open`, or carries one of
+  `lifecycle.reconcile.releasedLabels` (default `duplicate,wontfix,invalid`).
+  Both signals are explicit, so a missing label or an empty state never stops a
+  healthy run; a failed fetch fails closed at the call site instead (§40).
+  `FetchIssueSnapshot` (activity) reads state+labels in one `getIssue` call and
+  rejects an empty state (§36). `FetchIssueLabels` is deliberately NOT widened:
+  changing a registered activity's result type breaks replay of in-flight runs.
+  `IssueCycleWorkflow` evaluates the checkpoint twice, via the `claimReleased`
+  closure — before the §20 risk gate/publish and before `transition(stateMerging)`
+  — routing to `CANCELLED` (`claim_released`) and never to a success state; a
+  `dryRun` cycle skips it (§42: shadow mode has nothing to prevent). The
+  `issues.closed` webhook calls `CancelWorkflow(<repo>-issue-<n>)` through the
+  `webhookCanceler` seam (`DefaultCanceler`), a no-op when the run is already
+  stopped; webhooks are optional, so the workflow checkpoint is the backstop.
+  The webhook cancel is skipped under `dryRun`. Adding this renames no exported
+  activity/workflow func — it adds `FetchIssueSnapshot` only.
 - **Idempotent GitHub mutation** (`reconcile.go`): the `Ensure*` activities are
   search-before-create and rely on deterministic HTML-comment markers
   (`konoha-parent`, `konoha-child`, `konoha-managed`) matched byte-exactly in

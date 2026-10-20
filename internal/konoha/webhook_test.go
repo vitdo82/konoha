@@ -192,3 +192,79 @@ type alreadyStartedError struct{}
 func (e *alreadyStartedError) Error() string {
 	return "WorkflowExecutionAlreadyStarted: already running"
 }
+
+// #141/AC1: a `closed` delivery cancels the deterministic <repo>-issue-<n>
+// execution, so a cycle whose issue a human closed stops promptly instead of
+// waiting for its next checkpoint.
+func TestWebhookClosedCancelsRun(t *testing.T) {
+	webhookEnv(t)
+	var canceled []string
+	wh := &WebhookServer{
+		repos:  []RepoConfig{{Owner: "o", Repo: "r", RepoPath: "/tmp/repo"}},
+		cancel: func(_ context.Context, id string) error { canceled = append(canceled, id); return nil },
+	}
+	w := httptest.NewRecorder()
+	wh.handleWebhook(w, ghWebhookRequest("sekret", "issues", payload("closed", "o/r", 7)))
+	if w.Code != 200 {
+		t.Fatalf("closed status = %d want 200", w.Code)
+	}
+	if len(canceled) != 1 || canceled[0] != "r-issue-7" {
+		t.Fatalf("cancel calls = %v, want [r-issue-7]", canceled)
+	}
+}
+
+// #141: cancelling an already-stopped (or never-started) run is a no-op — the
+// delivery is acked, never a 500 that would look like an outage.
+func TestWebhookClosedCancelAlreadyStoppedIsNoop(t *testing.T) {
+	webhookEnv(t)
+	wh := &WebhookServer{
+		repos:  []RepoConfig{{Owner: "o", Repo: "r", RepoPath: "/tmp/repo"}},
+		cancel: func(_ context.Context, _ string) error { return errWorkflowNotFound },
+	}
+	w := httptest.NewRecorder()
+	wh.handleWebhook(w, ghWebhookRequest("sekret", "issues", payload("closed", "o/r", 7)))
+	if w.Code != 200 {
+		t.Fatalf("already-stopped cancel status = %d want 200", w.Code)
+	}
+}
+
+// #42: shadow mode mutates nothing, so it never cancels a run either.
+func TestWebhookClosedDryRunDoesNotCancel(t *testing.T) {
+	webhookEnv(t)
+	calls := 0
+	wh := &WebhookServer{
+		repos: []RepoConfig{{Owner: "o", Repo: "r", RepoPath: "/tmp/repo",
+			Lifecycle: &LifecycleConfig{DryRun: true}}},
+		cancel: func(_ context.Context, _ string) error { calls++; return nil },
+	}
+	w := httptest.NewRecorder()
+	wh.handleWebhook(w, ghWebhookRequest("sekret", "issues", payload("closed", "o/r", 7)))
+	if w.Code != 200 {
+		t.Fatalf("dry-run closed status = %d want 200", w.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("dry-run must not cancel, got %d calls", calls)
+	}
+}
+
+// #141: Konoha closes issues itself via EnsureIssueState, so the resulting
+// `closed` delivery comes from a Bot sender. Cancelling on it would kill the run
+// that is finishing (and its post-merge child).
+func TestWebhookClosedBotSenderDoesNotCancel(t *testing.T) {
+	webhookEnv(t)
+	calls := 0
+	wh := &WebhookServer{
+		repos:  []RepoConfig{{Owner: "o", Repo: "r", RepoPath: "/tmp/repo"}},
+		cancel: func(_ context.Context, _ string) error { calls++; return nil },
+	}
+	body := `{"action":"closed","issue":{"number":7,"state":"closed"},` +
+		`"repository":{"full_name":"o/r"},"sender":{"type":"Bot"}}`
+	w := httptest.NewRecorder()
+	wh.handleWebhook(w, ghWebhookRequest("sekret", "issues", body))
+	if w.Code != 200 {
+		t.Fatalf("bot close status = %d want 200", w.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("a bot-authored close must not cancel, got %d calls", calls)
+	}
+}

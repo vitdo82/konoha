@@ -98,6 +98,7 @@ type QueueItem struct {
 	Attempt              int               `json:"attempt,omitempty"`
 	RequiresConfirmation bool              `json:"requiresConfirmation,omitempty"`
 	DryRun               bool              `json:"dryRun,omitempty"`
+	Evidence             string            `json:"evidence,omitempty"` // #141: store-relative evidence dir (empty = none recorded yet)
 	Actions              []QueueActionView `json:"actions"`
 	At                   time.Time         `json:"at,omitempty"`
 }
@@ -133,18 +134,19 @@ type QueueActionResult struct {
 // queueCycle is the neutral per-cycle input to the pure projection. The console
 // resolves it from the evidence store + Temporal; the pure policy never does I/O.
 type queueCycle struct {
-	ID          string
-	Owner       string
-	Repo        string
-	Issue       int
-	State       string
-	HasOutcome  bool
-	Running     bool
-	Interrupted bool
-	Canceled    bool
-	Attempt     int
-	DryRun      bool
-	At          time.Time
+	ID             string
+	Owner          string
+	Repo           string
+	Issue          int
+	State          string
+	HasOutcome     bool
+	Running        bool
+	Interrupted    bool
+	Canceled       bool
+	Attempt        int
+	DryRun         bool
+	RecordedDryRun bool // #141: the run's own §42 flag (evidence namespace)
+	At             time.Time
 }
 
 // ValidateQueueAction is the fail-closed §36 membership gate for a queue action.
@@ -223,6 +225,20 @@ func queueActionsFor(reason string, running, sessionAvailable bool) []QueueActio
 	return out
 }
 
+// cycleEvidencePointer is the store-relative evidence directory for a cycle
+// (#141), emitted only when an outcome was recorded — the projection never
+// guesses a path for a cycle that may not have written anything. Honors the
+// §42 dry-run namespace.
+func cycleEvidencePointer(c queueCycle) string {
+	if !c.HasOutcome {
+		return ""
+	}
+	if c.RecordedDryRun {
+		return "dryrun/cycles/" + c.ID
+	}
+	return "cycles/" + c.ID
+}
+
 // queueItemFromCycle projects one classified cycle to a queue item. Pure.
 func queueItemFromCycle(c queueCycle, sessionAvailable bool) QueueItem {
 	reason, _ := attentionReason(c)
@@ -230,7 +246,7 @@ func queueItemFromCycle(c queueCycle, sessionAvailable bool) QueueItem {
 		ID: c.ID, Owner: c.Owner, Repo: c.Repo, Issue: c.Issue,
 		State: c.State, Reason: reason, Running: c.Running, Interrupted: c.Interrupted,
 		Attempt: c.Attempt, RequiresConfirmation: reason == queueReasonInterrupted,
-		DryRun: c.DryRun, Actions: queueActionsFor(reason, c.Running, sessionAvailable), At: c.At,
+		DryRun: c.DryRun, Evidence: cycleEvidencePointer(c), Actions: queueActionsFor(reason, c.Running, sessionAvailable), At: c.At,
 	}
 }
 
@@ -271,6 +287,9 @@ func (d *consoleData) queueCycleFor(ctx context.Context, id string) (queueCycle,
 		} else if has {
 			c.HasOutcome = true
 			c.State = o.TerminalState
+			// #141: the evidence namespace comes from the RUN's record, so flipping
+			// dryRun later never repoints a finished cycle at a missing directory.
+			c.RecordedDryRun = o.DryRun
 			if o.Owner != "" {
 				c.Owner = o.Owner
 			}
@@ -348,7 +367,7 @@ func (d *consoleData) queueCycleFor(ctx context.Context, id string) (queueCycle,
 			return queueCycle{}, false, nil
 		}
 	}
-	c.DryRun = d.repoDryRun(c.Repo)
+	c.DryRun = d.repoDryRun(c.Repo) // action gating uses today's policy
 	if d.store != nil && c.Owner != "" {
 		if l, err := d.store.loadLineage(c.Owner, c.Repo, c.Issue, false); err == nil {
 			c.Attempt, _ = currentAttemptSHA(l.Activations)

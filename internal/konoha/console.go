@@ -884,7 +884,16 @@ func (s *EvidenceStore) loadOutcomeOptional(id string) (CycleOutcome, bool, erro
 	}
 	b, err := s.sink.Read(path.Join(rel, evidenceOutcome))
 	if os.IsNotExist(err) {
-		return CycleOutcome{}, false, nil
+		// §42: a dry-run cycle writes under dryrun/. Read it from there so the
+		// recorded dryRun flag is what resolves the namespace, never live config.
+		dryRel, derr := s.relDirFor(id, true)
+		if derr != nil {
+			return CycleOutcome{}, false, derr
+		}
+		b, err = s.sink.Read(path.Join(dryRel, evidenceOutcome))
+		if os.IsNotExist(err) {
+			return CycleOutcome{}, false, nil
+		}
 	}
 	if err != nil {
 		return CycleOutcome{}, false, err

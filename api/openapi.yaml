@@ -557,6 +557,9 @@ components:
         attempt: { type: integer }
         requiresConfirmation: { type: boolean }
         dryRun: { type: boolean }
+        evidence:
+          type: string
+          description: Store-relative evidence directory for the cycle (#141); absent until an outcome is recorded.
         actions:
           type: array
           items: { $ref: "#/components/schemas/QueueActionView" }

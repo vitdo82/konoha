@@ -314,6 +314,7 @@ func TestWorkflowCancelRecordsCancelledTerminal(t *testing.T) {
 	t.Cleanup(func() { appCfg = saved })
 
 	env := newCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockOpenClaim(env)
 	env.RegisterActivity(WriteCycleEvidence) // real outcome writer
 	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
 	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(nil)
@@ -429,4 +430,62 @@ func TestConsoleQueueEndpoints(t *testing.T) {
 		t.Fatalf("disabled queue = %d, want 501", res.StatusCode)
 	}
 	res.Body.Close()
+}
+
+// #141/AC3: the debug surface points at the cycle's recorded evidence, so an
+// operator can go from a queue item to the artifacts without guessing a path.
+// The pointer is only emitted where artifacts are known to exist (a recorded
+// outcome), and it honors the §42 dry-run namespace.
+func TestQueueItemEvidencePointers(t *testing.T) {
+	now := time.Now().UTC()
+	recorded := queueItemFromCycle(queueCycle{
+		ID: "r-issue-4", Repo: "r", Issue: 4, State: stateHumanRequired, HasOutcome: true, At: now,
+	}, false)
+	if recorded.Evidence != "cycles/r-issue-4" {
+		t.Fatalf("Evidence = %q, want cycles/r-issue-4", recorded.Evidence)
+	}
+
+	dry := queueItemFromCycle(queueCycle{
+		ID: "r-issue-5", Repo: "r", Issue: 5, State: stateFailed, HasOutcome: true, RecordedDryRun: true, At: now,
+	}, false)
+	if dry.Evidence != "dryrun/cycles/r-issue-5" {
+		t.Fatalf("dry-run Evidence = %q, want dryrun/cycles/r-issue-5", dry.Evidence)
+	}
+
+	// A running cycle with no recorded outcome yet: no pointer, never a guess.
+	unrecorded := queueItemFromCycle(queueCycle{
+		ID: "r-issue-6", Repo: "r", Issue: 6, State: stateBlocked, Running: true, At: now,
+	}, false)
+	if unrecorded.Evidence != "" {
+		t.Fatalf("unrecorded Evidence = %q, want empty", unrecorded.Evidence)
+	}
+}
+
+// #141: a finished cycle's evidence pointer comes from the RUN's recorded
+// dryRun flag, not today's repos.yaml — flipping dryRun must not repoint a
+// historical cycle at a directory that was never written.
+func TestQueueCycleEvidenceUsesRecordedDryRun(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := CycleOutcome{
+		WorkflowID: "r-issue-9", Owner: "acme", Repo: "r", Issue: 9,
+		TerminalState: stateFailed, DryRun: true,
+	}
+	b, _ := json.Marshal(o)
+	if err := store.Write(o.WorkflowID, evidenceOutcome, string(b), true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Live config says dryRun is OFF; the recorded run says it was ON.
+	d := &consoleData{store: store, repos: repoConfigMap([]RepoConfig{{Owner: "acme", Repo: "r"}})}
+	c, ok, err := d.queueCycleFor(context.Background(), "r-issue-9")
+	if err != nil || !ok {
+		t.Fatalf("queueCycleFor = %+v, %v, %v", c, ok, err)
+	}
+	item := queueItemFromCycle(c, false)
+	if item.Evidence != "dryrun/cycles/r-issue-9" {
+		t.Fatalf("Evidence = %q, want the recorded dry-run namespace", item.Evidence)
+	}
 }

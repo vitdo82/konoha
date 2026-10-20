@@ -429,6 +429,8 @@ export interface components {
             attempt?: number;
             requiresConfirmation?: boolean;
             dryRun?: boolean;
+            /** @description Store-relative evidence directory for the cycle (#141); absent until an outcome is recorded. */
+            evidence?: string;
             actions: components["schemas"]["QueueActionView"][];
             /** Format: date-time */
             at?: string;

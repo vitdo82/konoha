@@ -35,6 +35,8 @@ repos:
         ciMaxWait: 10m                 # bounded CI poll window
       publish:                         # §25/#115 PR description policy
         aiDescription: false           # opt-in AI PR body; failure → deterministic body
+      reconcile:                       # #141 claim release vs tracker state
+        releasedLabels: [duplicate, wontfix, invalid]  # default; a human applying one stops the run
       release:                         # §50 post-merge release + changelog
         enabled: false                 # opt-in; false/unset = no-op
         changelogPath: CHANGELOG.md    # repo-relative changelog file
