@@ -820,6 +820,7 @@ internal/konoha/         # ALL logic + tests (single package konoha): workflows,
 configs/repos.yaml       # per-repo lifecycle policy (source of truth; KONOHA_CONFIG_DIR overrides)
 scripts/apply.sh         # schedule creation
 docs/new-design-v2.md    # design authority
+docs/runtime.md          # runtime modes (Temporal | local), units, rollback
 docs/non-goals.md        # ESF-vs-Konoha non-goals + caveated features (decision record, #101)
 ```
 
@@ -838,6 +839,34 @@ make test                         # go vet + go test + go build (config, markers
 Env: `GH_APP_ID`, `GH_APP_INSTALL_ID`, `GH_APP_PEM` (path to private key —
 never committed) and `TEMPORAL_ADDRESS` (default `127.0.0.1:7233`).
 `KONOHA_CONFIG_DIR` overrides where `repos.yaml` is read (default `configs/`).
+
+### Runtime modes
+
+Temporal is the default and the only durable/scheduled path. A local headless
+mode runs the same SMALL lifecycle in-process with **no Temporal server**:
+
+```yaml
+runtime:
+  mode: local              # temporal (default) | local
+  local:
+    sweepInterval: 5m
+    maxCycles: 1
+    once: false
+    approvalWait: 10m
+```
+
+```bash
+prbot run                          # sweep until SIGTERM/SIGINT
+prbot run --once                   # one sweep, exit 0
+prbot run --repo ducklambda --issue 42
+```
+
+Local mode does not dial Temporal and starts no schedules or webhook server. It
+has no durability/replay, crash recovery, child fan-out (LARGE ends `NOT_WIRED`),
+post-merge release/deploy/propagation, or queue retry/cancel; one startup warning
+names those inactive features. Evidence, §6 states, policy, retry classes, and
+§23 scrubbing are shared with the Temporal path. Full mode matrix, systemd/
+launchd units, and rollback: [docs/runtime.md](docs/runtime.md).
 
 Hermetic QA stack (`make qa` / `make qa-down`): a one-command Docker Compose
 environment (Temporal + worker + console + metrics) with fake `gh`/`opencode`, a

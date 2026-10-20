@@ -4,7 +4,7 @@ Status: design only — nothing implemented or modified.
 
 Operating model:
 
-> **AI agents execute the lifecycle autonomously; Temporal enforces policy and coordination; humans handle exceptions and high-risk decisions.**
+> **AI agents execute the lifecycle autonomously; the active runtime enforces policy and coordination; humans handle exceptions and high-risk decisions.**
 
 The PO is the exception handler, not the normal gate. The normal lifecycle is
 AI-to-AI, with humans intervening only when the system reaches a policy
@@ -68,7 +68,9 @@ Human work:    exceptions only
 
  # 2\. Core architecture
 
- Temporal is the durable conductor.
+ The active runtime is the conductor. Temporal is the default durable
+ implementation; local headless mode (`runtime.mode: local`) is the non-durable
+ alternative. Policy authority stays deterministic in both.
 
  OpenCode is the primary AI execution environment.
 
@@ -86,7 +88,7 @@ Human work:    exceptions only
                           │
               ┌───────────┴───────────┐
               │                       │
-         AI agents                Temporal
+         AI agents          runtime (Temporal | local)
               │                  policy/state
               │                       │
               └───────────┬───────────┘
@@ -100,7 +102,7 @@ Human work:    exceptions only
 AI Agent
   = reasoning + implementation
 
-Temporal
+runtime (Temporal | local)
   = orchestration + policy + state
 
 GitHub App
@@ -465,7 +467,7 @@ FAILED
 CANCELLED
 ```
 
- Temporal workflow history is the authoritative record.
+ The active runtime's history is the authoritative record.
 
 ---
 
@@ -1088,7 +1090,7 @@ konoha:complexity-10
 
  Labels are a human-readable projection.
 
- Temporal remains authoritative.
+ The active runtime remains authoritative.
 
 ---
 
@@ -1934,7 +1936,7 @@ already-emitted key, so a Temporal retry or a duplicate schedule run never
 double-alerts. A webhook failure is returned (fail-closed) and the key is not
 recorded, so the retry re-attempts rather than silently dropping the alert.
 Alerting **never resolves a stuck run**: the alerts report drift and the
-underlying run keeps its authoritative Temporal state (§40/§44 #1).
+underlying run keeps its authoritative runtime state (§40/§44 #1).
 
 A terminal `BLOCKED`/`FAILED` cycle (never `CLOSED`/`HUMAN_REQUIRED`) starts a
 `FailureFeedbackWorkflow` (`<runId>-failure`, deterministic §24) whose only I/O
@@ -2063,8 +2065,7 @@ marker — a follow-up if a repo needs per-step sign-off.
 
 Every gated decision is appended to the **audit sink** by the `RecordAuditEvent`
 activity: an append-only JSONL file (`audit.sink`) recording subject, step,
-actor (`human`/`policy`) and decision (`allow`/`deny`/`timeout`). Temporal
-history remains the authoritative lifecycle record (§44 #1); the audit file is
+actor (`human`/`policy`) and decision (`allow`/`deny`/`timeout`). The active runtime's history remains the authoritative lifecycle record (§44 #1); the audit file is
 the durable export. `DryRun` (§42) skips the gate (nothing mutates) and the
 audit write failure is fail-closed (an un-recorded gate breaks the guarantee).
 
@@ -2317,7 +2318,7 @@ lifecycle:
 
  The system must preserve:
 
- 1. **Temporal owns lifecycle state.**
+ 1. **The active runtime owns lifecycle state; Temporal is the default durable implementation.**
 2. **AI agents perform normal work.**
 3. **Humans handle exceptions rather than routine gates.**
 4. **LLMs propose; deterministic policy decides.**
@@ -2336,7 +2337,7 @@ lifecycle:
 17. **Timeouts never silently become success.**
 18. **Agent disagreement is explicitly handled.**
 19. **High-risk changes automatically escalate to humans.**
-20. **Labels are projections; Temporal is authoritative.**
+20. **Labels are projections; the active runtime is authoritative.**
 
 ---
 
@@ -2428,6 +2429,8 @@ AI → AI → AI → AI → DONE
 
  In short: **humans define policies and handle exceptions; AI agents perform the actual software lifecycle.**
 
+ This lifecycle is runtime-neutral: the same states, policy, retry classes, and evidence apply under the default Temporal runtime and the local headless runtime (§59).
+
  The key architectural change from the previous version is the removal of the routine human/PO gate. The human-signal mechanism remains in the implementation, reframed as **`HUMAN_REQUIRED` escalation** — the safety valve, without a human clicking "close" on every successful ticket.
 ## 57. Explicit three-outcome evidence record
 
@@ -2435,7 +2438,7 @@ The terminal §6 state (`CLOSED` / `HUMAN_REQUIRED` / `BLOCKED` / `FAILED` / …
 stays authoritative (§44 #20); it is never derived from the record below.
 Alongside it, every terminal cycle writes `outcome.json` with an explicit,
 queryable separation so "which step failed" is answerable from evidence rather
-than from Temporal history (which ages out):
+than from runtime history (which ages out):
 
 - `agentOutcome ∈ {SUCCESS, FAILED, TIMED_OUT, SKIPPED, BLOCKED}` — the outcome
   of the develop/repair execution. `BLOCKED` is **agent-reported** ("cannot
@@ -2517,3 +2520,64 @@ Concurrency is bounded and deterministic (the workflow owns scheduling, §43/§1
 style); the ranking is a pure function so the same candidate set always yields
 the same winner. An ineligible candidate can never be selected regardless of
 diff size, and the pre-execution/§40 fail-closed rules apply unchanged.
+
+## 59. Optional runtime: local headless mode
+
+Status: **implemented by #212.** Temporal remains the default and the only
+durable/scheduled path; `runtime.mode: local` adds a second driver, not a second
+policy engine.
+
+### Authority model
+
+- One active runtime per cycle. Local and Temporal never run the same cycle
+  concurrently for the same repository; the deterministic cycle ID
+  `<repo>-issue-<n>` is shared, so evidence, lineage, change records, and
+  idempotent GitHub mutations converge.
+- The active runtime owns lifecycle state (§44 #1). Temporal history is the
+  durable implementation of that record; local mode records the same evidence
+  without replay.
+
+### Guarantee parity
+
+Local mode calls the **existing** activity functions in-process, in the same
+SMALL-path order as `IssueCycleWorkflow`, and reuses:
+
+- the same pure policy functions (routing, §20 risk, §16 repair cap, §19 close,
+  §49 CI/merge gate, §55 approval);
+- the same #95 retry classes (deterministic 1, infrastructure with backoff,
+  agent exactly 1, verification 3);
+- the same evidence artifacts (`outcome.json` with agent/verification outcomes,
+  conditions, policy digest, profiles, tooling, limits, URL policy, cleanup);
+- the same §6 state strings, idempotent GitHub mutations, worktree isolation,
+  and §23 env scrubbing.
+
+### Non-guarantees
+
+Durability, replay, crash recovery/resume, schedules (deps/grooming/alert),
+webhook fast-path, child workflow fan-out, post-merge release/deploy/
+propagation, and queued retry/cancel. A restart starts a new cycle; the existing
+#93 orphan-worktree sweep applies.
+
+### Mode matrix
+
+| Feature | Temporal (default) | Local (`runtime.mode: local`) |
+|---|---|---|
+| Schedules (deps/groom/alert) | started by `apply.sh` | not started; one startup warning names them |
+| Webhook fast-path | optional (`GH_WEBHOOK_SECRET`) | not started |
+| Child workflows / LARGE fan-out | supported | LARGE ends `NOT_WIRED`; no children |
+| Post-merge release/deploy/propagation | supported | not run (Temporal-only in v1) |
+| Queue retry/cancel (#109) | supported | unavailable (no Temporal execution to control) |
+| Crash recovery / resume | Temporal replay | none; restart starts a new cycle |
+| Human gate | polls the §18 channel up to `poGateTimeout` | polls the same channel up to `local.approvalWait` |
+
+### Fail-closed rules
+
+An approval timeout is `BLOCKED` and writes terminal evidence; a denial is
+`HUMAN_REQUIRED`; a request-changes decision reworks and re-gates (bounded by the
+§16 cap). Temporal-only features are reported inactive, never as a silent
+success (§40).
+
+### Revisit trigger
+
+If local mode needs crash recovery or schedules, adopt the full engine seam
+rather than growing a second state machine.

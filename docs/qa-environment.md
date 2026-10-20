@@ -5,6 +5,21 @@
 > seams. It is a sibling of the tier-1 hermetic suite (`e2e/README.md`, #47) and
 > is explicitly scoped apart from the self-hosted install story (#148).
 
+## No-Temporal test path (#212)
+
+The compose stack remains the Temporal path. A second hermetic path needs no
+Temporal, Postgres, or Docker:
+
+```bash
+go test ./internal/konoha                 # unit + policy + conformance tests
+go test -tags=e2e ./e2e/local             # real pipeline on `prbot run`, fake gh/opencode,
+                                          # fixture remote, TEMPORAL_ADDRESS on a closed port
+```
+
+The local-runtime scenario exercises the same evidence layout and §6 states as
+the Temporal scenarios, and asserts that no `GH_*` credential reaches an agent.
+See `docs/runtime.md` for the mode matrix and limits.
+
 One command brings up an isolated stack with **zero secrets**:
 
 ```bash
