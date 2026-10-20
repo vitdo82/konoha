@@ -31,6 +31,7 @@ func main() {
 	}
 	role := roleFor(prompt)
 	dir := os.Getenv("FAKE_OPENCODE_DIR")
+	dumpEnv(dir)
 
 	switch role {
 	case "developer", "repair":
@@ -127,4 +128,13 @@ func roleFor(prompt string) string {
 		return "diagnosis"
 	}
 	return "default"
+}
+
+// dumpEnv records the child environment once per invocation so the e2e suite can
+// assert the §23 credential scrub reaches the agent in every runtime (#212).
+func dumpEnv(dir string) {
+	if dir == "" {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "agent.env"), []byte(strings.Join(os.Environ(), "\n")), 0o644)
 }

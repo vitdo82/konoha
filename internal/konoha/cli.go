@@ -122,6 +122,14 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "run":
+			// #212: local headless runtime. Dispatched BEFORE the bootstrap and the
+			// Temporal client dial so this process needs no server; runLocal loads
+			// konoha.yaml itself and requires runtime.mode: local.
+			if err := runLocal(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "api":
 			// #124: the generated console HTTP client (no Temporal, no GitHub
 			// credential). Talks to a running console via KONOHA_CONSOLE_ADDR.

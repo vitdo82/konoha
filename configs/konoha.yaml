@@ -7,6 +7,18 @@ evidence:
   dir: .konoha/evidence           # #83: durable per-cycle evidence root (cycles/<id>/)
   sink: local                     # #100: storage backend; local only (S3/MinIO is a deferred seam)
 
+# #212 runtime selection. Temporal stays the default and the only durable /
+# scheduled path. `local` runs the SMALL lifecycle sequentially in-process with
+# no Temporal server (`prbot run`); it has no durability, replay, schedules,
+# webhooks, child fan-out, queue verbs, or post-merge workflows.
+# runtime:
+#   mode: temporal                # temporal | local (closed set; default temporal)
+#   local:
+#     sweepInterval: 5m           # idle delay between sweeps
+#     maxCycles: 1                # cycles per sweep per repo, >= 1
+#     once: false                 # run one sweep and exit
+#     approvalWait: 10m           # max wait at a §55 gate; timeout => BLOCKED
+
 # #102 host resource ceilings (best-effort anti-accident, NOT a security
 # boundary; enforced on Linux via systemd-run else rlimits, no-op elsewhere).
 # Unset = no ceilings. Per-repo override: lifecycle.limits in repos.yaml.

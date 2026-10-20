@@ -603,6 +603,23 @@ failure; no Temporal needed for the readers), and `./prbot logs <repo> <issue>`
 `validation.txt`, and a human-readable `outcome.json` summary — state, agent/
 verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; the
 #97 `./prbot describe change <repo> <issue>` view is unchanged).
+- **Runtime selection (#212, `runtime.go`/`local.go`)**: `konoha.yaml` has an
+  optional top-level `runtime:` block (`mode: temporal|local`, closed set,
+  default temporal; `local.{sweepInterval,maxCycles,once,approvalWait}`), validated
+  at load. Temporal stays the default durable/scheduled path. `runtime.mode:
+  local` is driven by `prbot run [--once] [--repo <name>] [--issue <n>]`, which is
+  dispatched BEFORE the worker bootstrap and never dials `TEMPORAL_ADDRESS` or
+  starts schedules/webhooks. `local.go` calls the **existing** activity functions
+  in-process in the same SMALL-path order as `IssueCycleWorkflow`, through
+  `r.call` with the same `retryPolicyFor` classes (agent/deterministic 1,
+  infrastructure with backoff, verification 3), and reuses the pure policy
+  functions, evidence writers, and §6 states. `outcome.json` is assembled by the
+  shared pure `assembleTerminal`/`prepareTerminalOutcome` helpers (also used by
+  `recordTerminal`). Local mode is non-durable: no replay, crash recovery,
+  schedules, webhooks, child fan-out (LARGE ends `NOT_WIRED`), post-merge
+  workflows, or queue verbs; one startup warning names them. Activity logging
+  goes through `activityLogger` so in-process calls do not panic. Adds no exported
+  activity/workflow func (no Temporal type-name change).
 - `workflow.go` owns the lifecycle state machine: `IssueCycleWorkflow` now
   wires the **SMALL autonomous path** (§46): DEVELOPING → §20 risk gate
   (suppresses publish on restricted paths/labels) → publish (idempotent PR) →

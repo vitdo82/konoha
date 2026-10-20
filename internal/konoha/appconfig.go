@@ -67,6 +67,7 @@ type AppConfig struct {
 	Tools      ToolsConfig              `yaml:"tools"`      // #119 tool catalog (custom tools) — built-ins are code-level
 	MCPServers map[string]MCPServerSpec `yaml:"mcpServers"` // #119 named HTTP MCP server registry
 	Defaults   DefaultsConfig           `yaml:"defaults"`
+	Runtime    RuntimeConfig            `yaml:"runtime"` // #212: temporal (default) | local headless
 }
 
 // GenericHarnessConfig is the operator-declared `generic` harness (§85): a bare
@@ -159,6 +160,14 @@ func defaultAppConfig() AppConfig {
 			OrphanWorktreeTTL:       defaultOrphanWorktreeTTL,
 		},
 		Evidence: EvidenceConfig{Dir: defaultEvidenceDir, Sink: evidenceSinkLocal},
+		Runtime: RuntimeConfig{
+			Mode: runtimeModeTemporal,
+			Local: LocalRuntimeConfig{
+				SweepInterval: "5m",
+				MaxCycles:     1,
+				ApprovalWait:  "10m",
+			},
+		},
 		Defaults: DefaultsConfig{
 			Lifecycle: LifecycleDefaults{
 				DevelopmentMaxComplexity: 4,
@@ -348,6 +357,10 @@ func workerMaxConcurrentActivities() int {
 }
 
 func (c AppConfig) validate() error {
+	// #212: runtime mode is a closed set; malformed local values fail fast.
+	if err := c.Runtime.validate(); err != nil {
+		return err
+	}
 	if err := c.Evidence.validate(); err != nil {
 		return err
 	}
