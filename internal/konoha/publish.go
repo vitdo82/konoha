@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"go.temporal.io/sdk/activity"
 )
 
 // PublishInput describes a change the developer agent prepared locally. All
@@ -299,7 +297,7 @@ func pushBranch(ctx context.Context, tok string, in PublishInput) error {
 	if err != nil {
 		return fmt.Errorf("git push %s: %s", in.Branch, strings.TrimSpace(Redact(stdout)))
 	}
-	activity.GetLogger(ctx).Info("pushed branch", "repo", in.Owner+"/"+in.Repo, "branch", in.Branch)
+	activityLogger(ctx).Info("pushed branch", "repo", in.Owner+"/"+in.Repo, "branch", in.Branch)
 	return nil
 }
 
@@ -339,12 +337,12 @@ func validateGate(in PublishInput) (PublishResult, error) {
 func PublishDeveloperChange(ctx context.Context, in PublishInput) (PublishResult, error) {
 	res, err := validateGate(in)
 	if err != nil {
-		activity.GetLogger(ctx).Error("validation failed, PR not published (§26)",
+		activityLogger(ctx).Error("validation failed, PR not published (§26)",
 			"branch", in.Branch, "output", res.ValidationOutput)
 		return res, err
 	}
 	if in.DryRun {
-		activity.GetLogger(ctx).Info("dryRun: publish suppressed", "repo", in.Owner+"/"+in.Repo, "branch", in.Branch)
+		activityLogger(ctx).Info("dryRun: publish suppressed", "repo", in.Owner+"/"+in.Repo, "branch", in.Branch)
 		return res, nil
 	}
 
@@ -367,12 +365,12 @@ func PublishDeveloperChange(ctx context.Context, in PublishInput) (PublishResult
 
 	pr, purl, err := EnsurePullRequest(ctx, in, body)
 	if err != nil {
-		activity.GetLogger(ctx).Error("ensure PR failed", "branch", in.Branch, "err", err)
+		activityLogger(ctx).Error("ensure PR failed", "branch", in.Branch, "err", err)
 		return res, err
 	}
 	res.PRNumber = pr
 	res.PRURL = purl
-	activity.GetLogger(ctx).Info("published PR", "repo", in.Owner+"/"+in.Repo,
+	activityLogger(ctx).Info("published PR", "repo", in.Owner+"/"+in.Repo,
 		"branch", in.Branch, "pr", pr, "validated", res.Validated)
 	return res, nil
 }
@@ -409,13 +407,13 @@ func EnsurePullRequest(ctx context.Context, in PublishInput, body string) (int, 
 			// instead of failing the whole publish.
 			if strings.Contains(strings.ToLower(string(o)), "no pull requests found") ||
 				strings.Contains(strings.ToLower(string(o)), "not found") {
-				activity.GetLogger(ctx).Info("listed PR gone, falling back to create",
+				activityLogger(ctx).Info("listed PR gone, falling back to create",
 					"repo", repo, "pr", n, "err", strings.TrimSpace(string(o)))
 			} else {
 				return 0, "", fmt.Errorf("gh pr edit: %s", strings.TrimSpace(string(o)))
 			}
 		} else {
-			activity.GetLogger(ctx).Info("updated PR", "repo", repo, "pr", n)
+			activityLogger(ctx).Info("updated PR", "repo", repo, "pr", n)
 			return n, parts[1], nil
 		}
 	}
@@ -439,7 +437,7 @@ func EnsurePullRequest(ctx context.Context, in PublishInput, body string) (int, 
 	if n == 0 {
 		return 0, "", fmt.Errorf("gh pr create: cannot parse PR number from %q", purl)
 	}
-	activity.GetLogger(ctx).Info("created PR", "repo", repo, "pr", n)
+	activityLogger(ctx).Info("created PR", "repo", repo, "pr", n)
 	return n, purl, nil
 }
 

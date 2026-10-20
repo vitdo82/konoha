@@ -17,8 +17,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"go.temporal.io/sdk/activity"
 )
 
 func b64(data []byte) string {
@@ -197,7 +195,7 @@ func ListUnreviewedPRs(ctx context.Context, scope RepoScope) ([]PrInput, error) 
 		}
 		out = append(out, PrInput{Owner: scope.Owner, Repo: scope.Repo, PrNum: n, RepoPath: scope.RepoPath, Lifecycle: scope.Lifecycle})
 	}
-	activity.GetLogger(ctx).Info("found unreviewed PRs", "repo", ownerRepo, "count", len(out))
+	activityLogger(ctx).Info("found unreviewed PRs", "repo", ownerRepo, "count", len(out))
 	return out, nil
 }
 
@@ -220,7 +218,7 @@ func ListUnmanagedIssues(ctx context.Context, scope RepoScope) ([]IssueInput, er
 		fmt.Sscan(num, &n)
 		out = append(out, IssueInput{Owner: scope.Owner, Repo: scope.Repo, IssueNum: n, RepoPath: scope.RepoPath, Trigger: "sweep", Lifecycle: scope.Lifecycle})
 	}
-	activity.GetLogger(ctx).Info("found unmanaged issues", "repo", ownerRepo, "count", len(out))
+	activityLogger(ctx).Info("found unmanaged issues", "repo", ownerRepo, "count", len(out))
 	return out, nil
 }
 
@@ -250,7 +248,7 @@ func FetchDiff(ctx context.Context, in PrInput) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("gh pr diff: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	activity.GetLogger(ctx).Info("fetched diff", "pr", in.PrNum)
+	activityLogger(ctx).Info("fetched diff", "pr", in.PrNum)
 	return string(out), nil
 }
 
@@ -313,7 +311,7 @@ func selfReviewError(out []byte) bool {
 // ListUnreviewedPRs stops re-firing. Any other failure is fatal.
 func SubmitReview(ctx context.Context, in PrInput, r ReviewResult) error {
 	if in.Lifecycle.DryRun {
-		activity.GetLogger(ctx).Info("dryRun: review suppressed", "pr", in.PrNum)
+		activityLogger(ctx).Info("dryRun: review suppressed", "pr", in.PrNum)
 		return nil
 	}
 	verdict := r.Verdict
@@ -343,9 +341,9 @@ func SubmitReview(ctx context.Context, in PrInput, r ReviewResult) error {
 		if ferr != nil {
 			return fmt.Errorf("gh pr review (self-authored comment fallback): %s: %w", strings.TrimSpace(string(fout)), ferr)
 		}
-		activity.GetLogger(ctx).Info("submitted review as comment (self-authored pr)", "pr", in.PrNum, "verdict", verdict)
+		activityLogger(ctx).Info("submitted review as comment (self-authored pr)", "pr", in.PrNum, "verdict", verdict)
 		return nil
 	}
-	activity.GetLogger(ctx).Info("submitted review", "pr", in.PrNum, "verdict", r.Verdict)
+	activityLogger(ctx).Info("submitted review", "pr", in.PrNum, "verdict", r.Verdict)
 	return nil
 }
