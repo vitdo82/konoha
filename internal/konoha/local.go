@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -18,58 +22,60 @@ import (
 // local runtime never shells out itself; every I/O step is one of these calls,
 // so tests drive the whole cycle without gh/opencode/PATH (mirrors ghRunner).
 type localActivities struct {
-	analyze           func(context.Context, IssueInput) (IssueAnalysis, error)
-	estimate          func(context.Context, IssueInput, IssueAnalysis) (EstimateResult, error)
-	ensureManagedNote func(context.Context, ManagedNoteRequest) error
-	applyLabels       func(context.Context, LabelsRequest) error
-	fetchSnapshot     func(context.Context, IssueInput) (IssueSnapshot, error)
-	fetchLabels       func(context.Context, IssueInput) ([]string, error)
-	developer         func(context.Context, DevelopRequest) (DevelopResult, error)
-	repair            func(context.Context, RepairRequest) (DevelopResult, error)
-	publish           func(context.Context, PublishInput) (PublishResult, error)
-	prHead            func(context.Context, PrInput) (string, error)
-	prDiff            func(context.Context, PrInput) (string, error)
-	reviewer          func(context.Context, ReviewRequest) (ReviewResult, error)
-	prDescription     func(context.Context, PRDescriptionRequest) (PRDescriptionResult, error)
-	waitCI            func(context.Context, CIRequest) (CIStatus, error)
-	merge             func(context.Context, MergeRequest) (MergeResult, error)
-	ensureIssueState  func(context.Context, StateRequest) error
-	awaitApproval     func(context.Context, ApprovalRequest) (ApprovalResult, error)
-	recordAudit       func(context.Context, AuditRequest) error
-	cleanup           func(context.Context, CleanupRequest) (CleanupResult, error)
-	writeEvidence     func(context.Context, EvidenceRequest) error
-	recordActivation  func(context.Context, ActivationRequest) error
-	recordChange      func(context.Context, ChangeRequest) error
-	recordMetrics     func(context.Context, CycleOutcome) error
+	analyze             func(context.Context, IssueInput) (IssueAnalysis, error)
+	estimate            func(context.Context, IssueInput, IssueAnalysis) (EstimateResult, error)
+	ensureManagedNote   func(context.Context, ManagedNoteRequest) error
+	applyLabels         func(context.Context, LabelsRequest) error
+	fetchSnapshot       func(context.Context, IssueInput) (IssueSnapshot, error)
+	fetchLabels         func(context.Context, IssueInput) ([]string, error)
+	developer           func(context.Context, DevelopRequest) (DevelopResult, error)
+	repair              func(context.Context, RepairRequest) (DevelopResult, error)
+	publish             func(context.Context, PublishInput) (PublishResult, error)
+	prHead              func(context.Context, PrInput) (string, error)
+	prDiff              func(context.Context, PrInput) (string, error)
+	reviewer            func(context.Context, ReviewRequest) (ReviewResult, error)
+	prDescription       func(context.Context, PRDescriptionRequest) (PRDescriptionResult, error)
+	waitCI              func(context.Context, CIRequest) (CIStatus, error)
+	merge               func(context.Context, MergeRequest) (MergeResult, error)
+	ensureIssueState    func(context.Context, StateRequest) error
+	awaitApproval       func(context.Context, ApprovalRequest) (ApprovalResult, error)
+	recordAudit         func(context.Context, AuditRequest) error
+	cleanup             func(context.Context, CleanupRequest) (CleanupResult, error)
+	writeEvidence       func(context.Context, EvidenceRequest) error
+	recordActivation    func(context.Context, ActivationRequest) error
+	recordChange        func(context.Context, ChangeRequest) error
+	recordMetrics       func(context.Context, CycleOutcome) error
+	listUnmanagedIssues func(context.Context, RepoScope) ([]IssueInput, error)
 }
 
 // realLocalActivities wires the production activity functions. Names are the
 // registered Temporal activity funcs (never renamed, so the type names stay put).
 func realLocalActivities() localActivities {
 	return localActivities{
-		analyze:           AnalyzeIssue,
-		estimate:          EstimateIssue,
-		ensureManagedNote: EnsureManagedNote,
-		applyLabels:       ApplyIssueLabels,
-		fetchSnapshot:     FetchIssueSnapshot,
-		fetchLabels:       FetchIssueLabels,
-		developer:         RunDeveloper,
-		repair:            RunRepair,
-		publish:           PublishDeveloperChange,
-		prHead:            FetchPRHead,
-		prDiff:            FetchPRDiff,
-		reviewer:          RunReviewer,
-		prDescription:     RunPRDescription,
-		waitCI:            WaitForCI,
-		merge:             MergePullRequest,
-		ensureIssueState:  EnsureIssueState,
-		awaitApproval:     AwaitApproval,
-		recordAudit:       RecordAuditEvent,
-		cleanup:           CleanupWorktree,
-		writeEvidence:     WriteCycleEvidence,
-		recordActivation:  RecordActivation,
-		recordChange:      RecordChange,
-		recordMetrics:     RecordCycleMetrics,
+		analyze:             AnalyzeIssue,
+		estimate:            EstimateIssue,
+		ensureManagedNote:   EnsureManagedNote,
+		applyLabels:         ApplyIssueLabels,
+		fetchSnapshot:       FetchIssueSnapshot,
+		fetchLabels:         FetchIssueLabels,
+		developer:           RunDeveloper,
+		repair:              RunRepair,
+		publish:             PublishDeveloperChange,
+		prHead:              FetchPRHead,
+		prDiff:              FetchPRDiff,
+		reviewer:            RunReviewer,
+		prDescription:       RunPRDescription,
+		waitCI:              WaitForCI,
+		merge:               MergePullRequest,
+		ensureIssueState:    EnsureIssueState,
+		awaitApproval:       AwaitApproval,
+		recordAudit:         RecordAuditEvent,
+		cleanup:             CleanupWorktree,
+		writeEvidence:       WriteCycleEvidence,
+		recordActivation:    RecordActivation,
+		recordChange:        RecordChange,
+		recordMetrics:       RecordCycleMetrics,
+		listUnmanagedIssues: ListUnmanagedIssues,
 	}
 }
 
@@ -767,4 +773,178 @@ func (r *localRuntime) recordTerminal(ctx context.Context, in IssueInput, cycleI
 		r.logf("local: change status write failed (non-fatal): %v", err)
 	}
 	return nil
+}
+
+// localOptions is the parsed `prbot run` surface.
+type localOptions struct {
+	Once  bool
+	Repo  string
+	Issue int
+}
+
+// parseLocalArgs parses `[--once] [--repo <name>] [--issue <n>]`. An issue run
+// needs an explicit repo (the sweep can otherwise infer every configured repo).
+func parseLocalArgs(args []string) (localOptions, error) {
+	var o localOptions
+	const usage = "usage: prbot run [--once] [--repo <name>] [--issue <n>]"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--once":
+			o.Once = true
+		case "--repo":
+			if i+1 >= len(args) {
+				return localOptions{}, fmt.Errorf("--repo requires a name; %s", usage)
+			}
+			o.Repo = args[i+1]
+			i++
+		case "--issue":
+			if i+1 >= len(args) {
+				return localOptions{}, fmt.Errorf("--issue requires a number; %s", usage)
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return localOptions{}, fmt.Errorf("--issue requires a positive number; %s", usage)
+			}
+			o.Issue = n
+			i++
+		default:
+			return localOptions{}, fmt.Errorf("unknown argument %q; %s", args[i], usage)
+		}
+	}
+	if o.Issue > 0 && o.Repo == "" {
+		return localOptions{}, fmt.Errorf("--issue requires --repo; %s", usage)
+	}
+	return o, nil
+}
+
+// localModeWarning is the single startup line naming the Temporal-only features
+// local mode deliberately does not start (never reported active, §40).
+func localModeWarning() string {
+	return "runtime: local mode — Temporal-only features inactive: schedules (deps/grooming/alerts), " +
+		"webhook fast-path, child workflow fan-out, post-merge release/deploy/propagation, queue retry/cancel"
+}
+
+// runLocal is `prbot run`: the headless OS-service entrypoint. It loads konoha.yaml
+// itself and is dispatched BEFORE the worker bootstrap, so this process never
+// dials Temporal and reads no GitHub credential beyond the App env the activities
+// already use.
+func runLocal(args []string) error {
+	opts, err := parseLocalArgs(args)
+	if err != nil {
+		return err
+	}
+	if app, err := loadAppConfig(defaultAppConfigPath()); err != nil {
+		return err
+	} else {
+		appCfg = app
+	}
+	if appCfg.Runtime.mode() != runtimeModeLocal {
+		return fmt.Errorf("runtime.mode is %q; use the Temporal worker, or set runtime.mode: local for prbot run", appCfg.Runtime.mode())
+	}
+	repos, err := loadReposConfigWithResources(defaultReposPath())
+	if err != nil {
+		return err
+	}
+	if opts.Repo != "" {
+		found := false
+		for _, r := range repos {
+			if r.Repo == opts.Repo {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("repo %q not found in %s", opts.Repo, defaultReposPath())
+		}
+	}
+	registerOperatorSecrets() // §23: mask operator-provisioned credentials in captured output
+
+	r := newLocalRuntime(appCfg, localActivitiesFor())
+	r.logf("%s", localModeWarning())
+	// Metrics stay opt-in exactly like the worker (console/MCP remain separate
+	// opt-in surfaces; local mode starts no listener of its own).
+	StartMetricsServer(os.Getenv("METRICS_ADDR"))
+
+	// #93: no Temporal workflow owns a local worktree, so the existing orphan
+	// sweep may remove an expired konoha-owned worktree on restart.
+	if !cleanupDisabled() {
+		workflowAlive = func(context.Context, string) bool { return false }
+		sweepOrphanWorktreesOnStart()
+	}
+
+	// A signal stops the loop, never an in-flight cycle: the cycle runs on a
+	// background context and finishes before run returns.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return r.run(ctx, repos, opts)
+}
+
+// run drives the sweep loop. With once (flag or config) it performs exactly one
+// sweep and returns; otherwise it sleeps sweepInterval between sweeps until ctx
+// is cancelled. A signal is observed only between cycles.
+func (r *localRuntime) run(ctx context.Context, repos []RepoConfig, opts localOptions) error {
+	once := opts.Once || r.cfg.Local.once()
+	for {
+		r.runSweep(ctx, repos, opts)
+		if once {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(r.cfg.Local.sweepInterval()):
+		}
+	}
+}
+
+// runSweep lists unmanaged issues per repo and runs up to maxCycles sequentially.
+// One failing cycle is recorded as a failed terminal (never a silent drop, §40)
+// and does not abort the remaining cycles.
+func (r *localRuntime) runSweep(ctx context.Context, repos []RepoConfig, opts localOptions) {
+	for _, repo := range repos {
+		if opts.Repo != "" && repo.Repo != opts.Repo {
+			continue
+		}
+		if opts.Issue > 0 {
+			in := IssueInput{
+				Owner: repo.Owner, Repo: repo.Repo, IssueNum: opts.Issue,
+				RepoPath: repo.RepoPath, Trigger: "cli", Lifecycle: repoScope(repo).Lifecycle,
+			}
+			if err := r.runCycle(context.Background(), in); err != nil {
+				r.recordFailure(context.Background(), in)
+				r.logf("local: cycle %s failed: %v", localCycleID(in), err)
+			}
+			return
+		}
+		pending, err := r.acts.listUnmanagedIssues(ctx, repoScope(repo))
+		if err != nil {
+			r.logf("local: sweep %s failed: %v", repo.Repo, err)
+			continue
+		}
+		if len(pending) > r.cfg.Local.maxCycles() {
+			pending = pending[:r.cfg.Local.maxCycles()]
+		}
+		for _, in := range pending {
+			if err := r.runCycle(context.Background(), in); err != nil {
+				r.recordFailure(context.Background(), in)
+				r.logf("local: cycle %s failed: %v", localCycleID(in), err)
+			}
+		}
+	}
+}
+
+// recordFailure surfaces a cycle that errored before its terminal (§40/§44 #1):
+// project the blocked state and record the deterministic failed outcome, exactly
+// like the Temporal sweep's escalateFailedChild.
+func (r *localRuntime) recordFailure(ctx context.Context, in IssueInput) {
+	if !in.Lifecycle.DryRun {
+		req := LabelsRequest{Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum,
+			Labels: ProjectLabels(in.Lifecycle, stateBlocked, 0, true), DryRun: in.Lifecycle.DryRun}
+		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.applyLabels(ctx, req) }); err != nil {
+			r.logf("local: failure label projection failed (non-fatal): %v", err)
+		}
+	}
+	if err := r.recordTerminal(ctx, in, localCycleID(in), failedChildOutcome(in)); err != nil {
+		r.logf("local: failure terminal record failed (non-fatal): %v", err)
+	}
 }
