@@ -72,7 +72,13 @@ func runDoctorChecks(ctx context.Context, appPath, reposPath, addr string) []doc
 	checks = append(checks, doctorCheck{"evidence dir", doctorWritable(dir)})
 
 	checks = append(checks, doctorCheck{"gh", ghDoctorCheck(ctx)})
-	checks = append(checks, doctorCheck{"temporal", doctorTemporalHealth(ctx, addr)})
+	// #212: local mode runs the cycle in-process and never dials Temporal, so a
+	// missing server is not a failure — report the mode instead.
+	if appErr == nil && cfg.Runtime.mode() == runtimeModeLocal {
+		checks = append(checks, doctorCheck{"temporal (not required: local runtime)", nil})
+	} else {
+		checks = append(checks, doctorCheck{"temporal", doctorTemporalHealth(ctx, addr)})
+	}
 	return checks
 }
 

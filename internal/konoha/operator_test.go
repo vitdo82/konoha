@@ -59,6 +59,24 @@ func findCheck(checks []doctorCheck, name string) *doctorCheck {
 
 // (writeRepos is defined in config_test.go.)
 
+// #212: local mode does not require a Temporal server, so the doctor reports it
+// as not-required instead of failing an unreachable-server check.
+func TestDoctorLocalRuntimeSkipsTemporal(t *testing.T) {
+	withDoctorStubs(t, passingDoctorStubs())
+	p := writeAppConfig(t, "runtime:\n  mode: local\n")
+	checks := runDoctorChecks(context.Background(), p, writeRepos(t, "repos: []\n"), "127.0.0.1:1")
+	if findCheck(checks, "temporal") != nil {
+		t.Fatal("local mode must not run the temporal connectivity check")
+	}
+	c := findCheck(checks, "temporal (not required: local runtime)")
+	if c == nil {
+		t.Fatalf("missing local-runtime temporal note; checks = %+v", checks)
+	}
+	if c.err != nil {
+		t.Fatalf("local-runtime note must not fail: %v", c.err)
+	}
+}
+
 // #99/AC: every failure mode fails its named check with a specific message, and
 // an all-good environment passes every check.
 func TestDoctorChecksFailureModes(t *testing.T) {
