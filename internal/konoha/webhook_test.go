@@ -246,3 +246,25 @@ func TestWebhookClosedDryRunDoesNotCancel(t *testing.T) {
 		t.Fatalf("dry-run must not cancel, got %d calls", calls)
 	}
 }
+
+// #141: Konoha closes issues itself via EnsureIssueState, so the resulting
+// `closed` delivery comes from a Bot sender. Cancelling on it would kill the run
+// that is finishing (and its post-merge child).
+func TestWebhookClosedBotSenderDoesNotCancel(t *testing.T) {
+	webhookEnv(t)
+	calls := 0
+	wh := &WebhookServer{
+		repos:  []RepoConfig{{Owner: "o", Repo: "r", RepoPath: "/tmp/repo"}},
+		cancel: func(_ context.Context, _ string) error { calls++; return nil },
+	}
+	body := `{"action":"closed","issue":{"number":7,"state":"closed"},` +
+		`"repository":{"full_name":"o/r"},"sender":{"type":"Bot"}}`
+	w := httptest.NewRecorder()
+	wh.handleWebhook(w, ghWebhookRequest("sekret", "issues", body))
+	if w.Code != 200 {
+		t.Fatalf("bot close status = %d want 200", w.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("a bot-authored close must not cancel, got %d calls", calls)
+	}
+}

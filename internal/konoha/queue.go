@@ -134,18 +134,19 @@ type QueueActionResult struct {
 // queueCycle is the neutral per-cycle input to the pure projection. The console
 // resolves it from the evidence store + Temporal; the pure policy never does I/O.
 type queueCycle struct {
-	ID          string
-	Owner       string
-	Repo        string
-	Issue       int
-	State       string
-	HasOutcome  bool
-	Running     bool
-	Interrupted bool
-	Canceled    bool
-	Attempt     int
-	DryRun      bool
-	At          time.Time
+	ID             string
+	Owner          string
+	Repo           string
+	Issue          int
+	State          string
+	HasOutcome     bool
+	Running        bool
+	Interrupted    bool
+	Canceled       bool
+	Attempt        int
+	DryRun         bool
+	RecordedDryRun bool // #141: the run's own §42 flag (evidence namespace)
+	At             time.Time
 }
 
 // ValidateQueueAction is the fail-closed §36 membership gate for a queue action.
@@ -232,7 +233,7 @@ func cycleEvidencePointer(c queueCycle) string {
 	if !c.HasOutcome {
 		return ""
 	}
-	if c.DryRun {
+	if c.RecordedDryRun {
 		return "dryrun/cycles/" + c.ID
 	}
 	return "cycles/" + c.ID
@@ -286,6 +287,9 @@ func (d *consoleData) queueCycleFor(ctx context.Context, id string) (queueCycle,
 		} else if has {
 			c.HasOutcome = true
 			c.State = o.TerminalState
+			// #141: the evidence namespace comes from the RUN's record, so flipping
+			// dryRun later never repoints a finished cycle at a missing directory.
+			c.RecordedDryRun = o.DryRun
 			if o.Owner != "" {
 				c.Owner = o.Owner
 			}
@@ -363,7 +367,7 @@ func (d *consoleData) queueCycleFor(ctx context.Context, id string) (queueCycle,
 			return queueCycle{}, false, nil
 		}
 	}
-	c.DryRun = d.repoDryRun(c.Repo)
+	c.DryRun = d.repoDryRun(c.Repo) // action gating uses today's policy
 	if d.store != nil && c.Owner != "" {
 		if l, err := d.store.loadLineage(c.Owner, c.Repo, c.Issue, false); err == nil {
 			c.Attempt, _ = currentAttemptSHA(l.Activations)

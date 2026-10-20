@@ -116,7 +116,9 @@ type CycleOutcome struct {
 	// committed. Evidence only (never changes the delivered SHA or the state).
 	VerificationMutated bool        `json:"verificationMutated,omitempty"`
 	Conditions          []Condition `json:"conditions,omitempty"`
-	EscalationReason    string      `json:"escalationReason,omitempty"` // §18 trigger, if any
+	EscalationReason    string      `json:"escalationReason,omitempty"` // §18 trigger, if any (counts as a human escalation)
+	CancelReason        string      `json:"cancelReason,omitempty"`     // #141: why the claim was released (never an escalation)
+	DryRun              bool        `json:"dryRun,omitempty"`           // §42: recorded so evidence paths resolve from the run, not live config
 	Route               string      `json:"route,omitempty"`            // SMALL|LARGE
 	Complexity          int         `json:"complexity,omitempty"`
 	Confidence          string      `json:"confidence,omitempty"`

@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -62,6 +63,12 @@ type webhookEvent struct {
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
+	// Sender distinguishes a human close from Konoha's own App-authorised
+	// EnsureIssueState(closed): cancelling on a bot close would cancel the very
+	// run that just finished (#141).
+	Sender struct {
+		Type string `json:"type"`
+	} `json:"sender"`
 }
 
 // webhookStarter is the fast-path seam: given a repo scope + issue it starts
@@ -117,8 +124,15 @@ func DefaultCanceler(c client.Client) webhookCanceler {
 // isWorkflowNotFound reports whether a Temporal cancel error means the execution
 // does not exist (already finished/never started) — a no-op, not a failure.
 func isWorkflowNotFound(err error) bool {
-	return err != nil && (strings.Contains(err.Error(), "not found") ||
-		strings.Contains(err.Error(), "NotFound"))
+	if err == nil {
+		return false
+	}
+	var nf *serviceerror.NotFound
+	if errors.As(err, &nf) {
+		return true
+	}
+	return strings.Contains(err.Error(), "not found") ||
+		strings.Contains(err.Error(), "NotFound")
 }
 
 // DefaultStarter is the production fast-path: start IssueCycleWorkflow with the
@@ -201,6 +215,12 @@ func (wh *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		// never arrives (webhooks are optional).
 		if wh.cancel == nil || scope.Lifecycle.DryRun {
 			log.Printf("webhook closed %s#%d → reconcile (no cancel)", scope.Repo, ev.Issue.Number)
+			break
+		}
+		if strings.EqualFold(ev.Sender.Type, "Bot") {
+			// Our own close: cancelling here would kill the run that is finishing
+			// (and its PostMerge child), so the §50/#54 tail would never run.
+			log.Printf("webhook closed %s#%d → own close (bot sender, no cancel)", scope.Repo, ev.Issue.Number)
 			break
 		}
 		id := fmt.Sprintf("%s-issue-%d", scope.Repo, ev.Issue.Number)

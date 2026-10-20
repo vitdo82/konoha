@@ -374,8 +374,8 @@ func EvaluateClosePolicy(lc LifecycleConfig, c CompletionCheck, paths, labels []
 // it is no longer open, or a human applied one of the configured release labels
 // (default duplicate/wontfix/invalid). Both signals are explicit, so a missing
 // label or an empty state never stops a healthy run — the caller fails closed on
-// a fetch error instead of guessing (§40). Case-sensitive: GitHub renders a
-// label as it was created, so an exact match is the strict reading.
+// a fetch error instead of guessing (§40). Label names are case-insensitive on
+// GitHub (created case is preserved), so the match folds case like `state`.
 func releasedClaim(state string, labels []string, cfg ReconcileConfig) bool {
 	if state != "" && !strings.EqualFold(state, "open") {
 		return true
@@ -386,7 +386,7 @@ func releasedClaim(state string, labels []string, cfg ReconcileConfig) bool {
 	}
 	for _, l := range labels {
 		for _, r := range release {
-			if l == r {
+			if strings.EqualFold(l, r) {
 				return true
 			}
 		}

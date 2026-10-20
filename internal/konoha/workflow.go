@@ -426,8 +426,38 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		workflow.GetLogger(ctx).Error("managed claim note failed (non-fatal)", "err", err)
 	}
 
+	// claimReleased is the #141 claim-release checkpoint: a human closing the
+	// issue (or labeling it duplicate/wontfix/invalid) stops the cycle before a
+	// GitHub mutation. Skipped under §42 — a shadow cycle publishes nothing, so
+	// there is nothing to prevent.
+	claimReleased := func() (bool, error) {
+		if in.Lifecycle.DryRun {
+			return false, nil
+		}
+		var snap IssueSnapshot
+		if err := workflow.ExecuteActivity(ctx, FetchIssueSnapshot, in).Get(ctx, &snap); err != nil {
+			return false, err // §40: an unreadable claim never proceeds to a mutation
+		}
+		return releasedClaim(snap.State, snap.Labels, in.Lifecycle.Reconcile), nil
+	}
+
+	// cancelledTerminal records a CANCELLED outcome: the run stopped because its
+	// claim was released, not because anything failed (§40).
+	cancelledTerminal := func(reason string) error {
+		transition(stateCancelled)
+		projectLabels(stateCancelled, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateCancelled,
+			CancelReason:  reason,
+			Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
 	if route == stateLarge {
-		return runLargePath(ctx, agentCtx, devCtx, in, a, est, info, route, transition, projectLabels, finish)
+		return runLargePath(ctx, agentCtx, devCtx, in, a, est, info, route, transition, projectLabels, finish, claimReleased, cancelledTerminal)
 	}
 
 	// escalateTerminal routes the cycle to HUMAN_REQUIRED with a recorded §18
@@ -464,36 +494,6 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			AgentMessage:        reason,
 			VerificationOutcome: verificationSkipped,
 			Attempts:            lastAttempts, ReviewRounds: lastReviewRounds,
-		})
-	}
-
-	// claimReleased is the #141 claim-release checkpoint: a human closing the
-	// issue (or labeling it duplicate/wontfix/invalid) stops the cycle before a
-	// GitHub mutation. Skipped under §42 — a shadow cycle publishes nothing, so
-	// there is nothing to prevent.
-	claimReleased := func() (bool, error) {
-		if in.Lifecycle.DryRun {
-			return false, nil
-		}
-		var snap IssueSnapshot
-		if err := workflow.ExecuteActivity(ctx, FetchIssueSnapshot, in).Get(ctx, &snap); err != nil {
-			return false, err // §40: an unreadable claim never proceeds to a mutation
-		}
-		return releasedClaim(snap.State, snap.Labels, in.Lifecycle.Reconcile), nil
-	}
-
-	// cancelledTerminal records a CANCELLED outcome: the run stopped because its
-	// claim was released, not because anything failed (§40).
-	cancelledTerminal := func(reason string) error {
-		transition(stateCancelled)
-		projectLabels(stateCancelled, est.Complexity)
-		return finish(CycleOutcome{
-			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
-			Owner: in.Owner, Repo: in.Repo,
-			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
-			TerminalState:    stateCancelled,
-			EscalationReason: reason,
-			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
 		})
 	}
 
@@ -747,6 +747,15 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			writeAgentEvidence(writeEvidence, desc.Evidence, desc, "")
 		}
 	}
+	// #141: the §55 gate can block for poGateTimeout (default 168h), so the
+	// claim is re-checked after it — a human may have closed the issue while the
+	// run was waiting on approval.
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
+	}
+
 	var pub PublishResult
 	pubIn := PublishInput{
 		Owner: in.Owner, Repo: in.Repo, RepoPath: in.RepoPath,
@@ -891,6 +900,13 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 			// #84: a blocked repair must not loop — route to the human path.
 			return blockedTerminal(repaired.BlockedReason)
 		}
+		// #141: a repair may span several bounded agent runs; never re-publish a
+		// released claim.
+		if released, err := claimReleased(); err != nil {
+			return err
+		} else if released {
+			return cancelledTerminal(reasonClaimReleased)
+		}
 		// re-publish the repaired commit onto the same branch (idempotent).
 		status.setStep("publish")
 		pubIn.CommitSHA = repaired.CommitSHA
@@ -1021,7 +1037,7 @@ func runPostMerge(ctx workflow.Context, in IssueInput, prNum int, sha string) {
 // → parent CLOSED. A child failure fails the whole parent (§44) and routes to
 // BLOCKED — never a silent skip. Child cycles are started with the deterministic
 // <repo>-issue-<childNumber> ID so sweeps/retries converge (§32/§24).
-func runLargePath(ctx workflow.Context, agentCtx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int), finish func(CycleOutcome) error) error {
+func runLargePath(ctx workflow.Context, agentCtx workflow.Context, devCtx workflow.Context, in IssueInput, a IssueAnalysis, est EstimateResult, info *workflow.Info, route string, transition func(string), projectLabels func(string, int), finish func(CycleOutcome) error, claimReleased func() (bool, error), cancelledTerminal func(string) error) error {
 	transition(stateSplitting)
 	var split SplitResult
 	if err := workflow.ExecuteActivity(agentCtx, RunSplit, in, a, est).Get(agentCtx, &split); err != nil {
@@ -1029,6 +1045,13 @@ func runLargePath(ctx workflow.Context, agentCtx workflow.Context, devCtx workfl
 	}
 	if err := ValidateSplit(in.Lifecycle, split); err != nil {
 		return err // §36 fail-closed; bounded retry, never a mutation
+	}
+
+	// #141: never file child issues for a released claim.
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
 	}
 
 	// Idempotently create child issues (§8/§9/§24), guarded by DryRun.
@@ -1086,6 +1109,14 @@ func runLargePath(ctx workflow.Context, agentCtx workflow.Context, devCtx workfl
 				})
 			}
 		}
+	}
+
+	// #141: a child cycle can run for a long time; re-check before the parent
+	// closes a claim a human may have released while the children worked.
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
 	}
 
 	// All children complete → parent closes (completion gate is the follow-up).
@@ -1180,6 +1211,7 @@ func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, ou
 	// #84: fill the explicit three-outcome evidence (defaults to SKIPPED, never
 	// silently absent §40) and stamp the ordered conditions deterministically.
 	out = stampOutcome(out, workflow.Now(ctx))
+	out.DryRun = in.Lifecycle.DryRun // §42: evidence paths resolve from the record, not live config
 	// #88: pin the effective policy + resolved harness/model + task identity as a
 	// digest on every terminal outcome, so "same config, different result" is
 	// investigable from outcome.json.

@@ -553,6 +553,7 @@ func TestWorkflowLargeChildFailureBlocksParent(t *testing.T) {
 	env.OnActivity(EnsureIssueState, mock.Anything, mock.Anything).Return(nil)
 	// Child runs the real SMALL path but its RunDeveloper fails → child fails →
 	// parent must BLOCK (never silently continue).
+	mockOpenClaim(env)
 	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
 	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(DevelopResult{}, errors.New("dev failed"))
 	env.OnActivity(FetchPRHead, mock.Anything, mock.Anything).Return("headsha", nil)

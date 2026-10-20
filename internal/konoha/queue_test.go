@@ -446,7 +446,7 @@ func TestQueueItemEvidencePointers(t *testing.T) {
 	}
 
 	dry := queueItemFromCycle(queueCycle{
-		ID: "r-issue-5", Repo: "r", Issue: 5, State: stateFailed, HasOutcome: true, DryRun: true, At: now,
+		ID: "r-issue-5", Repo: "r", Issue: 5, State: stateFailed, HasOutcome: true, RecordedDryRun: true, At: now,
 	}, false)
 	if dry.Evidence != "dryrun/cycles/r-issue-5" {
 		t.Fatalf("dry-run Evidence = %q, want dryrun/cycles/r-issue-5", dry.Evidence)
@@ -458,5 +458,34 @@ func TestQueueItemEvidencePointers(t *testing.T) {
 	}, false)
 	if unrecorded.Evidence != "" {
 		t.Fatalf("unrecorded Evidence = %q, want empty", unrecorded.Evidence)
+	}
+}
+
+// #141: a finished cycle's evidence pointer comes from the RUN's recorded
+// dryRun flag, not today's repos.yaml — flipping dryRun must not repoint a
+// historical cycle at a directory that was never written.
+func TestQueueCycleEvidenceUsesRecordedDryRun(t *testing.T) {
+	store, err := NewEvidenceStore(EvidenceConfig{Dir: t.TempDir()}, &defaultRedactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := CycleOutcome{
+		WorkflowID: "r-issue-9", Owner: "acme", Repo: "r", Issue: 9,
+		TerminalState: stateFailed, DryRun: true,
+	}
+	b, _ := json.Marshal(o)
+	if err := store.Write(o.WorkflowID, evidenceOutcome, string(b), true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Live config says dryRun is OFF; the recorded run says it was ON.
+	d := &consoleData{store: store, repos: repoConfigMap([]RepoConfig{{Owner: "acme", Repo: "r"}})}
+	c, ok, err := d.queueCycleFor(context.Background(), "r-issue-9")
+	if err != nil || !ok {
+		t.Fatalf("queueCycleFor = %+v, %v, %v", c, ok, err)
+	}
+	item := queueItemFromCycle(c, false)
+	if item.Evidence != "dryrun/cycles/r-issue-9" {
+		t.Fatalf("Evidence = %q, want the recorded dry-run namespace", item.Evidence)
 	}
 }
