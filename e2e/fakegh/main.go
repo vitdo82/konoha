@@ -163,7 +163,8 @@ func handleIssue(args []string, s *store) {
 		s.save()
 		fmt.Printf("https://github.com/o/r/issues/%d\n", it.Number)
 	case "edit":
-		num := atoi(args[0])
+		// gh issue edit <num> -R o/r [--state|--add-label|--remove-label] ...
+		num := atoi(args[1])
 		idx := findIssue(s, num)
 		if idx < 0 {
 			os.Exit(1)

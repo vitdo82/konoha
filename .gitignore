@@ -3,7 +3,14 @@
 .env
 # go build ./... artifact from `make test`
 prreview
+# macOS Finder metadata
+.DS_Store
 # generated TS client tooling (npm)
 node_modules/
 # Docker Compose QA environment bind-mount state (#206)
 .qa/
+# agent worktrees staged by the developer activity (§4.4)
+.konoha/
+# local-only notes (not part of the repo)
+COMPARISON.local.md
+BUSINESS.local.md
