@@ -1,0 +1,32 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  sign-off:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify every commit carries a DCO sign-off
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          missing=0
+          while read -r sha; do
+            [ -n "$sha" ] || continue
+            if ! git log -1 --format=%B "$sha" |
+                 grep -Eq '^Signed-off-by: .+ <[^<>@[:space:]]+@[^<>@[:space:]]+>$'; then
+              echo "::error::commit $sha has no valid 'Signed-off-by:' line (see CONTRIBUTING.md)"
+              missing=1
+            fi
+          # HEAD is the PR merge commit, so the PR's commits are always present
+          # even when the branch lives in a fork.
+          done < <(git rev-list --no-merges "$base..HEAD")
+          exit "$missing"

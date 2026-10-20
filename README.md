@@ -1326,3 +1326,20 @@ prints the §56 grooming schedule inputs.
 ## Add a repo
 
 Add one entry to `configs/repos.yaml`, then `./scripts/apply.sh`.
+
+## Contributing
+
+Contributions require a DCO sign-off (`git commit -s`); the pull-request check
+fails without one. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+loop, the sign-off process, and the rules this codebase enforces.
+
+## License
+
+Konoha is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for
+the full terms and [NOTICE](NOTICE) for attribution.
+
+The repository is the open-source core. Paid add-ons (hosted multi-tenant
+control plane, SSO/RBAC, hosted audit export, enterprise support) are separate
+and consume the core through its CLI, HTTP API, and configuration. The
+classification of every directory, the layout rules, and the DCO-vs-CLA
+consequence are recorded in [docs/licensing.md](docs/licensing.md).

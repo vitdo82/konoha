@@ -33,6 +33,12 @@ GitHub-credential rule, local evidence-file permissions, and the §55 audit, eac
 mapped to its test — lives in `docs/security-console.md` (#111). It is
 **documentation plus doc-enforced assertions**: no production behavior changed.
 
+Licensing / open-core boundary — the Apache-2.0 license, the DCO (no CLA yet),
+the OSS-core vs commercial-add-on classification, and the doc-enforced
+`licensing_test.go` guard — lives in `docs/licensing.md` (#147). It is
+**documentation plus doc-enforced assertions**: no production behavior changed,
+and the commercial add-on is a separate module that never imports `internal/`.
+
 Non-goals decision record — the ESF-vs-Konoha **hard non-goals** (sandbox, web
 UI, OpenTelemetry, enforced egress, speculative fan-out) and the caveated
 features that are implementable with stated boundaries (host resource ceilings,
