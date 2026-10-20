@@ -467,6 +467,36 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		})
 	}
 
+	// claimReleased is the #141 claim-release checkpoint: a human closing the
+	// issue (or labeling it duplicate/wontfix/invalid) stops the cycle before a
+	// GitHub mutation. Skipped under §42 — a shadow cycle publishes nothing, so
+	// there is nothing to prevent.
+	claimReleased := func() (bool, error) {
+		if in.Lifecycle.DryRun {
+			return false, nil
+		}
+		var snap IssueSnapshot
+		if err := workflow.ExecuteActivity(ctx, FetchIssueSnapshot, in).Get(ctx, &snap); err != nil {
+			return false, err // §40: an unreadable claim never proceeds to a mutation
+		}
+		return releasedClaim(snap.State, snap.Labels, in.Lifecycle.Reconcile), nil
+	}
+
+	// cancelledTerminal records a CANCELLED outcome: the run stopped because its
+	// claim was released, not because anything failed (§40).
+	cancelledTerminal := func(reason string) error {
+		transition(stateCancelled)
+		projectLabels(stateCancelled, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: info.WorkflowExecution.ID, Issue: in.IssueNum,
+			Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState:    stateCancelled,
+			EscalationReason: reason,
+			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
 	// dev is the latest development/repair result; declared before gateStep so a
 	// §108 request-changes rework at the publish gate can repair on top of it and
 	// loop back to re-gate.
@@ -567,6 +597,13 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	if dev.Blocked {
 		// #84: an agent-reported block is not a failed attempt — route to human.
 		return blockedTerminal(dev.BlockedReason)
+	}
+
+	// -- #141 claim-release checkpoint: never publish into a released issue --
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
 	}
 
 	// -- §20 risk gate before any GitHub mutation --
@@ -910,6 +947,13 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 		return escalateTerminal(reasonApprovalDenied)
 	} else if !ok {
 		return nil
+	}
+	// -- #141 claim-release checkpoint: a PR opened before the issue was closed
+	// is left for a human, never merged into a released claim --
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
 	}
 	transition(stateMerging)
 	status.setStep("merge")

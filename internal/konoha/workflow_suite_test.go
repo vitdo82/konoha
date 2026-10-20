@@ -49,7 +49,15 @@ func newCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnviro
 func mockCycleEnv(t *testing.T, est EstimateResult) *testsuite.TestWorkflowEnvironment {
 	env := newCycleEnv(t, est)
 	mockCleanup(env)
+	mockOpenClaim(env)
 	return env
+}
+
+// mockOpenClaim stubs the #141 claim-release checkpoint with a live claim, so a
+// test that is not about reconciliation proceeds through publish and merge.
+func mockOpenClaim(env *testsuite.TestWorkflowEnvironment) {
+	env.OnActivity(FetchIssueSnapshot, mock.Anything, mock.Anything).Return(
+		IssueSnapshot{State: "open", Labels: []string{labelManaged}}, nil)
 }
 
 // mockCleanup stubs the #93 teardown activity (nothing to remove in tests that
@@ -85,6 +93,7 @@ func mockSmallPath(env *testsuite.TestWorkflowEnvironment) *smallPathHooks {
 // failure).
 func mockSmallPathWith(env *testsuite.TestWorkflowEnvironment, ci CIStatus, ciErr error, merged MergeResult, mergeErr error) *smallPathHooks {
 	h := &smallPathHooks{}
+	mockOpenClaim(env) // #141: the SMALL path runs the claim checkpoint before publish/merge
 	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
 	env.OnActivity(RunDeveloper, mock.Anything, mock.Anything).Return(func(_ context.Context, in DevelopRequest) (DevelopResult, error) {
 		createClaimedWorktree(in) // #93: the real activity would leave this for workflow teardown

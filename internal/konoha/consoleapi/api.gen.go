@@ -357,19 +357,22 @@ type QueueActionView struct {
 
 // QueueItem defines model for QueueItem.
 type QueueItem struct {
-	Actions              []QueueActionView `json:"actions"`
-	At                   *time.Time        `json:"at,omitempty"`
-	Attempt              *int              `json:"attempt,omitempty"`
-	DryRun               *bool             `json:"dryRun,omitempty"`
-	Id                   string            `json:"id"`
-	Interrupted          *bool             `json:"interrupted,omitempty"`
-	Issue                *int              `json:"issue,omitempty"`
-	Owner                *string           `json:"owner,omitempty"`
-	Reason               string            `json:"reason"`
-	Repo                 *string           `json:"repo,omitempty"`
-	RequiresConfirmation *bool             `json:"requiresConfirmation,omitempty"`
-	Running              *bool             `json:"running,omitempty"`
-	State                string            `json:"state"`
+	Actions []QueueActionView `json:"actions"`
+	At      *time.Time        `json:"at,omitempty"`
+	Attempt *int              `json:"attempt,omitempty"`
+	DryRun  *bool             `json:"dryRun,omitempty"`
+
+	// Evidence Store-relative evidence directory for the cycle (#141); absent until an outcome is recorded.
+	Evidence             *string `json:"evidence,omitempty"`
+	Id                   string  `json:"id"`
+	Interrupted          *bool   `json:"interrupted,omitempty"`
+	Issue                *int    `json:"issue,omitempty"`
+	Owner                *string `json:"owner,omitempty"`
+	Reason               string  `json:"reason"`
+	Repo                 *string `json:"repo,omitempty"`
+	RequiresConfirmation *bool   `json:"requiresConfirmation,omitempty"`
+	Running              *bool   `json:"running,omitempty"`
+	State                string  `json:"state"`
 }
 
 // QueueView defines model for QueueView.

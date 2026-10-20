@@ -98,6 +98,7 @@ type QueueItem struct {
 	Attempt              int               `json:"attempt,omitempty"`
 	RequiresConfirmation bool              `json:"requiresConfirmation,omitempty"`
 	DryRun               bool              `json:"dryRun,omitempty"`
+	Evidence             string            `json:"evidence,omitempty"` // #141: store-relative evidence dir (empty = none recorded yet)
 	Actions              []QueueActionView `json:"actions"`
 	At                   time.Time         `json:"at,omitempty"`
 }
@@ -223,6 +224,20 @@ func queueActionsFor(reason string, running, sessionAvailable bool) []QueueActio
 	return out
 }
 
+// cycleEvidencePointer is the store-relative evidence directory for a cycle
+// (#141), emitted only when an outcome was recorded — the projection never
+// guesses a path for a cycle that may not have written anything. Honors the
+// §42 dry-run namespace.
+func cycleEvidencePointer(c queueCycle) string {
+	if !c.HasOutcome {
+		return ""
+	}
+	if c.DryRun {
+		return "dryrun/cycles/" + c.ID
+	}
+	return "cycles/" + c.ID
+}
+
 // queueItemFromCycle projects one classified cycle to a queue item. Pure.
 func queueItemFromCycle(c queueCycle, sessionAvailable bool) QueueItem {
 	reason, _ := attentionReason(c)
@@ -230,7 +245,7 @@ func queueItemFromCycle(c queueCycle, sessionAvailable bool) QueueItem {
 		ID: c.ID, Owner: c.Owner, Repo: c.Repo, Issue: c.Issue,
 		State: c.State, Reason: reason, Running: c.Running, Interrupted: c.Interrupted,
 		Attempt: c.Attempt, RequiresConfirmation: reason == queueReasonInterrupted,
-		DryRun: c.DryRun, Actions: queueActionsFor(reason, c.Running, sessionAvailable), At: c.At,
+		DryRun: c.DryRun, Evidence: cycleEvidencePointer(c), Actions: queueActionsFor(reason, c.Running, sessionAvailable), At: c.At,
 	}
 }
 

@@ -48,6 +48,7 @@ type LifecycleConfig struct {
 	Approval                      ApprovalConfig    `yaml:"approval" json:"approval,omitempty"`
 	Audit                         AuditConfig       `yaml:"audit" json:"audit,omitempty"`
 	Publish                       PublishConfig     `yaml:"publish" json:"publish,omitempty"`             // #115 PR-description policy
+	Reconcile                     ReconcileConfig   `yaml:"reconcile" json:"reconcile,omitempty"`         // #141 claim release vs tracker state
 	Validation                    []ValidationGate  `yaml:"validation" json:"validation,omitempty"`       // §26 structured argv gates
 	ValidationCmd                 string            `yaml:"validationCmd" json:"validationCmd,omitempty"` // §26 legacy shell-string fallback; mutually exclusive with validation
 	Limits                        *LimitsConfig     `yaml:"limits" json:"limits,omitempty"`               // #102 per-repo host resource ceilings (nil = global konoha.yaml limits)
@@ -155,6 +156,13 @@ type MergeConfig struct {
 // deterministic body, so the PR still opens. The body is evidence only.
 type PublishConfig struct {
 	AIDescription bool `yaml:"aiDescription" json:"aiDescription,omitempty"`
+}
+
+// ReconcileConfig is the per-repo #141 claim-release policy. A run whose issue
+// carries one of ReleasedLabels is stopped before publish and before merge;
+// GitHub labels are applied by humans, so the list is operator-supplied.
+type ReconcileConfig struct {
+	ReleasedLabels []string `yaml:"releasedLabels" json:"releasedLabels,omitempty"`
 }
 
 // Autonomy is the §33 autonomy block.

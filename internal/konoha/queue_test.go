@@ -314,6 +314,7 @@ func TestWorkflowCancelRecordsCancelledTerminal(t *testing.T) {
 	t.Cleanup(func() { appCfg = saved })
 
 	env := newCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockOpenClaim(env)
 	env.RegisterActivity(WriteCycleEvidence) // real outcome writer
 	env.OnActivity(FetchIssueLabels, mock.Anything, mock.Anything).Return([]string{"enhancement"}, nil)
 	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(nil)
@@ -429,4 +430,33 @@ func TestConsoleQueueEndpoints(t *testing.T) {
 		t.Fatalf("disabled queue = %d, want 501", res.StatusCode)
 	}
 	res.Body.Close()
+}
+
+// #141/AC3: the debug surface points at the cycle's recorded evidence, so an
+// operator can go from a queue item to the artifacts without guessing a path.
+// The pointer is only emitted where artifacts are known to exist (a recorded
+// outcome), and it honors the §42 dry-run namespace.
+func TestQueueItemEvidencePointers(t *testing.T) {
+	now := time.Now().UTC()
+	recorded := queueItemFromCycle(queueCycle{
+		ID: "r-issue-4", Repo: "r", Issue: 4, State: stateHumanRequired, HasOutcome: true, At: now,
+	}, false)
+	if recorded.Evidence != "cycles/r-issue-4" {
+		t.Fatalf("Evidence = %q, want cycles/r-issue-4", recorded.Evidence)
+	}
+
+	dry := queueItemFromCycle(queueCycle{
+		ID: "r-issue-5", Repo: "r", Issue: 5, State: stateFailed, HasOutcome: true, DryRun: true, At: now,
+	}, false)
+	if dry.Evidence != "dryrun/cycles/r-issue-5" {
+		t.Fatalf("dry-run Evidence = %q, want dryrun/cycles/r-issue-5", dry.Evidence)
+	}
+
+	// A running cycle with no recorded outcome yet: no pointer, never a guess.
+	unrecorded := queueItemFromCycle(queueCycle{
+		ID: "r-issue-6", Repo: "r", Issue: 6, State: stateBlocked, Running: true, At: now,
+	}, false)
+	if unrecorded.Evidence != "" {
+		t.Fatalf("unrecorded Evidence = %q, want empty", unrecorded.Evidence)
+	}
 }

@@ -261,6 +261,7 @@ func TestWorkflowCleanupRecordedInOutcome(t *testing.T) {
 	t.Cleanup(func() { appCfg = saved })
 
 	env := newCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockOpenClaim(env)
 	mockSmallPath(env)
 	env.RegisterActivity(CleanupWorktree) // real teardown
 	env.RegisterActivity(WriteCycleEvidence)
@@ -313,6 +314,7 @@ func TestWorkflowCancellationStillCleansWorktree(t *testing.T) {
 	dir := mkOwnedWorktree(t, ctx, repoPath, "r", testIssue, wfID)
 
 	env := newCycleEnv(t, EstimateResult{Complexity: 3, Confidence: "high"})
+	mockOpenClaim(env)
 	env.OnActivity(ApplyIssueLabels, mock.Anything, mock.Anything).Return(nil)
 	env.OnActivity(EnsureManagedNote, mock.Anything, mock.Anything).Return(nil)
 	// The developer hangs on the workflow clock so the delayed cancel wins.

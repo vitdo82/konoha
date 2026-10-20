@@ -370,6 +370,30 @@ func EvaluateClosePolicy(lc LifecycleConfig, c CompletionCheck, paths, labels []
 	}
 }
 
+// releasedClaim reports whether an issue has released its run's claim (#141):
+// it is no longer open, or a human applied one of the configured release labels
+// (default duplicate/wontfix/invalid). Both signals are explicit, so a missing
+// label or an empty state never stops a healthy run — the caller fails closed on
+// a fetch error instead of guessing (§40). Case-sensitive: GitHub renders a
+// label as it was created, so an exact match is the strict reading.
+func releasedClaim(state string, labels []string, cfg ReconcileConfig) bool {
+	if state != "" && !strings.EqualFold(state, "open") {
+		return true
+	}
+	release := cfg.ReleasedLabels
+	if len(release) == 0 {
+		release = defaultReleasedLabels
+	}
+	for _, l := range labels {
+		for _, r := range release {
+			if l == r {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // RepairLoopDecision is the §16 verdict after a REQUEST_CHANGES review: either
 // another repair attempt is Allowed, or the per-issue attempt cap is reached so
 // the workflow must Escalate to the §17 AI diagnosis path.
@@ -528,3 +552,7 @@ func ApplyDiagnosis(d DiagnosisResult) (DiagnosisTransition, error) {
 	}
 	return DiagnosisTransition{Human: true}, nil // unreachable; validator guarantees membership
 }
+
+// defaultReleasedLabels are the human-applied labels that release a claim when
+// lifecycle.reconcile.releasedLabels is unset (#141).
+var defaultReleasedLabels = []string{"duplicate", "wontfix", "invalid"}

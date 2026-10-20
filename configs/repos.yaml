@@ -35,6 +35,11 @@
 #     preGate is on, each listed step (publish|merge|deploy; empty = all) waits
 #     for a `<!-- konoha-decision: approve -->` within poGateTimeout; deny →
 #     HUMAN_REQUIRED, timeout → BLOCKED (never a silent proceed)
+#   - reconcile: {releasedLabels}: #141 claim release. A run whose issue is closed
+#     or carries one of releasedLabels (default duplicate, wontfix, invalid)
+#     reaches CANCELLED before publish and before merge — no PR, no merge. The
+#     closing `issues.closed` webhook cancels the run promptly; the workflow's own
+#     checkpoint is the backstop when webhooks are off. A dryRun cycle is skipped.
 #   - audit: {enabled, sink}: §55 append-only JSONL audit of every gated decision
 #     (sink required when enabled, and required whenever approval.preGate is on);
 #     fail-closed on a write error

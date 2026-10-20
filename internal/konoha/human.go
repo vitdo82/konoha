@@ -32,6 +32,7 @@ const (
 	reasonDeployFailed             = "deploy_failed"   // §51: post-deploy verification failed
 	reasonApprovalDenied           = "approval_denied" // §55: human denied the pre-execution approval gate
 	reasonAgentBlocked             = "agent_blocked"   // #84: agent reported it cannot proceed / needs input
+	reasonClaimReleased            = "claim_released"  // #141: issue closed or release-labeled mid-run
 )
 
 func validHumanReason(r string) bool {
