@@ -74,8 +74,8 @@ func (r RuntimeConfig) validate() error {
 	default:
 		return fmt.Errorf("runtime.mode: %q must be temporal or local", r.Mode)
 	}
-	if d, err := time.ParseDuration(strings.TrimSpace(r.Local.SweepInterval)); err != nil || d <= 0 {
-		return fmt.Errorf("runtime.local.sweepInterval %q must be a positive duration", r.Local.SweepInterval)
+	if d, err := time.ParseDuration(strings.TrimSpace(r.Local.SweepInterval)); err != nil || d < time.Second {
+		return fmt.Errorf("runtime.local.sweepInterval %q must be a duration >= 1s", r.Local.SweepInterval)
 	}
 	if d, err := time.ParseDuration(strings.TrimSpace(r.Local.ApprovalWait)); err != nil || d <= 0 {
 		return fmt.Errorf("runtime.local.approvalWait %q must be a positive duration", r.Local.ApprovalWait)

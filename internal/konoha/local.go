@@ -106,7 +106,7 @@ func localCycleID(in IssueInput) string {
 // retryPolicyFor contract. An agent class stays at one attempt (never replay an
 // LLM), a deterministic class at one (never double-count), infrastructure and
 // verification retry with backoff.
-func (r *localRuntime) call(ctx context.Context, c retryClass, op func() error) error {
+func (r *localRuntime) call(ctx context.Context, c retryClass, op func(context.Context) error) error {
 	p := retryPolicyFor(c)
 	attempts := 1
 	interval := time.Second
@@ -118,9 +118,17 @@ func (r *localRuntime) call(ctx context.Context, c retryClass, op func() error) 
 			interval = p.InitialInterval
 		}
 	}
+	// #212: local mode has no Temporal activity window, so bound every call from
+	// the same worker config the worker would use. A hung child then fails the
+	// cycle instead of blocking the sequential loop forever.
+	if timeout := localCallTimeout(c); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	var err error
 	for i := 0; i < attempts; i++ {
-		if err = op(); err == nil {
+		if err = op(ctx); err == nil {
 			return nil
 		}
 		if i == attempts-1 {
@@ -139,6 +147,16 @@ func (r *localRuntime) call(ctx context.Context, c retryClass, op func() error) 
 	return err
 }
 
+// localCallTimeout maps the retry class to the worker window Temporal would
+// enforce. Agent calls get the dev/repair window; the rest get start-to-close
+// (the CI gate is additionally bounded by merge.ciMaxWait inside WaitForCI).
+func localCallTimeout(c retryClass) time.Duration {
+	if c == retryAgent {
+		return appCfg.Worker.devWindow()
+	}
+	return appCfg.Worker.startToClose()
+}
+
 // localRetryWait is the backoff sleep seam (tests shrink it without waiting).
 var localRetryWait = func(ctx context.Context, d time.Duration) error {
 	select {
@@ -150,10 +168,10 @@ var localRetryWait = func(ctx context.Context, d time.Duration) error {
 }
 
 // callValue is call for a value-returning activity.
-func callValue[T any](r *localRuntime, ctx context.Context, c retryClass, op func() (T, error)) (T, error) {
+func callValue[T any](r *localRuntime, ctx context.Context, c retryClass, op func(context.Context) (T, error)) (T, error) {
 	var out T
-	err := r.call(ctx, c, func() error {
-		v, e := op()
+	err := r.call(ctx, c, func(cctx context.Context) error {
+		v, e := op(cctx)
 		if e != nil {
 			return e
 		}
@@ -166,7 +184,14 @@ func callValue[T any](r *localRuntime, ctx context.Context, c retryClass, op fun
 // localLogger adapts r.logf to the narrow §39 workflowLogger surface.
 type localLogger func(string, ...interface{})
 
-func (f localLogger) Info(msg string, kv ...interface{}) { f("%s %v", msg, kv) }
+func (f localLogger) Info(msg string, kv ...interface{}) {
+	var b strings.Builder
+	b.WriteString(msg)
+	for i := 0; i+1 < len(kv); i += 2 {
+		fmt.Fprintf(&b, " %v=%v", kv[i], kv[i+1])
+	}
+	f("%s", b.String())
+}
 
 // runCycle executes one SMALL-path cycle. Every best-effort write (evidence,
 // lineage, change, labels, managed note) logs and continues; a failed worktree
@@ -189,7 +214,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 	writeEvidence := func(req EvidenceRequest) {
 		req.CycleID = id
 		req.DryRun = in.Lifecycle.DryRun
-		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.writeEvidence(ctx, req) }); err != nil {
+		if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.writeEvidence(c, req) }); err != nil {
 			if evidenceErr == "" {
 				evidenceErr = err.Error()
 			}
@@ -198,7 +223,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 	}
 	recordActivation := func(act LineageActivation) {
 		req := ActivationRequest{Owner: in.Owner, Repo: in.Repo, Issue: in.IssueNum, Activation: act, DryRun: in.Lifecycle.DryRun}
-		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.recordActivation(ctx, req) }); err != nil {
+		if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.recordActivation(c, req) }); err != nil {
 			r.logf("local: lineage activation write failed (non-fatal): %v", err)
 		}
 	}
@@ -206,7 +231,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		req.Owner, req.Repo, req.Issue = in.Owner, in.Repo, in.IssueNum
 		req.WorkflowID = id
 		req.DryRun = in.Lifecycle.DryRun
-		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.recordChange(ctx, req) }); err != nil {
+		if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.recordChange(c, req) }); err != nil {
 			r.logf("local: change record write failed (non-fatal): %v", err)
 		}
 	}
@@ -215,7 +240,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 			return
 		}
 		req := LabelsRequest{Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, Labels: ProjectLabels(in.Lifecycle, s, c, true)}
-		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.applyLabels(ctx, req) }); err != nil {
+		if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.applyLabels(c, req) }); err != nil {
 			r.logf("local: label projection failed (non-fatal): %v", err)
 		}
 	}
@@ -235,9 +260,9 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		cleanupDone = true
 		var res CleanupResult
 		req := CleanupRequest{RepoPath: in.RepoPath, Repo: in.Repo, IssueNum: in.IssueNum, WorkflowID: id}
-		if err := r.call(context.Background(), retryDeterministic, func() error {
+		if err := r.call(context.Background(), retryDeterministic, func(c context.Context) error {
 			var e error
-			res, e = r.acts.cleanup(context.Background(), req)
+			res, e = r.acts.cleanup(c, req)
 			return e
 		}); err != nil {
 			res = CleanupResult{Attempted: true, Outcome: cleanupFailed, Error: Redact(err.Error())}
@@ -268,13 +293,13 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 
 	transition(stateAnalyzing)
 	var a IssueAnalysis
-	if a, err = callValue(r, ctx, retryAgent, func() (IssueAnalysis, error) { return r.acts.analyze(ctx, in) }); err != nil {
+	if a, err = callValue(r, ctx, retryAgent, func(c context.Context) (IssueAnalysis, error) { return r.acts.analyze(c, in) }); err != nil {
 		return err
 	}
 
 	transition(stateEstimating)
 	var est EstimateResult
-	if est, err = callValue(r, ctx, retryAgent, func() (EstimateResult, error) { return r.acts.estimate(ctx, in, a) }); err != nil {
+	if est, err = callValue(r, ctx, retryAgent, func(c context.Context) (EstimateResult, error) { return r.acts.estimate(c, in, a) }); err != nil {
 		return err
 	}
 	lastComplexity, lastConfidence = est.Complexity, est.Confidence
@@ -308,7 +333,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		if in.Lifecycle.DryRun {
 			return false, nil
 		}
-		snap, err := callValue(r, ctx, retryInfrastructure, func() (IssueSnapshot, error) { return r.acts.fetchSnapshot(ctx, in) })
+		snap, err := callValue(r, ctx, retryInfrastructure, func(c context.Context) (IssueSnapshot, error) { return r.acts.fetchSnapshot(c, in) })
 		if err != nil {
 			return false, err
 		}
@@ -362,12 +387,12 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 			Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, Step: step,
 			Timeout: r.cfg.Local.approvalWait().String(), DryRun: in.Lifecycle.DryRun,
 		}
-		res, err := callValue(r, ctx, retryInfrastructure, func() (ApprovalResult, error) { return r.acts.awaitApproval(ctx, req) })
+		res, err := callValue(r, ctx, retryInfrastructure, func(c context.Context) (ApprovalResult, error) { return r.acts.awaitApproval(c, req) })
 		if err != nil {
 			return false, nil, err
 		}
-		if err := r.call(ctx, retryDeterministic, func() error {
-			return r.acts.recordAudit(ctx, AuditRequest{Event: AuditEvent{
+		if err := r.call(ctx, retryDeterministic, func(c context.Context) error {
+			return r.acts.recordAudit(c, AuditRequest{Event: AuditEvent{
 				Owner: in.Owner, Repo: in.Repo, Issue: in.IssueNum, Step: step,
 				Actor: auditActor(res), Decision: auditDecision(res), Detail: res.Detail,
 			}, Config: in.Lifecycle.Audit})
@@ -407,7 +432,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		WorkflowID: id, Trigger: in.Trigger, Route: route, Complexity: est.Complexity,
 		Model: model, DryRun: in.Lifecycle.DryRun,
 	}
-	if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.ensureManagedNote(ctx, noteReq) }); err != nil {
+	if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.ensureManagedNote(c, noteReq) }); err != nil {
 		r.logf("local: managed claim note failed (non-fatal): %v", err)
 	}
 
@@ -433,7 +458,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 	// -- §4.4 DEVELOPING --
 	transition(stateDeveloping)
 	var dev DevelopResult
-	if dev, err = callValue(r, ctx, retryAgent, func() (DevelopResult, error) { return r.acts.developer(ctx, developReq) }); err != nil {
+	if dev, err = callValue(r, ctx, retryAgent, func(c context.Context) (DevelopResult, error) { return r.acts.developer(c, developReq) }); err != nil {
 		return err
 	}
 	lastAttempts++
@@ -460,7 +485,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		req := developReq
 		req.Model = repairModel.AgentModel()
 		rr := RepairRequest{Develop: req, Review: rev, PreviousCommit: previous}
-		res, err := callValue(r, ctx, retryAgent, func() (DevelopResult, error) { return r.acts.repair(ctx, rr) })
+		res, err := callValue(r, ctx, retryAgent, func(c context.Context) (DevelopResult, error) { return r.acts.repair(c, rr) })
 		if err != nil {
 			return DevelopResult{}, err
 		}
@@ -490,7 +515,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 
 	// -- §20 risk gate before any GitHub mutation --
 	var labels []string
-	if labels, err = callValue(r, ctx, retryInfrastructure, func() ([]string, error) { return r.acts.fetchLabels(ctx, in) }); err != nil {
+	if labels, err = callValue(r, ctx, retryInfrastructure, func(c context.Context) ([]string, error) { return r.acts.fetchLabels(c, in) }); err != nil {
 		return err
 	}
 	if rk := DetectHumanEscalation(in.Lifecycle, dev.ChangedFiles, labels); rk.Escalate {
@@ -572,7 +597,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 			DeveloperSummary: dev.Summary, Concerns: dev.Concerns, ChangedFiles: dev.ChangedFiles,
 			ValidationOutput: dev.ValidationOutput, Limits: in.Lifecycle.Limits, Tooling: in.Lifecycle.Tooling,
 		}
-		if desc, err := callValue(r, ctx, retryAgent, func() (PRDescriptionResult, error) { return r.acts.prDescription(ctx, descReq) }); err != nil {
+		if desc, err := callValue(r, ctx, retryAgent, func(c context.Context) (PRDescriptionResult, error) { return r.acts.prDescription(c, descReq) }); err != nil {
 			r.logf("local: PR description generation failed; using deterministic body (§25): %v", err)
 		} else if desc.Body != "" {
 			prBodyText = desc.Body
@@ -592,7 +617,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		DryRun:         in.Lifecycle.DryRun,
 	}
 	var pub PublishResult
-	if pub, err = callValue(r, ctx, retryInfrastructure, func() (PublishResult, error) { return r.acts.publish(ctx, pubIn) }); err != nil {
+	if pub, err = callValue(r, ctx, retryInfrastructure, func(c context.Context) (PublishResult, error) { return r.acts.publish(c, pubIn) }); err != nil {
 		return err
 	}
 
@@ -603,11 +628,11 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		transition(stateReviewing)
 		projectLabels(stateReviewing, est.Complexity)
 		headIn := PrInput{Owner: in.Owner, Repo: in.Repo, PrNum: pub.PRNumber}
-		headSha, err := callValue(r, ctx, retryInfrastructure, func() (string, error) { return r.acts.prHead(ctx, headIn) })
+		headSha, err := callValue(r, ctx, retryInfrastructure, func(c context.Context) (string, error) { return r.acts.prHead(c, headIn) })
 		if err != nil {
 			return err
 		}
-		diff, err := callValue(r, ctx, retryInfrastructure, func() (string, error) { return r.acts.prDiff(ctx, headIn) })
+		diff, err := callValue(r, ctx, retryInfrastructure, func(c context.Context) (string, error) { return r.acts.prDiff(c, headIn) })
 		if err != nil {
 			return err
 		}
@@ -630,7 +655,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 			Tooling:            in.Lifecycle.Tooling,
 		}
 		var rev ReviewResult
-		if rev, err = callValue(r, ctx, retryAgent, func() (ReviewResult, error) { return r.acts.reviewer(ctx, revReq) }); err != nil {
+		if rev, err = callValue(r, ctx, retryAgent, func(c context.Context) (ReviewResult, error) { return r.acts.reviewer(c, revReq) }); err != nil {
 			return err
 		}
 		lastReviewRounds++
@@ -678,7 +703,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 			return cancelledTerminal(reasonClaimReleased)
 		}
 		pubIn.CommitSHA = repaired.CommitSHA
-		if pub, err = callValue(r, ctx, retryInfrastructure, func() (PublishResult, error) { return r.acts.publish(ctx, pubIn) }); err != nil {
+		if pub, err = callValue(r, ctx, retryInfrastructure, func(c context.Context) (PublishResult, error) { return r.acts.publish(c, pubIn) }); err != nil {
 			return err
 		}
 		dev = repaired
@@ -702,7 +727,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		RequireCI: RequireCI(in.Lifecycle) && !in.Lifecycle.DryRun,
 		MaxWait:   in.Lifecycle.Merge.CIMaxWait,
 	}
-	if ci, err = callValue(r, ctx, retryVerification, func() (CIStatus, error) { return r.acts.waitCI(ctx, ciReq) }); err != nil || !ci.Green {
+	if ci, err = callValue(r, ctx, retryVerification, func(c context.Context) (CIStatus, error) { return r.acts.waitCI(c, ciReq) }); err != nil || !ci.Green {
 		return escalateTerminal(reasonCIFailed)
 	}
 
@@ -730,13 +755,13 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		ExpectedSHA: reviewedSHA,
 		DryRun:      in.Lifecycle.DryRun,
 	}
-	if merged, err = callValue(r, ctx, retryInfrastructure, func() (MergeResult, error) { return r.acts.merge(ctx, mergeReq) }); err != nil || (!merged.Merged && !merged.Skipped) {
+	if merged, err = callValue(r, ctx, retryInfrastructure, func(c context.Context) (MergeResult, error) { return r.acts.merge(c, mergeReq) }); err != nil || (!merged.Merged && !merged.Skipped) {
 		return escalateTerminal(reasonMergeFailed)
 	}
 
 	transition(stateClosed)
 	closeReq := StateRequest{Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, State: "closed", DryRun: in.Lifecycle.DryRun}
-	if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.ensureIssueState(ctx, closeReq) }); err != nil {
+	if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.ensureIssueState(c, closeReq) }); err != nil {
 		return err
 	}
 	projectLabels(stateClosed, est.Complexity)
@@ -753,19 +778,19 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 // §39 metrics (once), and the #97 change status. The §6 state stays authoritative.
 func (r *localRuntime) recordTerminal(ctx context.Context, in IssueInput, cycleID string, out CycleOutcome) error {
 	out = prepareTerminalOutcome(in, out, r.now())
-	if err := r.call(ctx, retryInfrastructure, func() error {
-		return r.acts.writeEvidence(ctx, EvidenceRequest{CycleID: cycleID, DryRun: in.Lifecycle.DryRun, Outcome: evidenceJSON(out)})
+	if err := r.call(ctx, retryInfrastructure, func(c context.Context) error {
+		return r.acts.writeEvidence(c, EvidenceRequest{CycleID: cycleID, DryRun: in.Lifecycle.DryRun, Outcome: evidenceJSON(out)})
 	}); err != nil {
 		if out.EvidenceError == "" {
 			out.EvidenceError = err.Error()
 		}
 		r.logf("local: outcome evidence write failed (non-fatal): %v", err)
 	}
-	if err := r.call(ctx, retryDeterministic, func() error { return r.acts.recordMetrics(ctx, out) }); err != nil {
+	if err := r.call(ctx, retryDeterministic, func(c context.Context) error { return r.acts.recordMetrics(c, out) }); err != nil {
 		return err
 	}
-	if err := r.call(ctx, retryDeterministic, func() error {
-		return r.acts.recordChange(ctx, ChangeRequest{
+	if err := r.call(ctx, retryDeterministic, func(c context.Context) error {
+		return r.acts.recordChange(c, ChangeRequest{
 			Owner: in.Owner, Repo: in.Repo, Issue: in.IssueNum,
 			WorkflowID: cycleID, State: out.TerminalState, DryRun: in.Lifecycle.DryRun,
 		})
@@ -838,6 +863,7 @@ func runLocal(args []string) error {
 	} else {
 		appCfg = app
 	}
+	applyEnvOverrides()
 	if appCfg.Runtime.mode() != runtimeModeLocal {
 		return fmt.Errorf("runtime.mode is %q; use the Temporal worker, or set runtime.mode: local for prbot run", appCfg.Runtime.mode())
 	}
@@ -885,7 +911,14 @@ func runLocal(args []string) error {
 func (r *localRuntime) run(ctx context.Context, repos []RepoConfig, opts localOptions) error {
 	once := opts.Once || r.cfg.Local.once()
 	for {
-		r.runSweep(ctx, repos, opts)
+		if err := r.runSweep(ctx, repos, opts); err != nil {
+			// An explicit --issue run is a one-shot operator action: surface the
+			// failure as a non-zero exit. A sweep keeps going (Temporal parity).
+			if opts.Issue > 0 {
+				return err
+			}
+			r.logf("local: sweep failed: %v", err)
+		}
 		if once {
 			return nil
 		}
@@ -900,7 +933,7 @@ func (r *localRuntime) run(ctx context.Context, repos []RepoConfig, opts localOp
 // runSweep lists unmanaged issues per repo and runs up to maxCycles sequentially.
 // One failing cycle is recorded as a failed terminal (never a silent drop, §40)
 // and does not abort the remaining cycles.
-func (r *localRuntime) runSweep(ctx context.Context, repos []RepoConfig, opts localOptions) {
+func (r *localRuntime) runSweep(ctx context.Context, repos []RepoConfig, opts localOptions) error {
 	for _, repo := range repos {
 		if opts.Repo != "" && repo.Repo != opts.Repo {
 			continue
@@ -912,11 +945,13 @@ func (r *localRuntime) runSweep(ctx context.Context, repos []RepoConfig, opts lo
 			}
 			if err := r.runCycle(context.Background(), in); err != nil {
 				r.recordFailure(context.Background(), in)
-				r.logf("local: cycle %s failed: %v", localCycleID(in), err)
+				return fmt.Errorf("cycle %s: %w", localCycleID(in), err)
 			}
-			return
+			return nil
 		}
-		pending, err := r.acts.listUnmanagedIssues(ctx, repoScope(repo))
+		pending, err := callValue(r, ctx, retryInfrastructure, func(c context.Context) ([]IssueInput, error) {
+			return r.acts.listUnmanagedIssues(c, repoScope(repo))
+		})
 		if err != nil {
 			r.logf("local: sweep %s failed: %v", repo.Repo, err)
 			continue
@@ -931,6 +966,7 @@ func (r *localRuntime) runSweep(ctx context.Context, repos []RepoConfig, opts lo
 			}
 		}
 	}
+	return nil
 }
 
 // recordFailure surfaces a cycle that errored before its terminal (§40/§44 #1):
@@ -940,7 +976,7 @@ func (r *localRuntime) recordFailure(ctx context.Context, in IssueInput) {
 	if !in.Lifecycle.DryRun {
 		req := LabelsRequest{Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum,
 			Labels: ProjectLabels(in.Lifecycle, stateBlocked, 0, true), DryRun: in.Lifecycle.DryRun}
-		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.applyLabels(ctx, req) }); err != nil {
+		if err := r.call(ctx, retryInfrastructure, func(c context.Context) error { return r.acts.applyLabels(c, req) }); err != nil {
 			r.logf("local: failure label projection failed (non-fatal): %v", err)
 		}
 	}

@@ -171,6 +171,12 @@ func TestScenarioLocalSmallHappyPath(t *testing.T) {
 		t.Fatalf("outcome evidence incomplete: %+v", outcome)
 	}
 
+	// #93: the worktree is torn down on the normal path too.
+	worktree := filepath.Join(filepath.Dir(fx.workdir), ".konoha", "r-issue-1")
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree %s still present after the cycle (err=%v)", worktree, err)
+	}
+
 	// §23: no GitHub credential reaches an agent in local mode either.
 	agentEnv, err := os.ReadFile(filepath.Join(openDir, "agent.env"))
 	if err != nil {

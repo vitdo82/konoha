@@ -2,6 +2,7 @@ package konoha
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -187,5 +188,63 @@ func TestLocalRunSigtermFinishesInflightCycle(t *testing.T) {
 	}
 	if got := f.localOutcome(t); got.TerminalState != stateClosed {
 		t.Fatalf("in-flight cycle terminal = %q, want CLOSED", got.TerminalState)
+	}
+}
+
+// #212: an explicit --issue run surfaces a failed cycle as a non-zero exit and
+// still records the failed terminal.
+func TestLocalRunIssueFailureExitsNonZero(t *testing.T) {
+	withLocalAppCfg(t)
+	writeLocalRunConfig(t, true, 1)
+	f := useLocalFakes(t)
+	f.acts.developer = func(context.Context, DevelopRequest) (DevelopResult, error) {
+		return DevelopResult{}, context.DeadlineExceeded
+	}
+	if err := runLocal([]string{"--once", "--repo", "r", "--issue", "7"}); err == nil {
+		t.Fatal("a failed --issue cycle must exit non-zero")
+	}
+	out := f.localOutcome(t)
+	if out.TerminalState != stateBlocked || !out.HumanRequired {
+		t.Fatalf("failure terminal = %q humanRequired=%v, want BLOCKED/true", out.TerminalState, out.HumanRequired)
+	}
+}
+
+// #212: a failed cycle in a sweep is recorded, not silently dropped, and does
+// not abort the remaining cycles.
+func TestLocalSweepFailureRecordsTerminal(t *testing.T) {
+	withLocalAppCfg(t)
+	writeLocalRunConfig(t, true, 2)
+	f := useLocalFakes(t)
+	f.acts.developer = func(_ context.Context, in DevelopRequest) (DevelopResult, error) {
+		f.develops++
+		return DevelopResult{}, context.DeadlineExceeded
+	}
+	f.acts.listUnmanagedIssues = func(context.Context, RepoScope) ([]IssueInput, error) {
+		return []IssueInput{
+			{Owner: "o", Repo: "r", IssueNum: 1, RepoPath: t.TempDir(), Trigger: "sweep", Lifecycle: localTestLifecycle()},
+			{Owner: "o", Repo: "r", IssueNum: 2, RepoPath: t.TempDir(), Trigger: "sweep", Lifecycle: localTestLifecycle()},
+		}, nil
+	}
+	if err := runLocal([]string{"--once", "--repo", "r"}); err != nil {
+		t.Fatalf("a sweep must not fail-fast: %v", err)
+	}
+	if f.develops != 2 {
+		t.Fatalf("cycles = %d, want 2 (siblings still run)", f.develops)
+	}
+	blocked := 0
+	for _, req := range f.evidence {
+		if req.Outcome == "" {
+			continue
+		}
+		var out CycleOutcome
+		if err := json.Unmarshal([]byte(req.Outcome), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.TerminalState == stateBlocked {
+			blocked++
+		}
+	}
+	if blocked != 2 {
+		t.Fatalf("blocked terminal records = %d, want 2", blocked)
 	}
 }

@@ -63,6 +63,7 @@ func TestRuntimeConfigLocalValidation(t *testing.T) {
 		"sweepInterval":  {"runtime:\n  local:\n    sweepInterval: nope\n", "sweepInterval"},
 		"approvalWait":   {"runtime:\n  local:\n    approvalWait: nope\n", "approvalWait"},
 		"emptySweep":     {"runtime:\n  local:\n    sweepInterval: ''\n", "sweepInterval"},
+		"tooFast":        {"runtime:\n  local:\n    sweepInterval: 1ms\n", "sweepInterval"},
 		"negativeCycles": {"runtime:\n  local:\n    maxCycles: -1\n", "maxCycles"},
 	}
 	for name, tc := range cases {

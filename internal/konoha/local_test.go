@@ -186,7 +186,7 @@ func TestLocalCallRetryClasses(t *testing.T) {
 	rt := newLocalRuntime(appCfg, f.acts)
 
 	attempts := 0
-	err := rt.call(context.Background(), retryInfrastructure, func() error {
+	err := rt.call(context.Background(), retryInfrastructure, func(context.Context) error {
 		attempts++
 		if attempts < 3 {
 			return context.DeadlineExceeded
@@ -198,7 +198,7 @@ func TestLocalCallRetryClasses(t *testing.T) {
 	}
 
 	attempts = 0
-	if err := rt.call(context.Background(), retryAgent, func() error {
+	if err := rt.call(context.Background(), retryAgent, func(context.Context) error {
 		attempts++
 		return context.DeadlineExceeded
 	}); err == nil || attempts != 1 {
@@ -206,7 +206,7 @@ func TestLocalCallRetryClasses(t *testing.T) {
 	}
 
 	attempts = 0
-	if err := rt.call(context.Background(), retryDeterministic, func() error {
+	if err := rt.call(context.Background(), retryDeterministic, func(context.Context) error {
 		attempts++
 		return context.DeadlineExceeded
 	}); err == nil || attempts != 1 {
@@ -214,7 +214,7 @@ func TestLocalCallRetryClasses(t *testing.T) {
 	}
 
 	attempts = 0
-	if err := rt.call(context.Background(), retryVerification, func() error {
+	if err := rt.call(context.Background(), retryVerification, func(context.Context) error {
 		attempts++
 		return context.DeadlineExceeded
 	}); err == nil || attempts != 3 {
@@ -465,5 +465,41 @@ func TestLocalPRDescriptionUsed(t *testing.T) {
 	}
 	if published.Body != "ai body" {
 		t.Fatalf("published body = %q, want the generated description", published.Body)
+	}
+}
+
+// #212: a hung activity is bounded by the worker window, like Temporal's
+// activity timeout, instead of blocking the sequential loop forever.
+func TestLocalCallTimeout(t *testing.T) {
+	withLocalAppCfg(t)
+	appCfg.Worker.DevTimeout = "20ms"
+	rt := newLocalRuntime(appCfg, newLocalFakes().acts)
+	start := time.Now()
+	err := rt.call(context.Background(), retryAgent, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err == nil {
+		t.Fatal("a hung agent call must time out")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("timeout took %v, want the 20ms window", time.Since(start))
+	}
+}
+
+// #212: an activity error mid-path still tears down the worktree.
+func TestLocalDeveloperErrorCleansUp(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.developer = func(context.Context, DevelopRequest) (DevelopResult, error) {
+		return DevelopResult{}, context.DeadlineExceeded
+	}
+	rt := newLocalRuntime(appCfg, f.acts)
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: 7, RepoPath: t.TempDir(), Lifecycle: localTestLifecycle()}
+	if err := rt.runCycle(context.Background(), in); err == nil {
+		t.Fatal("developer error must propagate")
+	}
+	if f.cleanups != 1 {
+		t.Fatalf("cleanups = %d, want 1 after a failed cycle", f.cleanups)
 	}
 }

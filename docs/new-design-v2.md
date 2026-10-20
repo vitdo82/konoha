@@ -2529,10 +2529,11 @@ policy engine.
 
 ### Authority model
 
-- One active runtime per cycle. Local and Temporal never run the same cycle
-  concurrently for the same repository; the deterministic cycle ID
-  `<repo>-issue-<n>` is shared, so evidence, lineage, change records, and
-  idempotent GitHub mutations converge.
+- One active runtime per cycle. Local and Temporal **must not** run the same
+  cycle concurrently for the same repository: they share the deterministic cycle
+  ID `<repo>-issue-<n>` and the worktree claim, and no cross-process lock is
+  implemented, so running both is an operator error. Evidence, lineage, change
+  records, and idempotent GitHub mutations converge otherwise.
 - The active runtime owns lifecycle state (§44 #1). Temporal history is the
   durable implementation of that record; local mode records the same evidence
   without replay.

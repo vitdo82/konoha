@@ -48,9 +48,16 @@ prbot run --repo ducklambda --issue 42   # exactly one cycle
 
 `prbot run` never dials `TEMPORAL_ADDRESS`, never starts schedules or the
 webhook server, and logs to stderr. A signal stops the loop; an in-flight cycle
-finishes before the process exits. Metrics stay opt-in (`METRICS_ADDR`); the
-console and MCP surfaces remain separate opt-in processes. `prbot doctor` skips
-the Temporal check in local mode.
+finishes before the process exits. A second signal is also captured (the
+service timeout in the unit file is the escalation path; SIGKILL is the last
+resort). Metrics stay opt-in (`METRICS_ADDR`); the console and MCP surfaces
+remain separate opt-in processes. `prbot doctor` skips the Temporal check in
+local mode.
+
+Run either the worker or `prbot run` for a given repository, never both: they
+share the cycle ID and worktree claim and there is no cross-process lock.
+`--issue` is a manual trigger, so it intentionally bypasses the sweep's
+`konoha:managed` filter.
 
 Temporal-only features are reported inactive once at startup; they are never
 silently treated as active.
