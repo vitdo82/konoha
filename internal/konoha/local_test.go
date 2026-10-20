@@ -134,7 +134,9 @@ func withLocalAppCfg(t *testing.T) {
 	saved := appCfg
 	appCfg = defaultAppConfig()
 	appCfg.Evidence.Dir = t.TempDir()
-	t.Cleanup(func() { appCfg = saved })
+	savedWait := localRetryWait
+	localRetryWait = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { appCfg = saved; localRetryWait = savedWait })
 }
 
 // #212: the local runtime runs the SMALL path in-process and records the same
@@ -180,9 +182,6 @@ func TestLocalRuntimeSmallHappyPath(t *testing.T) {
 // retries, an agent run never replays, verification retries three times.
 func TestLocalCallRetryClasses(t *testing.T) {
 	withLocalAppCfg(t)
-	savedWait := localRetryWait
-	localRetryWait = func(context.Context, time.Duration) error { return nil }
-	t.Cleanup(func() { localRetryWait = savedWait })
 	f := newLocalFakes()
 	rt := newLocalRuntime(appCfg, f.acts)
 
@@ -220,5 +219,251 @@ func TestLocalCallRetryClasses(t *testing.T) {
 		return context.DeadlineExceeded
 	}); err == nil || attempts != 3 {
 		t.Fatalf("verification attempts = %d err = %v, want 3/error", attempts, err)
+	}
+}
+
+// runLocalCycle executes one cycle against the fakes and returns its outcome.
+func runLocalCycle(t *testing.T, f *localFakes, lc LifecycleConfig) (CycleOutcome, error) {
+	t.Helper()
+	rt := newLocalRuntime(appCfg, f.acts)
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: 7, RepoPath: t.TempDir(), Trigger: "cli", Lifecycle: lc}
+	err := rt.runCycle(context.Background(), in)
+	if err != nil {
+		return CycleOutcome{}, err
+	}
+	return f.localOutcome(t), nil
+}
+
+// #212: LARGE ends at NOT_WIRED in local mode; no split/child/developer call.
+func TestLocalRouteLargeNotWired(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.estimate = func(context.Context, IssueInput, IssueAnalysis) (EstimateResult, error) {
+		return EstimateResult{Complexity: 5, Confidence: "high"}, nil
+	}
+	out, err := runLocalCycle(t, f, localTestLifecycle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateNotWired {
+		t.Fatalf("terminal = %q, want NOT_WIRED", out.TerminalState)
+	}
+	if f.develops != 0 || f.publishes != 0 {
+		t.Fatalf("LARGE must not develop/publish: dev=%d pub=%d", f.develops, f.publishes)
+	}
+}
+
+// #212: the bounded repair loop caps at maxDevReviewAttempts and blocks, never
+// treating REQUEST_CHANGES as success.
+func TestLocalRepairLoopCapBlocks(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.reviewer = func(context.Context, ReviewRequest) (ReviewResult, error) {
+		f.reviews++
+		return ReviewResult{Verdict: "REQUEST_CHANGES", Blocking: []string{"fix it"}, CommitSHA: "headsha"}, nil
+	}
+	lc := localTestLifecycle()
+	lc.MaxDevReviewAttempts = 2
+	out, err := runLocalCycle(t, f, lc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateBlocked {
+		t.Fatalf("terminal = %q, want BLOCKED", out.TerminalState)
+	}
+	if f.repairs != 1 || f.reviews != 2 || f.publishes != 2 || f.closes != 0 {
+		t.Fatalf("repair/reviews/publishes/closes = %d/%d/%d/%d, want 1/2/2/0",
+			f.repairs, f.reviews, f.publishes, f.closes)
+	}
+}
+
+// #212: the §20 risk gate escalates before any GitHub mutation.
+func TestLocalRiskGateEscalates(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.developer = func(_ context.Context, in DevelopRequest) (DevelopResult, error) {
+		f.develops++
+		return DevelopResult{CommitSHA: "devsha", ChangedFiles: []string{"infra/main.tf"}, Validated: true}, nil
+	}
+	lc := localTestLifecycle()
+	lc.Autonomy.HumanRequiredPaths = []string{"infra/**"}
+	out, err := runLocalCycle(t, f, lc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateHumanRequired || out.EscalationReason != reasonPolicyViolation {
+		t.Fatalf("terminal/reason = %q/%q, want HUMAN_REQUIRED/%s", out.TerminalState, out.EscalationReason, reasonPolicyViolation)
+	}
+	if f.publishes != 0 {
+		t.Fatalf("risk gate must suppress publish, got %d", f.publishes)
+	}
+}
+
+// #212: a §55 gate that never receives a decision blocks and writes evidence.
+func TestLocalApprovalTimeoutBlocks(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.awaitApproval = func(context.Context, ApprovalRequest) (ApprovalResult, error) {
+		return ApprovalResult{TimedOut: true}, nil
+	}
+	lc := localTestLifecycle()
+	lc.Approval = ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepPublish}}
+	out, err := runLocalCycle(t, f, lc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateBlocked {
+		t.Fatalf("terminal = %q, want BLOCKED", out.TerminalState)
+	}
+	if f.publishes != 0 {
+		t.Fatalf("timed-out gate must not publish, got %d", f.publishes)
+	}
+	if len(f.evidence) == 0 {
+		t.Fatal("a blocked gate must write terminal evidence")
+	}
+}
+
+// #212: a denied §55 gate routes to HUMAN_REQUIRED and never mutates.
+func TestLocalApprovalDenyHumanRequired(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.awaitApproval = func(context.Context, ApprovalRequest) (ApprovalResult, error) {
+		return ApprovalResult{Denied: true, Detail: "no"}, nil
+	}
+	lc := localTestLifecycle()
+	lc.Approval = ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepPublish}}
+	out, err := runLocalCycle(t, f, lc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateHumanRequired || out.EscalationReason != reasonApprovalDenied {
+		t.Fatalf("terminal/reason = %q/%q", out.TerminalState, out.EscalationReason)
+	}
+	if f.publishes != 0 {
+		t.Fatalf("denied gate must not publish, got %d", f.publishes)
+	}
+}
+
+// #212: a request-changes decision at the publish gate repairs with the human
+// feedback and re-gates, mirroring the workflow.
+func TestLocalApprovalReworkRepairs(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	calls := 0
+	f.acts.awaitApproval = func(context.Context, ApprovalRequest) (ApprovalResult, error) {
+		calls++
+		if calls == 1 {
+			return ApprovalResult{Rework: true, Feedback: "tighten the input check"}, nil
+		}
+		return ApprovalResult{Granted: true}, nil
+	}
+	lc := localTestLifecycle()
+	lc.Approval = ApprovalConfig{PreGate: true, RequiredSteps: []string{approvalStepPublish}}
+	out, err := runLocalCycle(t, f, lc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateClosed {
+		t.Fatalf("terminal = %q, want CLOSED", out.TerminalState)
+	}
+	if f.repairs != 1 || f.publishes != 1 || calls != 2 {
+		t.Fatalf("repairs/publishes/gate calls = %d/%d/%d, want 1/1/2", f.repairs, f.publishes, calls)
+	}
+}
+
+// #212: a non-green CI gate escalates and never merges/closes (§49).
+func TestLocalCIUnhealthyEscalates(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.waitCI = func(context.Context, CIRequest) (CIStatus, error) { return CIStatus{Green: false, Failed: true}, nil }
+	out, err := runLocalCycle(t, f, localTestLifecycle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateHumanRequired || out.EscalationReason != reasonCIFailed {
+		t.Fatalf("terminal/reason = %q/%q", out.TerminalState, out.EscalationReason)
+	}
+	if f.merges != 0 || f.closes != 0 {
+		t.Fatalf("red CI must not merge/close: %d/%d", f.merges, f.closes)
+	}
+}
+
+// #212: a merge failure escalates; the issue never closes without a merge.
+func TestLocalMergeFailureEscalates(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.merge = func(context.Context, MergeRequest) (MergeResult, error) {
+		return MergeResult{}, context.DeadlineExceeded
+	}
+	out, err := runLocalCycle(t, f, localTestLifecycle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateHumanRequired || out.EscalationReason != reasonMergeFailed {
+		t.Fatalf("terminal/reason = %q/%q", out.TerminalState, out.EscalationReason)
+	}
+	if f.closes != 0 {
+		t.Fatalf("merge failure must not close, got %d", f.closes)
+	}
+}
+
+// #212: a human-released claim cancels the run before any mutation (#141).
+func TestLocalClaimReleasedCancels(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.fetchSnapshot = func(context.Context, IssueInput) (IssueSnapshot, error) {
+		return IssueSnapshot{State: "closed"}, nil
+	}
+	out, err := runLocalCycle(t, f, localTestLifecycle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateCancelled || out.CancelReason != reasonClaimReleased {
+		t.Fatalf("terminal/cancel = %q/%q", out.TerminalState, out.CancelReason)
+	}
+	if f.publishes != 0 {
+		t.Fatalf("released claim must not publish, got %d", f.publishes)
+	}
+}
+
+// #212: an agent-reported block routes to the human path, never the repair loop.
+func TestLocalBlockedDeveloperHumanRequired(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.developer = func(context.Context, DevelopRequest) (DevelopResult, error) {
+		return DevelopResult{Blocked: true, BlockedReason: "needs input"}, nil
+	}
+	out, err := runLocalCycle(t, f, localTestLifecycle())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TerminalState != stateHumanRequired || out.EscalationReason != reasonAgentBlocked || out.AgentOutcome != agentOutcomeBlocked {
+		t.Fatalf("terminal/reason/agent = %q/%q/%q", out.TerminalState, out.EscalationReason, out.AgentOutcome)
+	}
+	if f.repairs != 0 || f.publishes != 0 {
+		t.Fatalf("blocked agent must not repair/publish: %d/%d", f.repairs, f.publishes)
+	}
+}
+
+// #212: the opt-in AI PR description feeds the published body (evidence only).
+func TestLocalPRDescriptionUsed(t *testing.T) {
+	withLocalAppCfg(t)
+	f := newLocalFakes()
+	f.acts.prDescription = func(context.Context, PRDescriptionRequest) (PRDescriptionResult, error) {
+		return PRDescriptionResult{Body: "ai body", Generated: true}, nil
+	}
+	var published PublishInput
+	f.acts.publish = func(_ context.Context, in PublishInput) (PublishResult, error) {
+		f.publishes++
+		published = in
+		return PublishResult{PRNumber: 101}, nil
+	}
+	lc := localTestLifecycle()
+	lc.Publish.AIDescription = true
+	if _, err := runLocalCycle(t, f, lc); err != nil {
+		t.Fatal(err)
+	}
+	if published.Body != "ai body" {
+		t.Fatalf("published body = %q, want the generated description", published.Body)
 	}
 }

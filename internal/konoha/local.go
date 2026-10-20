@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -195,6 +196,14 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 			r.logf("local: lineage activation write failed (non-fatal): %v", err)
 		}
 	}
+	recordChange := func(req ChangeRequest) {
+		req.Owner, req.Repo, req.Issue = in.Owner, in.Repo, in.IssueNum
+		req.WorkflowID = id
+		req.DryRun = in.Lifecycle.DryRun
+		if err := r.call(ctx, retryInfrastructure, func() error { return r.acts.recordChange(ctx, req) }); err != nil {
+			r.logf("local: change record write failed (non-fatal): %v", err)
+		}
+	}
 	projectLabels := func(s string, c int) {
 		if in.Lifecycle.DryRun {
 			return
@@ -284,8 +293,109 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		model = defaultAgentModel
 	}
 	devModel := resources.modelFor(stageDeveloper)
+	repairModel := resources.modelFor(stageRepair)
 	reviewModel := resources.modelFor(stageReviewer)
 	effHarness := effectiveHarnessName(in.Lifecycle.Harness)
+	// claimReleased is the #141 checkpoint: a closed/labeled issue stops the run
+	// before a GitHub mutation. A dryRun cycle publishes nothing, so it is skipped.
+	claimReleased := func() (bool, error) {
+		if in.Lifecycle.DryRun {
+			return false, nil
+		}
+		snap, err := callValue(r, ctx, retryInfrastructure, func() (IssueSnapshot, error) { return r.acts.fetchSnapshot(ctx, in) })
+		if err != nil {
+			return false, err
+		}
+		return releasedClaim(snap.State, snap.Labels, in.Lifecycle.Reconcile), nil
+	}
+	cancelledTerminal := func(reason string) error {
+		transition(stateCancelled)
+		projectLabels(stateCancelled, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateCancelled, CancelReason: reason,
+			Attempts: lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+	escalateTerminal := func(reason string) error {
+		transition(stateHumanRequired)
+		projectLabels(stateHumanRequired, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateHumanRequired, HumanRequired: true,
+			EscalationReason: reason,
+			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+	blockedTerminal := func(reason string) error {
+		transition(stateHumanRequired)
+		projectLabels(stateHumanRequired, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState:       stateHumanRequired,
+			HumanRequired:       true,
+			EscalationReason:    reasonAgentBlocked,
+			AgentOutcome:        agentOutcomeBlocked,
+			AgentMessage:        reason,
+			VerificationOutcome: verificationSkipped,
+			Attempts:            lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+	// gateStep enforces the §55 pre-execution gate with the local approvalWait.
+	gateStep := func(step string) (bool, *ApprovalResult, error) {
+		if !ApprovalRequired(in.Lifecycle, step) {
+			return true, nil, nil
+		}
+		transition(statePendingApproval)
+		projectLabels(statePendingApproval, est.Complexity)
+		recordChange(ChangeRequest{State: statePendingApproval})
+		req := ApprovalRequest{
+			Owner: in.Owner, Repo: in.Repo, Num: in.IssueNum, Step: step,
+			Timeout: r.cfg.Local.approvalWait().String(), DryRun: in.Lifecycle.DryRun,
+		}
+		res, err := callValue(r, ctx, retryInfrastructure, func() (ApprovalResult, error) { return r.acts.awaitApproval(ctx, req) })
+		if err != nil {
+			return false, nil, err
+		}
+		if err := r.call(ctx, retryDeterministic, func() error {
+			return r.acts.recordAudit(ctx, AuditRequest{Event: AuditEvent{
+				Owner: in.Owner, Repo: in.Repo, Issue: in.IssueNum, Step: step,
+				Actor: auditActor(res), Decision: auditDecision(res), Detail: res.Detail,
+			}, Config: in.Lifecycle.Audit})
+		}); err != nil {
+			return false, nil, err
+		}
+		if res.Granted || res.Skipped {
+			return true, nil, nil
+		}
+		if res.Rework {
+			return false, &res, nil
+		}
+		if res.Denied {
+			recordChange(ChangeRequest{ReworkNote: res.Detail})
+			transition(stateHumanRequired)
+			projectLabels(stateHumanRequired, est.Complexity)
+			return false, nil, finish(CycleOutcome{
+				WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+				TerminalState: stateHumanRequired, HumanRequired: true,
+				EscalationReason: reasonApprovalDenied,
+				Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
+			})
+		}
+		transition(stateBlocked)
+		projectLabels(stateBlocked, est.Complexity)
+		return false, nil, finish(CycleOutcome{
+			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateBlocked,
+			Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
 	noteReq := ManagedNoteRequest{
 		Owner: in.Owner, Repo: in.Repo, IssueNum: in.IssueNum,
 		WorkflowID: id, Trigger: in.Trigger, Route: route, Complexity: est.Complexity,
@@ -335,6 +445,115 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		TokensIn: dev.Usage.TokensIn, TokensOut: dev.Usage.TokensOut, CostUSD: dev.Usage.CostUSD,
 	})
 	writeAgentEvidence(writeEvidence, dev.Evidence, dev, dev.ValidationOutput)
+	if dev.Blocked {
+		return blockedTerminal(dev.BlockedReason)
+	}
+	// repairWith runs a fresh repair on top of the reviewed/previous commit and
+	// tracks it exactly like the workflow (usage, limits, lineage, evidence).
+	repairWith := func(previous string, rev ReviewResult, explanation string) (DevelopResult, error) {
+		req := developReq
+		req.Model = repairModel.AgentModel()
+		rr := RepairRequest{Develop: req, Review: rev, PreviousCommit: previous}
+		res, err := callValue(r, ctx, retryAgent, func() (DevelopResult, error) { return r.acts.repair(ctx, rr) })
+		if err != nil {
+			return DevelopResult{}, err
+		}
+		if res.Limits != nil {
+			limitsEv = res.Limits
+		}
+		usage.add(res.Usage)
+		agentOut, verifOut = agentOutcomeOf(res), verificationOutcomeOf(res)
+		verificationMutated = res.VerificationMutated
+		recordActivation(LineageActivation{
+			Attempt: lastAttempts, WorkflowID: fmt.Sprintf("%s-repair-%d", id, lastAttempts),
+			Reason: activationReasonRepair, Stage: stageRepair, Harness: effHarness, Model: repairModel.AgentModel(),
+			ModelDigest: repairModel.Digest, BaseSHA: res.BaseSHA, CommitSHA: res.CommitSHA,
+			Result: string(agentOut), ReworkNote: explanation,
+			TokensIn: res.Usage.TokensIn, TokensOut: res.Usage.TokensOut, CostUSD: res.Usage.CostUSD,
+		})
+		writeAgentEvidence(writeEvidence, res.Evidence, res, res.ValidationOutput)
+		return res, nil
+	}
+
+	// -- #141 claim checkpoint before any GitHub mutation --
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
+	}
+
+	// -- §20 risk gate before any GitHub mutation --
+	var labels []string
+	if labels, err = callValue(r, ctx, retryInfrastructure, func() ([]string, error) { return r.acts.fetchLabels(ctx, in) }); err != nil {
+		return err
+	}
+	if rk := DetectHumanEscalation(in.Lifecycle, dev.ChangedFiles, labels); rk.Escalate {
+		transition(stateHumanRequired)
+		projectLabels(stateHumanRequired, est.Complexity)
+		return finish(CycleOutcome{
+			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+			TerminalState: stateHumanRequired, HumanRequired: true,
+			EscalationReason: reasonPolicyViolation,
+			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
+		})
+	}
+
+	// -- §55 publish gate (a request-changes decision repairs and re-gates) --
+	for {
+		ok, rw, err := gateStep(approvalStepPublish)
+		if err != nil {
+			return err
+		}
+		if ok {
+			break
+		}
+		if rw == nil {
+			return nil // deny/timeout already recorded a terminal
+		}
+		if rl := EvaluateRepairLoop(in.Lifecycle, lastAttempts); !rl.Allowed {
+			transition(stateBlocked)
+			projectLabels(stateBlocked, est.Complexity)
+			return finish(CycleOutcome{
+				WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+				TerminalState: stateBlocked,
+				Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+			})
+		}
+		lastAttempts++
+		transition(stateChangesRequested)
+		projectLabels(stateChangesRequested, est.Complexity)
+		feedback := strings.TrimSpace(rw.Feedback)
+		if feedback == "" {
+			feedback = strings.TrimSpace(rw.Detail)
+		}
+		if feedback == "" {
+			feedback = "human requested changes at the publish gate"
+		}
+		recordChange(ChangeRequest{
+			ReworkNote: feedback,
+			Feedback: []ChangeFeedback{{
+				Key: fmt.Sprintf("%s/human-rework/%d", id, lastAttempts), Kind: feedbackKindReworkNote,
+				Body: feedback, At: r.now(), Author: "human",
+			}},
+		})
+		reworked, err := repairWith(dev.CommitSHA, ReviewResult{Verdict: "REQUEST_CHANGES", Blocking: reworkBlocking(feedback, rw.Comments)}, feedback)
+		if err != nil {
+			return err
+		}
+		if reworked.Blocked {
+			return blockedTerminal(reworked.BlockedReason)
+		}
+		dev = reworked
+	}
+
+	// -- #141 the gate can wait for a long time; re-check the claim --
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
+	}
 
 	// -- publish (idempotent PR, §25) --
 	prBodyText := prBody(in, a)
@@ -416,11 +635,47 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		e := evidenceOf(rev.Evidence)
 		writeEvidence(EvidenceRequest{Prompt: e.Prompt, Stdout: e.Stdout, Stderr: e.Stderr,
 			Result: evidenceResultJSON(rev), Diff: diff})
+		rework := ""
+		if rev.Verdict != "APPROVE" {
+			rework = reworkInstruction(rev)
+		}
+		recordChange(ChangeRequest{
+			Feedback:   reviewFeedback(id, lastReviewRounds, rev),
+			ReworkNote: rework,
+		})
 		if rev.Verdict == "APPROVE" {
 			approved = rev
 			break
 		}
-		return fmt.Errorf("local: reviewer requested changes (repair loop lands in #212 task 5)")
+		if rl := EvaluateRepairLoop(in.Lifecycle, lastAttempts); !rl.Allowed {
+			transition(stateBlocked)
+			projectLabels(stateBlocked, est.Complexity)
+			return finish(CycleOutcome{
+				WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
+				Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
+				TerminalState: stateBlocked,
+				Attempts:      lastAttempts, ReviewRounds: lastReviewRounds,
+			})
+		}
+		lastAttempts++
+		transition(stateChangesRequested)
+		repaired, err := repairWith(reviewedSHA, rev, rework)
+		if err != nil {
+			return err
+		}
+		if repaired.Blocked {
+			return blockedTerminal(repaired.BlockedReason)
+		}
+		if released, err := claimReleased(); err != nil {
+			return err
+		} else if released {
+			return cancelledTerminal(reasonClaimReleased)
+		}
+		pubIn.CommitSHA = repaired.CommitSHA
+		if pub, err = callValue(r, ctx, retryInfrastructure, func() (PublishResult, error) { return r.acts.publish(ctx, pubIn) }); err != nil {
+			return err
+		}
+		dev = repaired
 	}
 
 	// -- APPROVED → §49 CI gate + merge → CLOSED --
@@ -442,17 +697,25 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		MaxWait:   in.Lifecycle.Merge.CIMaxWait,
 	}
 	if ci, err = callValue(r, ctx, retryVerification, func() (CIStatus, error) { return r.acts.waitCI(ctx, ciReq) }); err != nil || !ci.Green {
-		transition(stateHumanRequired)
-		projectLabels(stateHumanRequired, est.Complexity)
-		return finish(CycleOutcome{
-			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
-			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
-			TerminalState:    stateHumanRequired,
-			HumanRequired:    true,
-			EscalationReason: reasonCIFailed,
-			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
-		})
+		return escalateTerminal(reasonCIFailed)
 	}
+
+	// §55: merge is gated before the merge mutation. A request-changes decision
+	// here has no in-place repair path, so it fails closed to a human.
+	if ok, rw, err := gateStep(approvalStepMerge); err != nil {
+		return err
+	} else if rw != nil {
+		recordChange(ChangeRequest{ReworkNote: rw.Feedback})
+		return escalateTerminal(reasonApprovalDenied)
+	} else if !ok {
+		return nil
+	}
+	if released, err := claimReleased(); err != nil {
+		return err
+	} else if released {
+		return cancelledTerminal(reasonClaimReleased)
+	}
+	transition(stateMerging)
 
 	var merged MergeResult
 	mergeReq := MergeRequest{
@@ -462,16 +725,7 @@ func (r *localRuntime) runCycle(ctx context.Context, in IssueInput) error {
 		DryRun:      in.Lifecycle.DryRun,
 	}
 	if merged, err = callValue(r, ctx, retryInfrastructure, func() (MergeResult, error) { return r.acts.merge(ctx, mergeReq) }); err != nil || (!merged.Merged && !merged.Skipped) {
-		transition(stateHumanRequired)
-		projectLabels(stateHumanRequired, est.Complexity)
-		return finish(CycleOutcome{
-			WorkflowID: id, Issue: in.IssueNum, Owner: in.Owner, Repo: in.Repo,
-			Route: route, Complexity: est.Complexity, Confidence: est.Confidence,
-			TerminalState:    stateHumanRequired,
-			HumanRequired:    true,
-			EscalationReason: reasonMergeFailed,
-			Attempts:         lastAttempts, ReviewRounds: lastReviewRounds,
-		})
+		return escalateTerminal(reasonMergeFailed)
 	}
 
 	transition(stateClosed)
