@@ -1,0 +1,10 @@
+Konoha
+Copyright 2026 Vitali R
+
+This product is licensed under the Apache License, Version 2.0. See LICENSE
+for the full terms.
+
+Third-party dependencies are not vendored in this repository. Each module
+listed in go.mod is distributed by its own authors under its own license;
+`go list -m -json all` reports the module set, and `go mod download` places
+each module's license file alongside its sources in the module cache.
