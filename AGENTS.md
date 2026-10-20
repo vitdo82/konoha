@@ -977,6 +977,24 @@ verification outcomes, conditions, usage — from `evidence.dir`; no Temporal; t
   <repo> <issue>` (joins change + recomputed lineage via pure
   `buildChangeView`/`changeViewJSON`, no Temporal). Never call
   `activity.GetLogger` in `RecordChange` (non-Temporal ctx panics).
+- `tui.go` owns the #143 terminal operator console (`prbot tui`): a
+  shell-native cockpit over the SAME records as the CLI (#99) and web console
+  (#105). It reads the evidence store for finished cycles and the #89 status
+  query for running ones (Temporal is best-effort, so `--once` and an offline
+  host still render), starts **no listener**, and reads **no** GitHub
+  credential. The list groups cycles with the existing `boardColumns`
+  projection (running / needs attention / human required / closed / failed); the
+  detail pane shows the authoritative §6 state, the separate #84
+  `agentOutcome`/`verificationOutcome`, the `outcomesConflict` flag, and the
+  ordered conditions. Panes reuse the #106 diff (`DiffView`), #107 artifact
+  preview (`artifactViews`/`previewContentType`; binary/oversize is reported
+  download-only, never rendered), and the #110 bounded agent-log tail
+  (`streamOutput`). Attach delegates to the #136/#144 session verb in
+  `queue.go`: with no provider it is reported `SKIPPED`, never a false success
+  (§40). `tuiView` and every per-pane renderer are PURE, so the tests need no
+  terminal; `runTUI` is dispatched in `cli.go` before the worker bootstrap and
+  renders one frame when stdin is not a TTY. Adding it renames no exported
+  activity/workflow func (no Temporal type-name change).
 - `console.go` owns the #105/#108 local review console: an opt-in, **loopback-only**
   HTTP server + embedded SPA (read + the #108 decisions mutation). `StartConsoleServer`
   (worker; no-op when `KONOHA_CONSOLE_ADDR` is unset) and the `prbot console`

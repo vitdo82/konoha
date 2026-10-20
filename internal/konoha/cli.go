@@ -129,6 +129,14 @@ func Main() {
 				log.Fatal(err)
 			}
 			return
+		case "tui":
+			// #143: terminal operator console. Dispatched BEFORE the worker
+			// bootstrap so this process reads no GitHub credential; runTUI loads
+			// konoha.yaml itself and reads the same evidence/status records.
+			if err := runTUI(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "token":
 			t, err := appToken(context.Background())
 			if err != nil {
