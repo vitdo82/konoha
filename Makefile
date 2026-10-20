@@ -54,6 +54,11 @@ qa:
 qa-down:
 	docker compose down -v --remove-orphans
 
+# Drive one scripted scenario in the running stack (see scripts/qa-scenario.sh):
+#   make qa-scenario SCENARIO=repair ISSUE=4
+qa-scenario:
+	./scripts/qa-scenario.sh $(SCENARIO) $(ISSUE)
+
 # Host-side readers over the bind-mounted evidence (run `make build` first). The
 # evidence root is relative to the worker CWD, so read from .qa/work.
 qa-describe:
