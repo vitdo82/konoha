@@ -297,56 +297,21 @@ func IssueCycleWorkflow(ctx workflow.Context, in IssueInput) error {
 	// with the tracked outcomes and any prior evidence-write failure.
 	finish := func(out CycleOutcome) error {
 		terminalRecorded = true
-		if out.AgentOutcome == "" {
-			out.AgentOutcome = agentOut
-		}
-		if out.VerificationOutcome == "" {
-			out.VerificationOutcome = verifOut
-		}
-		if out.Usage.IsZero() {
-			out.Usage = usage
-		}
-		// #94: carry the latest attempt's drift evidence (never state-changing).
-		out.VerificationMutated = out.VerificationMutated || verificationMutated
-		if out.EvidenceError == "" {
-			out.EvidenceError = evidenceErr
-		}
-		// #102: record the applied ceilings + enforcement status. A result that
-		// observed a crossed ceiling wins; otherwise the effective configured
-		// limits are recorded (evidence only, never state-changing).
-		if out.Limits == nil {
-			if limitsEv != nil {
-				out.Limits = limitsEv
-			} else {
-				out.Limits = limitsEvidence(EffectiveLimits(in.Lifecycle))
-			}
-		}
-		// #103: record the advisory egress policy (or its absence) as evidence.
-		// It is BYPASSABLE and never an enforcement claim; absent config records
-		// nothing, exactly like limits.
-		if out.Egress == nil {
-			out.Egress = egressEvidence(appCfg.Egress)
-		}
-		// §98: record the resolved catalog + budget crossings as evidence. A
-		// crossing NEVER rewrites the verdict/state or shortens a timeout — it is
-		// a reviewable record only (§40).
 		elapsed := workflow.Now(ctx).Sub(workflowStart)
-		if out.DurationSeconds == 0 {
-			out.DurationSeconds = elapsed.Seconds()
-		}
-		if resources != nil {
-			res := *resources
-			if res.Budget != nil {
-				b := *res.Budget
-				b.Crossings = budgetCrossings(res.Budget, out.Usage, elapsed)
-				res.Budget = &b
-			}
-			out.Resources = &res
-		}
 		// #93: teardown before recording the terminal so outcome.json carries the
 		// cleanup record; a cleanup failure is logged/recorded, never state-changing.
 		runCleanup(ctx)
-		out.Cleanup = cleanup
+		out = assembleTerminal(in, out, terminalInputs{
+			AgentOutcome:        agentOut,
+			VerificationOutcome: verifOut,
+			Usage:               usage,
+			Limits:              limitsEv,
+			VerificationMutated: verificationMutated,
+			EvidenceError:       evidenceErr,
+			Cleanup:             cleanup,
+			Elapsed:             elapsed,
+			Resources:           resources,
+		})
 		// #89: land the terminal condition on the live status snapshot too.
 		status.recordTerminal(out.TerminalState, out.EscalationReason, workflow.Now(ctx))
 		return recordTerminal(ctx, info, in, out)
@@ -1209,33 +1174,7 @@ func auditActor(res ApprovalResult) string {
 // run's terminal state + autonomous-vs-human outcome (no silent drops). It also
 // lands the #83 outcome.json evidence (best-effort, never changes the state).
 func recordTerminal(ctx workflow.Context, info *workflow.Info, in IssueInput, out CycleOutcome) error {
-	// #84: fill the explicit three-outcome evidence (defaults to SKIPPED, never
-	// silently absent §40) and stamp the ordered conditions deterministically.
-	out = stampOutcome(out, workflow.Now(ctx))
-	out.DryRun = in.Lifecycle.DryRun // §42: evidence paths resolve from the record, not live config
-	// #88: pin the effective policy + resolved harness/model + task identity as a
-	// digest on every terminal outcome, so "same config, different result" is
-	// investigable from outcome.json.
-	if out.PolicyDigest == "" {
-		out.PolicyDigest = policyDigest(in.Lifecycle, taskHash(in.Owner, in.Repo, in.IssueNum))
-	}
-	// #104: record the resolved tenancy scope (already resolved at load and
-	// carried in the input) alongside the effective policy. No scope name is
-	// resolved here — the workflow only reads what apply.sh stamped.
-	if out.Scope == "" {
-		out.Scope = in.Lifecycle.Scope
-	}
-	// #117: record the load-resolved agent profiles (stage → name) + digest.
-	stampProfiles(&out, in.Lifecycle)
-	// #122: record the resolved outbound URL policy (+ advisory/enforced status)
-	// and the referenced secret NAMES (never values). A host either runs nothing
-	// or records "advisory"; the status can never over-claim enforcement (§40).
-	if out.URLPolicy == nil {
-		out.URLPolicy = urlPolicyEvidence(EffectiveURLPolicy(in.Lifecycle))
-	}
-	if len(out.SecretNames) == 0 {
-		out.SecretNames = OutboundSecretNames(in.Lifecycle)
-	}
+	out = prepareTerminalOutcome(in, out, workflow.Now(ctx))
 	// #83: the cycle ID is the run's deterministic workflow ID (or the explicit
 	// child ID for a sweep-escalated failure), so evidence is stable under retry.
 	cycleID := out.WorkflowID

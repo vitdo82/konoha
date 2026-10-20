@@ -14,7 +14,7 @@ import (
 // context"); this helper keeps that path safe without changing Temporal behavior.
 func activityLogger(ctx context.Context) tlog.Logger {
 	if activity.IsActivity(ctx) {
-		return activityLogger(ctx)
+		return activity.GetLogger(ctx)
 	}
 	return fallbackLogger{}
 }

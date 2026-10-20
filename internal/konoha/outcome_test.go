@@ -162,3 +162,49 @@ func TestOutcomeMetricsMirror(t *testing.T) {
 		t.Fatalf("human_escalation_rate = %v, want 0.5 (unchanged)", got)
 	}
 }
+
+// #212: the terminal assembly is runtime-neutral and shared by the Temporal
+// workflow and the local runtime, so outcome.json keeps one shape.
+func TestAssembleTerminalDefaults(t *testing.T) {
+	saved := appCfg
+	appCfg = defaultAppConfig()
+	t.Cleanup(func() { appCfg = saved })
+
+	in := IssueInput{Owner: "o", Repo: "r", IssueNum: 7, Lifecycle: LifecycleConfig{DryRun: true}}
+	cleanup := &CleanupResult{Attempted: true, Outcome: cleanupAbsent, Verified: true}
+	out := assembleTerminal(in, CycleOutcome{WorkflowID: "r-issue-7", TerminalState: stateFailed}, terminalInputs{
+		AgentOutcome: agentOutcomeFailed,
+		Usage:        HarnessUsage{TokensIn: 3},
+		Elapsed:      2 * time.Second,
+		Cleanup:      cleanup,
+	})
+	if out.AgentOutcome != agentOutcomeFailed {
+		t.Fatalf("agent outcome = %q, want FAILED (not collapsed)", out.AgentOutcome)
+	}
+	if out.Usage.TokensIn != 3 {
+		t.Fatalf("usage = %+v, want 3 tokens in", out.Usage)
+	}
+	if out.DurationSeconds != 2 {
+		t.Fatalf("duration = %v, want 2", out.DurationSeconds)
+	}
+	if out.Cleanup == nil || out.Cleanup.Outcome != cleanupAbsent {
+		t.Fatalf("cleanup = %+v, want the supplied record", out.Cleanup)
+	}
+
+	out = prepareTerminalOutcome(in, out, testOutcomeAt)
+	if out.VerificationOutcome != verificationSkipped {
+		t.Fatalf("verification outcome = %q, want SKIPPED default", out.VerificationOutcome)
+	}
+	if !out.DryRun {
+		t.Fatal("dryRun must be stamped from the input lifecycle")
+	}
+	if out.PolicyDigest == "" {
+		t.Fatal("policy digest must be stamped")
+	}
+	if len(out.Conditions) != 3 {
+		t.Fatalf("conditions = %+v, want agent/verification/terminal", out.Conditions)
+	}
+	if out.Conditions[0].Type != conditionAgent || out.Conditions[1].Type != conditionVerification || out.Conditions[2].Type != conditionTerminal {
+		t.Fatalf("conditions out of order: %+v", out.Conditions)
+	}
+}
